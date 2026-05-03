@@ -35,7 +35,8 @@ function startSync() {
   btn.disabled = true;
   status.textContent = 'Running…';
   output.classList.remove('hidden');
-  output.innerHTML = '';
+  document.getElementById('lines').innerHTML = '';
+  document.getElementById('waiting-msg').classList.remove('hidden');
 
   source = new EventSource('/api/sync/stream');
 

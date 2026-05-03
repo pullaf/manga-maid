@@ -57,18 +57,28 @@
     </div>
   </div>
 
-  <!-- Folder name + since -->
+  <!-- Location + folder name + since -->
   <div class="grid grid-cols-2 gap-3">
     <div>
-      <label class="block text-xs font-medium text-gray-600 mb-1">Folder name</label>
-      <input type="text" name="title" required value="{{ title }}"
-             class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+      <label class="block text-xs font-medium text-gray-600 mb-1">Location</label>
+      <select name="subfolder"
+              class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white">
+        <option value="">(root)</option>
+        {% for d in subdirs %}
+        <option value="{{ d }}">{{ d }}/</option>
+        {% endfor %}
+      </select>
     </div>
     <div>
       <label class="block text-xs font-medium text-gray-600 mb-1">Skip chapters ≤</label>
       <input type="number" name="since" value="0" min="0"
              class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
     </div>
+  </div>
+  <div>
+    <label class="block text-xs font-medium text-gray-600 mb-1">Folder name</label>
+    <input type="text" name="title" required value="{{ title }}"
+           class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
   </div>
 
   <button type="submit"

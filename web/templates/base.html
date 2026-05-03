@@ -15,7 +15,7 @@
       <span class="text-violet-400 font-bold tracking-wide text-sm">manga-kavita</span>
     </div>
     <nav class="flex-1 p-3 space-y-0.5 text-sm">
-      {% set links = [("dashboard", "/", "Dashboard"), ("series", "/series", "Series"), ("sync", "/sync", "Sync"), ("fix", "/fix", "Fix Files"), ("logs", "/logs", "Logs")] %}
+      {% set links = [("dashboard", "/", "Dashboard"), ("series", "/series", "Add Series"), ("sync", "/sync", "Sync"), ("fix", "/fix", "Fix Files"), ("logs", "/logs", "Logs"), ("settings", "/settings", "Settings")] %}
       {% for key, href, label in links %}
       <a href="{{ href }}"
          class="flex items-center px-3 py-2 rounded-lg transition-colors
@@ -30,6 +30,51 @@
   <main class="flex-1 overflow-auto p-8">
     {% block content %}{% endblock %}
   </main>
+
+  <!-- Global edit modal -->
+  <div id="edit-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+    <div class="absolute inset-0 bg-black/40 backdrop-blur-sm" onclick="closeModal()"></div>
+    <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 max-h-[90vh] overflow-y-auto">
+      <div id="modal-body" class="p-6"></div>
+    </div>
+  </div>
+
+  <script>
+    function openModal() { document.getElementById('edit-modal').classList.remove('hidden'); }
+    function closeModal() {
+      document.getElementById('edit-modal').classList.add('hidden');
+      document.getElementById('modal-body').innerHTML = '';
+    }
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+    document.addEventListener('htmx:afterSwap', e => {
+      if (e.target.id === 'modal-body') openModal();
+    });
+
+    function selectLang(btn, lang, mangaId) {
+      document.querySelectorAll('.lang-btn').forEach(b => {
+        b.className = b.className.replace('bg-violet-600 border-violet-600 text-white', 'border-gray-200 text-gray-600 hover:border-violet-400');
+      });
+      btn.className = btn.className.replace('border-gray-200 text-gray-600 hover:border-violet-400', 'bg-violet-600 border-violet-600 text-white');
+      document.getElementById('language-hidden').value = lang;
+      document.getElementById('translator').value = '';
+      document.getElementById('selected-group-label').textContent = '';
+      document.getElementById('groups-loading').classList.remove('hidden');
+      document.getElementById('group-picker').innerHTML = '';
+      fetch(`/api/manga/${mangaId}/groups?language=${lang}`)
+        .then(r => r.text())
+        .then(html => {
+          document.getElementById('groups-loading').classList.add('hidden');
+          document.getElementById('group-picker').innerHTML = html;
+        });
+    }
+
+    function selectGroup(card) {
+      document.querySelectorAll('.group-card').forEach(c => c.classList.remove('border-violet-500', 'bg-violet-50'));
+      card.classList.add('border-violet-500', 'bg-violet-50');
+      document.getElementById('translator').value = card.dataset.group;
+      document.getElementById('selected-group-label').textContent = card.dataset.group || 'any';
+    }
+  </script>
 
 </body>
 </html>

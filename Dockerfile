@@ -16,10 +16,10 @@ RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") \
 RUN pip install --no-cache-dir fastapi uvicorn jinja2 python-multipart
 
 COPY entrypoint.sh /entrypoint.sh
-COPY manga-fix.py manga-sync.py /app/
+COPY manga-fix.py manga-sync.py sync_config.py kavita.py /app/
 COPY web/ /app/web/
 
-RUN chmod +x /entrypoint.sh && mkdir -p /logs
+RUN chmod +x /entrypoint.sh && mkdir -p /data/config /data/logs
 
 EXPOSE 4649
 

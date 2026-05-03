@@ -1,15 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="mb-8">
-  <h1 class="text-2xl font-bold">Series</h1>
-  <p class="text-gray-500 text-sm mt-1">Manage your tracked series</p>
+  <h1 class="text-2xl font-bold">Add Series</h1>
+  <p class="text-gray-500 text-sm mt-1">Search MangaDex and add a series to sync</p>
 </div>
 
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-
-  <!-- Add series: two-phase -->
+<div class="max-w-lg">
   <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-    <h2 class="font-semibold text-gray-900 mb-4">Add Series</h2>
 
     <!-- Phase 1: pick manga -->
     <div id="phase1">
@@ -30,7 +27,7 @@
       <div id="search-results" class="space-y-2 max-h-64 overflow-y-auto"></div>
     </div>
 
-    <!-- Phase 2: setup form (loaded via HTMX) -->
+    <!-- Phase 2: setup form (loaded via fetch) -->
     <div id="phase2" class="hidden">
       <div id="setup-loading" class="flex items-center gap-2 text-xs text-gray-400 py-4">
         <span class="inline-block w-2 h-2 rounded-full bg-violet-400 animate-pulse"></span>
@@ -40,34 +37,8 @@
       <button type="button" onclick="resetToPhase1()"
               class="mt-3 text-xs text-gray-400 hover:text-gray-600">← Pick a different manga</button>
     </div>
-  </div>
 
-  <!-- Series list -->
-  <div class="space-y-3">
-    {% if not series %}
-    <p class="text-gray-400 text-sm text-center py-12">No series tracked yet.</p>
-    {% endif %}
-    {% for s in series %}
-    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex items-center justify-between group" id="series-{{ loop.index }}">
-      <div class="min-w-0">
-        <div class="font-medium text-sm truncate">{{ s.name }}</div>
-        <div class="text-xs text-gray-500 mt-0.5">
-          {{ s.config.get("language", "en") }}
-          {% if s.config.get("translator") %} · {{ s.config.translator }}{% endif %}
-          {% if s.last_chapter %} · ch. {{ s.last_chapter | int }}{% endif %}
-        </div>
-      </div>
-      <button class="text-red-400 hover:text-red-600 text-xs px-2 py-1 opacity-0 group-hover:opacity-100 transition-opacity"
-              hx-delete="/api/series/{{ s.path }}"
-              hx-target="closest div[id^='series-']"
-              hx-swap="outerHTML"
-              hx-confirm="Remove '{{ s.name }}' from sync? (files stay on disk)">
-        Remove
-      </button>
-    </div>
-    {% endfor %}
   </div>
-
 </div>
 
 <script>
@@ -114,26 +85,6 @@
     await loadSetup(card.dataset.id);
   });
 
-  async function selectLang(btn, lang, mangaId) {
-    document.querySelectorAll('.lang-btn').forEach(b => {
-      b.className = b.className.replace('bg-violet-600 border-violet-600 text-white', 'border-gray-200 text-gray-600 hover:border-violet-400');
-    });
-    btn.className = btn.className.replace('border-gray-200 text-gray-600 hover:border-violet-400', 'bg-violet-600 border-violet-600 text-white');
-    document.getElementById('language-hidden').value = lang;
-    document.getElementById('translator').value = '';
-    document.getElementById('selected-group-label').textContent = '';
-    document.getElementById('groups-loading').classList.remove('hidden');
-    document.getElementById('group-picker').innerHTML = '';
-    const resp = await fetch(`/api/manga/${mangaId}/groups?language=${lang}`);
-    document.getElementById('groups-loading').classList.add('hidden');
-    document.getElementById('group-picker').innerHTML = await resp.text();
-  }
 
-  function selectGroup(card) {
-    document.querySelectorAll('.group-card').forEach(c => c.classList.remove('border-violet-500', 'bg-violet-50'));
-    card.classList.add('border-violet-500', 'bg-violet-50');
-    document.getElementById('translator').value = card.dataset.group;
-    document.getElementById('selected-group-label').textContent = card.dataset.group || 'any';
-  }
 </script>
 {% endblock %}

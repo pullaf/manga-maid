@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="mb-8">
+  <h1 class="text-2xl font-bold">Settings</h1>
+  <p class="text-gray-500 text-sm mt-1">Download behaviour and Kavita integration</p>
+</div>
+
+<form method="post" action="/api/settings" class="space-y-8 max-w-xl">
+
+  <!-- Download -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 space-y-5">
+    <h2 class="font-semibold text-gray-900">Download</h2>
+
+    <div class="grid grid-cols-2 gap-4">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">File format</label>
+        <select name="file_format"
+                class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white">
+          {% for fmt in ["cbz", "cbr", "zip"] %}
+          <option value="{{ fmt }}" {% if settings.file_format == fmt %}selected{% endif %}>{{ fmt }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Delay between downloads (s)</label>
+        <input type="number" name="download_delay" step="0.5" min="0"
+               value="{{ settings.download_delay }}"
+               class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+      </div>
+    </div>
+
+    <!-- Naming patterns -->
+    <div class="space-y-3">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Chapter file naming</label>
+        <input type="text" name="chapter_naming" value="{{ settings.chapter_naming }}"
+               class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-400">
+      </div>
+      <div class="rounded-lg bg-gray-50 border border-gray-100 px-3 py-2.5 grid grid-cols-3 gap-x-4 gap-y-1">
+        {% for code, meaning in [("%1","language"), ("%2","group"), ("%3","title"), ("%4","volume"), ("%5","chapter"), ("%6","chapter title")] %}
+        <div class="flex items-center gap-1.5">
+          <code class="text-xs font-mono text-violet-700">{{ code }}</code>
+          <span class="text-xs text-gray-500">{{ meaning }}</span>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <div>
+      <label class="flex items-center justify-between mb-3">
+        <div>
+          <span class="text-sm font-medium text-gray-900">Volume mode</span>
+          <p class="text-xs text-gray-500 mt-0.5">Download one file per volume instead of per chapter</p>
+        </div>
+        <button type="button" onclick="toggleVolMode(this)"
+                data-on="{{ 'true' if settings.volume_mode else 'false' }}"
+                class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors
+                       {{ 'bg-violet-600' if settings.volume_mode else 'bg-gray-200' }}">
+          <span class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform
+                       {{ 'translate-x-6' if settings.volume_mode else 'translate-x-1' }}"></span>
+        </button>
+        <input type="hidden" name="volume_mode" id="volume_mode_input"
+               value="{{ 'true' if settings.volume_mode else 'false' }}">
+      </label>
+
+      <div id="volume-naming-row" class="{{ '' if settings.volume_mode else 'hidden' }}">
+        <label class="block text-xs font-medium text-gray-600 mb-1">Volume file naming</label>
+        <input type="text" name="volume_naming" value="{{ settings.volume_naming }}"
+               class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-violet-400">
+      </div>
+    </div>
+  </div>
+
+  <!-- Kavita -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 space-y-5">
+    <h2 class="font-semibold text-gray-900">Kavita Integration</h2>
+
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Kavita URL</label>
+      <input type="url" name="kavita_url" value="{{ settings.kavita_url }}"
+             placeholder="http://kavita:5000"
+             class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+    </div>
+
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">API Key <span class="text-gray-400 font-normal">(User Settings → 3rd Party Clients)</span></label>
+      <div class="flex gap-2">
+        <input type="password" name="kavita_api_key" value="{{ settings.kavita_api_key }}"
+               id="api-key-input" placeholder="••••••••"
+               class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+        <button type="button" onclick="testKavita()"
+                class="shrink-0 text-xs border border-gray-200 rounded-lg px-3 py-2 text-gray-600 hover:border-violet-400 hover:text-violet-600 transition-colors">
+          Test
+        </button>
+      </div>
+      <p id="test-result" class="text-xs mt-1 hidden"></p>
+    </div>
+
+    <div class="space-y-4 pt-1">
+      {% set toggles = [
+        ("auto_scan", settings.auto_scan, "Auto library scan", "Trigger a Kavita library scan after every sync"),
+        ("auto_covers", settings.auto_covers, "Auto set covers", "Fetch volume covers from MangaDex and push them to Kavita"),
+      ] %}
+      {% for name, value, label, desc in toggles %}
+      <label class="flex items-center justify-between">
+        <div>
+          <span class="text-sm font-medium text-gray-900">{{ label }}</span>
+          <p class="text-xs text-gray-500 mt-0.5">{{ desc }}</p>
+        </div>
+        <button type="button" onclick="toggleSwitch(this)"
+                data-on="{{ 'true' if value else 'false' }}"
+                class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors
+                       {{ 'bg-violet-600' if value else 'bg-gray-200' }}">
+          <span class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform
+                       {{ 'translate-x-6' if value else 'translate-x-1' }}"></span>
+        </button>
+        <input type="hidden" name="{{ name }}" id="input_{{ name }}"
+               value="{{ 'true' if value else 'false' }}">
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+
+  <button type="submit"
+          class="w-full max-w-xl bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium py-2.5 rounded-lg transition-colors">
+    Save Settings
+  </button>
+</form>
+
+<script>
+function toggleSwitch(btn) {
+  const on = btn.dataset.on !== 'true';
+  btn.dataset.on = on;
+  btn.className = btn.className.replace(on ? 'bg-gray-200' : 'bg-violet-600', on ? 'bg-violet-600' : 'bg-gray-200');
+  const span = btn.querySelector('span');
+  span.className = span.className.replace(on ? 'translate-x-1' : 'translate-x-6', on ? 'translate-x-6' : 'translate-x-1');
+  const name = btn.nextElementSibling.name;
+  document.getElementById('input_' + name).value = on;
+}
+
+function toggleVolMode(btn) {
+  toggleSwitch(btn);
+  const on = btn.dataset.on === 'true';
+  document.getElementById('volume_mode_input').value = on;
+  document.getElementById('volume-naming-row').classList.toggle('hidden', !on);
+}
+
+async function testKavita() {
+  const result = document.getElementById('test-result');
+  result.textContent = 'Testing…';
+  result.className = 'text-xs mt-1 text-gray-400';
+  result.classList.remove('hidden');
+  const url = document.querySelector('[name=kavita_url]').value;
+  const key = document.getElementById('api-key-input').value;
+  const resp = await fetch('/api/settings/test-kavita', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({kavita_url: url, kavita_api_key: key}),
+  });
+  const data = await resp.json();
+  result.textContent = data.ok ? '✓ Connected!' : '✗ ' + (data.error || 'Could not connect');
+  result.className = 'text-xs mt-1 ' + (data.ok ? 'text-green-600' : 'text-red-500');
+}
+</script>
+{% endblock %}

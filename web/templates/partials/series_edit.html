@@ -1,0 +1,122 @@
+<form hx-put="/api/series/{{ path }}" hx-swap="none" class="space-y-4">
+  <input type="hidden" name="manga_id" value="{{ manga_id }}">
+  <input type="hidden" name="translator" id="translator" value="{{ current_translator }}">
+
+  <!-- Header -->
+  <div class="flex items-center justify-between pb-3 border-b border-gray-100">
+    <h2 class="font-semibold text-gray-900">Edit — {{ manga_title }}</h2>
+    <button type="button" onclick="closeModal()"
+            class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+  </div>
+
+  <!-- Language -->
+  <div>
+    <label class="block text-xs font-medium text-gray-600 mb-1">Language</label>
+    <div class="flex gap-2">
+      <input type="text" name="language" value="{{ current_lang }}" id="edit-lang-input"
+             class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+      <button type="button"
+              onclick="loadEditLangs('{{ manga_id }}')"
+              class="shrink-0 text-xs border border-gray-200 rounded-lg px-3 py-2 text-gray-600 hover:border-violet-400 hover:text-violet-600 transition-colors">
+        Browse
+      </button>
+    </div>
+    <div id="lang-picker" class="mt-1.5 flex flex-wrap gap-2"></div>
+  </div>
+
+  <!-- Group -->
+  <div>
+    <label class="block text-xs font-medium text-gray-600 mb-1">Scanlation group</label>
+    <div class="flex gap-2">
+      <input type="text" id="translator-display" value="{{ current_translator }}"
+             placeholder="any group"
+             oninput="document.getElementById('translator').value = this.value"
+             class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+      <button type="button"
+              onclick="loadEditGroups('{{ manga_id }}')"
+              class="shrink-0 text-xs border border-gray-200 rounded-lg px-3 py-2 text-gray-600 hover:border-violet-400 hover:text-violet-600 transition-colors">
+        Browse
+      </button>
+    </div>
+    <div id="groups-loading" class="hidden text-xs text-gray-400 py-1 mt-1 flex items-center gap-1.5">
+      <span class="inline-block w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse"></span>
+      Fetching groups…
+    </div>
+    <div id="group-picker" class="mt-1.5 max-h-40 overflow-y-auto space-y-1.5"></div>
+  </div>
+
+  <!-- Location + since -->
+  <div class="grid grid-cols-2 gap-3">
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Location</label>
+      <select name="subfolder"
+              class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white">
+        <option value="" {% if not subfolder %}selected{% endif %}>(root)</option>
+        {% for d in subdirs %}
+        <option value="{{ d }}" {% if d == subfolder %}selected{% endif %}>{{ d }}/</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs font-medium text-gray-600 mb-1">Skip chapters ≤</label>
+      <input type="number" name="since" value="{{ current_since }}" min="0"
+             class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+    </div>
+  </div>
+
+  <!-- Folder name -->
+  <div>
+    <label class="block text-xs font-medium text-gray-600 mb-1">Folder name</label>
+    <input type="text" name="title" required value="{{ folder_name }}"
+           class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+  </div>
+
+  <button type="submit"
+          class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium py-2 rounded-lg transition-colors">
+    Save Changes
+  </button>
+</form>
+
+<script>
+function loadEditLangs(mangaId) {
+  const picker = document.getElementById('lang-picker');
+  picker.innerHTML = '<span class="text-xs text-gray-400">Loading…</span>';
+  fetch(`/api/manga/${mangaId}/langs`)
+    .then(r => r.json())
+    .then(langs => {
+      picker.innerHTML = '';
+      langs.forEach(([lang, count]) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:border-violet-400 hover:text-violet-600 transition-colors';
+        btn.textContent = `${lang.toUpperCase()} · ${count}`;
+        btn.onclick = () => {
+          document.getElementById('edit-lang-input').value = lang;
+          picker.querySelectorAll('button').forEach(b => b.className = b.className.replace('bg-violet-600 border-violet-600 text-white', 'border-gray-200 text-gray-600 hover:border-violet-400 hover:text-violet-600'));
+          btn.className = btn.className.replace('border-gray-200 text-gray-600 hover:border-violet-400 hover:text-violet-600', 'bg-violet-600 border-violet-600 text-white');
+        };
+        picker.appendChild(btn);
+      });
+    });
+}
+
+function loadEditGroups(mangaId) {
+  const lang = document.getElementById('edit-lang-input').value.trim() || 'en';
+  document.getElementById('groups-loading').classList.remove('hidden');
+  document.getElementById('group-picker').innerHTML = '';
+  fetch(`/api/manga/${mangaId}/groups?language=${lang}`)
+    .then(r => r.text())
+    .then(html => {
+      document.getElementById('groups-loading').classList.add('hidden');
+      document.getElementById('group-picker').innerHTML = html;
+    });
+}
+
+function selectGroup(card) {
+  document.querySelectorAll('.group-card').forEach(c => c.classList.remove('border-violet-500', 'bg-violet-50'));
+  card.classList.add('border-violet-500', 'bg-violet-50');
+  const group = card.dataset.group;
+  document.getElementById('translator').value = group;
+  document.getElementById('translator-display').value = group;
+}
+</script>

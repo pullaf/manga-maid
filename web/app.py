@@ -3,21 +3,27 @@ import asyncio
 import importlib.util
 import json
 import os
+import shutil
+import sys
 from urllib import parse, request as urlrequest
 
-from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi import FastAPI, Form, HTTPException, Request, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 MANGA_ROOT = os.environ.get("MANGA_ROOT", "/manga")
 CONFIG_FILENAME = ".mangadex.json"
-SYNC_LOG = os.environ.get("SYNC_LOG", "/logs/.sync.log")
+SYNC_LOG = os.environ.get("SYNC_LOG", "/data/logs/sync.log")
 MDEX_BASE = "https://api.mangadex.org"
 CONTENT_RATINGS = ["safe", "suggestive", "erotica", "pornographic"]
 
 _spec = importlib.util.spec_from_file_location("manga_fix", "/app/manga-fix.py")
 _fix = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_fix)
+
+sys.path.insert(0, "/app")
+from sync_config import load_settings, save_settings  # noqa: E402
+from kavita import KavitaClient                        # noqa: E402
 
 app = FastAPI(title="mangadex-kavita-sync")
 templates = Jinja2Templates(directory="/app/web/templates")
@@ -28,6 +34,17 @@ _sync_running = False
 # ---------------------------------------------------------------------------
 # Library helpers
 # ---------------------------------------------------------------------------
+
+def get_subdirs():
+    """Immediate subdirectories of MANGA_ROOT, used as location options."""
+    try:
+        return sorted(
+            d for d in os.listdir(MANGA_ROOT)
+            if os.path.isdir(os.path.join(MANGA_ROOT, d)) and not d.startswith(".")
+        )
+    except OSError:
+        return []
+
 
 def get_all_series():
     series = []
@@ -92,14 +109,14 @@ def _lang_chapter_count(manga_id: str, lang: str) -> tuple[str, int]:
 
 
 async def _fetch_groups(manga_id: str, language: str) -> dict:
-    """Fetch all chapters, aggregate by group. Returns groups list + total unique chapters."""
+    """Fetch all chapters, aggregate by group. Returns groups list + canonical chapter count."""
+    loop = asyncio.get_event_loop()
     groups: dict[str, set] = {}
     offset, limit = 0, 100
     total = 1
     params = {"translatedLanguage[]": language, "limit": limit,
               "includes[]": "scanlation_group", "order[chapter]": "asc",
               "contentRating[]": CONTENT_RATINGS}
-    loop = asyncio.get_event_loop()
 
     while offset < total and offset < 500:
         params["offset"] = offset
@@ -126,10 +143,28 @@ async def _fetch_groups(manga_id: str, language: str) -> dict:
             break
         await asyncio.sleep(0.2)
 
-    all_chapters = set().union(*groups.values()) if groups else set()
-    total_unique = len(all_chapters)
+    # Use the aggregate endpoint for the canonical chapter count — avoids
+    # inflation from obscure groups with extra oddly-numbered chapters.
+    try:
+        def _agg():
+            return _mdex_get(f"/manga/{manga_id}/aggregate", {"translatedLanguage[]": language})
+        agg = await loop.run_in_executor(None, _agg)
+        canonical: set[float] = set()
+        for vol in agg.get("volumes", {}).values():
+            for ch_key in vol.get("chapters", {}).keys():
+                try:
+                    canonical.add(float(ch_key))
+                except ValueError:
+                    pass
+        total_unique = len(canonical)
+    except Exception:
+        total_unique = len(set().union(*groups.values())) if groups else 0
+
+    # A group is "complete" if it has at least 97% of canonical chapters —
+    # avoids penalising groups that skip one obscure special/cover chapter.
+    threshold = max(total_unique - 2, int(total_unique * 0.97)) if total_unique else 0
     sorted_groups = sorted(
-        [(name, len(chs), len(chs) >= total_unique > 0) for name, chs in groups.items()],
+        [(name, len(chs), len(chs) >= threshold > 0) for name, chs in groups.items()],
         key=lambda x: x[1], reverse=True,
     )
     return {"groups": sorted_groups, "total_unique": total_unique}
@@ -155,6 +190,54 @@ async def series_page(request: Request):
 async def sync_page(request: Request):
     return templates.TemplateResponse(request=request, name="sync.html",
         context={"active": "sync"})
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    return templates.TemplateResponse(request=request, name="settings.html",
+        context={"settings": load_settings(), "active": "settings"})
+
+
+@app.post("/api/settings")
+async def save_settings_endpoint(
+    file_format: str = Form("cbz"),
+    chapter_naming: str = Form("%3 ch.%5"),
+    volume_naming: str = Form("%3 vol.%4"),
+    download_delay: float = Form(1.0),
+    volume_mode: str = Form("false"),
+    auto_scan: str = Form("false"),
+    auto_covers: str = Form("false"),
+    kavita_url: str = Form(""),
+    kavita_api_key: str = Form(""),
+):
+    save_settings({
+        "file_format": file_format,
+        "chapter_naming": chapter_naming,
+        "volume_naming": volume_naming,
+        "download_delay": download_delay,
+        "volume_mode": volume_mode == "true",
+        "auto_scan": auto_scan == "true",
+        "auto_covers": auto_covers == "true",
+        "kavita_url": kavita_url.strip(),
+        "kavita_api_key": kavita_api_key.strip(),
+    })
+    return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/api/settings/test-kavita")
+async def test_kavita(request: Request):
+    body = await request.json()
+    url = body.get("kavita_url", "").strip()
+    key = body.get("kavita_api_key", "").strip()
+    if not url or not key:
+        return JSONResponse({"ok": False, "error": "URL and API key are required"})
+    loop = asyncio.get_event_loop()
+    try:
+        client = KavitaClient(url, key)
+        ok = await loop.run_in_executor(None, client.ping)
+        return JSONResponse({"ok": ok, "error": None if ok else "No response from server"})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)})
 
 
 @app.get("/fix", response_class=HTMLResponse)
@@ -241,7 +324,27 @@ async def get_manga_setup(request: Request, manga_id: str):
     return templates.TemplateResponse(request=request, name="partials/manga_setup.html",
         context={"manga_id": manga_id, "title": title, "status": status, "year": year,
                  "cover_url": cover_url, "lang_counts": lang_counts,
-                 "default_lang": default_lang, **groups_data})
+                 "default_lang": default_lang, "subdirs": get_subdirs(), **groups_data})
+
+
+@app.get("/api/manga/{manga_id}/langs")
+async def get_manga_langs(manga_id: str):
+    loop = asyncio.get_event_loop()
+    try:
+        data = await loop.run_in_executor(None, lambda: _mdex_get(
+            f"/manga/{manga_id}", {}))
+    except Exception as e:
+        raise HTTPException(502, str(e))
+    available_langs = data["data"]["attributes"].get("availableTranslatedLanguages") or []
+    tasks = [loop.run_in_executor(None, _lang_chapter_count, manga_id, lang)
+             for lang in available_langs[:10]]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    counts = sorted(
+        [(lang, cnt) for r in results if isinstance(r, tuple) for lang, cnt in [r] if cnt > 0],
+        key=lambda x: x[1], reverse=True,
+    )
+    from fastapi.responses import JSONResponse
+    return JSONResponse(counts)
 
 
 @app.get("/api/manga/{manga_id}/groups", response_class=HTMLResponse)
@@ -259,11 +362,13 @@ async def get_manga_groups(request: Request, manga_id: str, language: str = "en"
 async def add_series(
     manga_id: str = Form(...),
     title: str = Form(...),
+    subfolder: str = Form(""),
     language: str = Form("en"),
     translator: str = Form(""),
     since: str = Form("0"),
 ):
-    series_dir = os.path.join(MANGA_ROOT, title)
+    parts = [p for p in [subfolder.strip("/"), title] if p]
+    series_dir = os.path.join(MANGA_ROOT, *parts)
     os.makedirs(series_dir, exist_ok=True)
     config = {"id": manga_id, "language": language}
     if translator.strip():
@@ -284,6 +389,62 @@ async def delete_series(path: str):
         raise HTTPException(404, "Series not found")
     os.remove(config_path)
     return HTMLResponse("")
+
+
+@app.get("/api/series/{path:path}/edit", response_class=HTMLResponse)
+async def edit_series_form(request: Request, path: str):
+    config_path = os.path.join(MANGA_ROOT, path, CONFIG_FILENAME)
+    if not os.path.exists(config_path):
+        raise HTTPException(404, "Series not found")
+    with open(config_path) as f:
+        config = json.load(f)
+
+    parts = path.split("/")
+    folder_name = parts[-1]
+    subfolder = "/".join(parts[:-1])
+
+    return templates.TemplateResponse(request=request, name="partials/series_edit.html",
+        context={"path": path, "manga_id": config.get("id", ""),
+                 "manga_title": folder_name,
+                 "current_lang": config.get("language", "en"),
+                 "current_translator": config.get("translator", ""),
+                 "current_since": config.get("since", 0),
+                 "folder_name": folder_name, "subfolder": subfolder,
+                 "subdirs": get_subdirs()})
+
+
+@app.put("/api/series/{path:path}")
+async def update_series(
+    path: str,
+    manga_id: str = Form(...),
+    title: str = Form(...),
+    subfolder: str = Form(""),
+    language: str = Form("en"),
+    translator: str = Form(""),
+    since: str = Form("0"),
+):
+    old_dir = os.path.join(MANGA_ROOT, path)
+    if not os.path.exists(os.path.join(old_dir, CONFIG_FILENAME)):
+        raise HTTPException(404, "Series not found")
+
+    parts = [p for p in [subfolder.strip("/"), title] if p]
+    new_dir = os.path.join(MANGA_ROOT, *parts)
+
+    if os.path.abspath(old_dir) != os.path.abspath(new_dir):
+        os.makedirs(os.path.dirname(new_dir) or MANGA_ROOT, exist_ok=True)
+        shutil.move(old_dir, new_dir)
+
+    config = {"id": manga_id, "language": language}
+    if translator.strip():
+        config["translator"] = translator.strip()
+    try:
+        config["since"] = float(since) if since else 0
+    except ValueError:
+        config["since"] = 0
+    with open(os.path.join(new_dir, CONFIG_FILENAME), "w") as f:
+        json.dump(config, f, indent=2)
+
+    return Response(status_code=204, headers={"HX-Redirect": "/series"})
 
 
 # ---------------------------------------------------------------------------
