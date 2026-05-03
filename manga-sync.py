@@ -59,15 +59,13 @@ def _log(msg):
 # ---------------------------------------------------------------------------
 
 def all_series_dirs():
+    """Find every directory under MANGA_ROOT that contains a .mangadex.json."""
     dirs = []
-    for lang in ("en", "jp"):
-        base = os.path.join(MANGA_ROOT, lang)
-        if not os.path.isdir(base):
-            continue
-        for name in sorted(os.listdir(base)):
-            full = os.path.join(base, name)
-            if os.path.isdir(full):
-                dirs.append(full)
+    for root, subdirs, files in os.walk(MANGA_ROOT):
+        subdirs.sort()
+        if CONFIG_FILENAME in files:
+            dirs.append(root)
+            subdirs.clear()  # don't recurse into a matched series dir
     return dirs
 
 

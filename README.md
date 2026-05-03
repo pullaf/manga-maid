@@ -30,14 +30,14 @@ docker pull ghcr.io/pullaf/mangadex-kavita-sync:latest
 
 ### 2. Add a `.mangadex.json` to each series you want to track
 
-Place this file inside the series directory (e.g. `manga/en/Yotsuba&!/`):
+Place this file inside the series directory (e.g. `manga/Isekai Ojisan/`):
 
 ```json
 {
-  "id":         "5e3a710f-0b0d-482b-9e84-d9c91960c625",
+  "id":         "c9de2a46-2b2e-4a38-bdb4-bf0cbb967318",
   "language":   "en",
-  "translator": "Sho Habby Scans",
-  "since":      207
+  "translator": "Kirei Cake",
+  "since":      50
 }
 ```
 
@@ -79,20 +79,25 @@ services:
 
 ## Library layout
 
-The container expects your library mounted at `MANGA_ROOT` (`/manga` by default), organised like this:
+The container expects your library mounted at `MANGA_ROOT` (`/manga` by default). Any folder structure that Kavita accepts will work — the sync tool recursively searches for `.mangadex.json` files at any depth. Flat layout, language-split, genre-split, whatever you have:
 
 ```
 manga/
-  en/<Series Title>/
-    .mangadex.json          ← sync config for this series
-    Series vol. 1 ch. 1.cbz
-    Series vol. 1 ch. 2.cbz
-  jp/<Series Title>/
+  Isekai Ojisan/              ← flat: series directly under root
     .mangadex.json
-    ...
+    Isekai Ojisan vol. 1 ch. 1.cbz
+
+  en/                         ← or grouped however you like
+    Isekai Ojisan/
+      .mangadex.json
+      Isekai Ojisan vol. 1 ch. 1.cbz
+  jp/
+    Isekai Ojisan/
+      .mangadex.json
+      ...
 ```
 
-Language subdirectories (`en/`, `jp/`, etc.) are discovered automatically.
+Only directories that contain a `.mangadex.json` are synced — everything else is ignored.
 
 ---
 
