@@ -23,7 +23,7 @@ from datetime import datetime
 from urllib import error as urlerror
 from urllib import parse, request
 
-MANGA_ROOT = os.environ.get("MANGA_ROOT", os.path.dirname(os.path.abspath(__file__)))
+MANGA_ROOT = os.environ.get("MANGA_ROOT", "/manga")
 DEFAULT_LANGUAGE = os.environ.get("DEFAULT_LANGUAGE", "en")
 CONFIG_FILENAME = ".mangadex.json"
 SYNC_LOG = os.environ.get("SYNC_LOG", "/logs/.sync.log")
