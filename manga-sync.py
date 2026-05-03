@@ -318,11 +318,6 @@ def main():
         since = float(config.get("since", 0))
         effective_last = max(last_ch, since)
 
-        if last_ch == 0 and since == 0:
-            _log(f"[{series_name}] no chapters on disk and no 'since' in config — skipping "
-                 f"(add \"since\": N to start from chapter N)")
-            continue
-
         try:
             latest = fetch_latest_chapter(config)
         except Exception as e:

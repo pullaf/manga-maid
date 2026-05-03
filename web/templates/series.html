@@ -12,6 +12,17 @@
     <h2 class="font-semibold text-gray-900 mb-4">Add Series</h2>
 
     <div class="mb-3">
+      <input type="text" id="url-input" placeholder="Paste MangaDex URL or UUID…"
+             class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+             oninput="handleUrlPaste(this.value)">
+      <p id="url-status" class="text-xs mt-1 text-gray-400 hidden"></p>
+    </div>
+    <div class="flex items-center gap-2 mb-3">
+      <div class="flex-1 border-t border-gray-200"></div>
+      <span class="text-xs text-gray-400">or search</span>
+      <div class="flex-1 border-t border-gray-200"></div>
+    </div>
+    <div class="mb-3">
       <input type="text" id="search-input" placeholder="Search MangaDex…"
              class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
              hx-get="/api/search" hx-target="#search-results" hx-trigger="keyup changed delay:400ms" name="q">
@@ -80,6 +91,31 @@
 </div>
 
 <script>
+  const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+  async function handleUrlPaste(value) {
+    const status = document.getElementById('url-status');
+    const match = value.match(UUID_RE);
+    if (!match) { status.classList.add('hidden'); return; }
+    const uuid = match[0];
+    status.textContent = 'Fetching…';
+    status.classList.remove('hidden', 'text-red-500', 'text-green-600');
+    status.classList.add('text-gray-400');
+    try {
+      const resp = await fetch(`/api/manga/${uuid}`);
+      if (!resp.ok) throw new Error('Not found');
+      const data = await resp.json();
+      document.getElementById('manga_id').value = data.id;
+      document.getElementById('title-input').value = data.title;
+      document.getElementById('add-btn').disabled = false;
+      status.textContent = '✓ ' + data.title;
+      status.classList.replace('text-gray-400', 'text-green-600');
+    } catch (e) {
+      status.textContent = '✗ Could not find manga';
+      status.classList.replace('text-gray-400', 'text-red-500');
+    }
+  }
+
   document.getElementById('search-results').addEventListener('click', function(e) {
     const card = e.target.closest('.search-result');
     if (!card) return;

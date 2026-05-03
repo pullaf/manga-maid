@@ -138,6 +138,19 @@ async def logs_page(request: Request):
 # API
 # ---------------------------------------------------------------------------
 
+@app.get("/api/manga/{manga_id}")
+async def get_manga(manga_id: str):
+    url = f"{MDEX_BASE}/manga/{manga_id}?includes[]=cover_art"
+    try:
+        with urlrequest.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read())
+    except Exception as e:
+        raise HTTPException(404, str(e))
+    attr = data["data"]["attributes"]
+    title = (attr.get("title") or {}).get("en") or next(iter((attr.get("title") or {}).values()), "Unknown")
+    return {"id": manga_id, "title": title}
+
+
 @app.get("/api/search", response_class=HTMLResponse)
 async def search(request: Request, q: str = ""):
     if len(q) < 2:
