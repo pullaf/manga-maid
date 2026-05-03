@@ -34,7 +34,7 @@ CONTENT_RATINGS = ["safe", "suggestive", "erotica", "pornographic"]
 # Import shared utilities from manga-fix.py (hyphen in name, use importlib)
 # ---------------------------------------------------------------------------
 _spec = importlib.util.spec_from_file_location(
-    "manga_fix", os.path.join(MANGA_ROOT, "manga-fix.py")
+    "manga_fix", os.path.join(os.path.dirname(os.path.abspath(__file__)), "manga-fix.py")
 )
 _fix = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_fix)
