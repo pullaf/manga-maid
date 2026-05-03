@@ -13,6 +13,7 @@ MANGA_ROOT = os.environ.get("MANGA_ROOT", "/manga")
 CONFIG_FILENAME = ".mangadex.json"
 SYNC_LOG = os.environ.get("SYNC_LOG", "/logs/.sync.log")
 MDEX_BASE = "https://api.mangadex.org"
+CONTENT_RATINGS = ["safe", "suggestive", "erotica", "pornographic"]
 
 _spec = importlib.util.spec_from_file_location("manga_fix", "/app/manga-fix.py")
 _fix = importlib.util.module_from_spec(_spec)
@@ -25,7 +26,7 @@ _sync_running = False
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Library helpers
 # ---------------------------------------------------------------------------
 
 def get_all_series():
@@ -55,14 +56,19 @@ def get_all_series():
     return sorted(series, key=lambda s: s["name"].lower())
 
 
+# ---------------------------------------------------------------------------
+# MangaDex API helpers
+# ---------------------------------------------------------------------------
+
+def _mdex_get(path: str, params: dict) -> dict:
+    url = f"{MDEX_BASE}{path}?" + parse.urlencode(params, doseq=True)
+    with urlrequest.urlopen(url, timeout=15) as resp:
+        return json.loads(resp.read())
+
+
 def mdex_search(query: str):
-    url = f"{MDEX_BASE}/manga?" + parse.urlencode({
-        "title": query, "limit": 10,
-        "includes[]": "cover_art",
-        "order[relevance]": "desc",
-    }, doseq=True)
-    with urlrequest.urlopen(url, timeout=10) as resp:
-        data = json.loads(resp.read())
+    data = _mdex_get("/manga", {"title": query, "limit": 10,
+                                "includes[]": "cover_art", "order[relevance]": "desc"})
     results = []
     for item in data.get("data", []):
         attr = item["attributes"]
@@ -73,14 +79,60 @@ def mdex_search(query: str):
                 fname = (rel.get("attributes") or {}).get("fileName")
                 if fname:
                     cover_url = f"https://uploads.mangadex.org/covers/{item['id']}/{fname}.256.jpg"
-        results.append({
-            "id": item["id"],
-            "title": title,
-            "cover_url": cover_url,
-            "status": attr.get("status", ""),
-            "year": attr.get("year"),
-        })
+        results.append({"id": item["id"], "title": title, "cover_url": cover_url,
+                        "status": attr.get("status", ""), "year": attr.get("year")})
     return results
+
+
+def _lang_chapter_count(manga_id: str, lang: str) -> tuple[str, int]:
+    data = _mdex_get(f"/manga/{manga_id}/feed",
+                     {"translatedLanguage[]": lang, "limit": 0,
+                      "contentRating[]": CONTENT_RATINGS})
+    return lang, data.get("total", 0)
+
+
+async def _fetch_groups(manga_id: str, language: str) -> dict:
+    """Fetch all chapters, aggregate by group. Returns groups list + total unique chapters."""
+    groups: dict[str, set] = {}
+    offset, limit = 0, 100
+    total = 1
+    params = {"translatedLanguage[]": language, "limit": limit,
+              "includes[]": "scanlation_group", "order[chapter]": "asc",
+              "contentRating[]": CONTENT_RATINGS}
+    loop = asyncio.get_event_loop()
+
+    while offset < total and offset < 500:
+        params["offset"] = offset
+        try:
+            data = await loop.run_in_executor(None, lambda p=dict(params): _mdex_get(f"/manga/{manga_id}/feed", p))
+        except Exception:
+            break
+        total = data.get("total", 0)
+        items = data.get("data", [])
+        for item in items:
+            ch_str = item["attributes"].get("chapter")
+            if not ch_str:
+                continue
+            try:
+                ch_num = float(ch_str)
+            except ValueError:
+                continue
+            for rel in item.get("relationships", []):
+                if rel["type"] == "scanlation_group":
+                    name = (rel.get("attributes") or {}).get("name") or "Unknown"
+                    groups.setdefault(name, set()).add(ch_num)
+        offset += len(items)
+        if not items:
+            break
+        await asyncio.sleep(0.2)
+
+    all_chapters = set().union(*groups.values()) if groups else set()
+    total_unique = len(all_chapters)
+    sorted_groups = sorted(
+        [(name, len(chs), len(chs) >= total_unique > 0) for name, chs in groups.items()],
+        key=lambda x: x[1], reverse=True,
+    )
+    return {"groups": sorted_groups, "total_unique": total_unique}
 
 
 # ---------------------------------------------------------------------------
@@ -120,13 +172,11 @@ async def logs_page(request: Request):
     if os.path.exists(SYNC_LOG):
         with open(SYNC_LOG) as f:
             sync_lines = list(reversed(f.readlines()[-200:]))
-
     fix_log_path = os.path.join(MANGA_ROOT, _fix.LOG_FILENAME)
     fix_log = {"renames": [], "deletes": []}
     if os.path.exists(fix_log_path):
         with open(fix_log_path) as f:
             fix_log = json.load(f)
-
     return templates.TemplateResponse(request=request, name="logs.html",
         context={"sync_lines": sync_lines,
                  "renames": list(reversed(fix_log.get("renames", [])))[:50],
@@ -135,68 +185,8 @@ async def logs_page(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# API
+# API — search & manga info
 # ---------------------------------------------------------------------------
-
-@app.get("/api/manga/{manga_id}/groups", response_class=HTMLResponse)
-async def get_manga_groups(request: Request, manga_id: str, language: str = "en"):
-    groups: dict[str, set] = {}
-    offset, limit = 0, 100
-    total = 1
-    params_base = {
-        "translatedLanguage[]": language,
-        "limit": limit,
-        "includes[]": "scanlation_group",
-        "order[chapter]": "asc",
-        "contentRating[]": ["safe", "suggestive", "erotica", "pornographic"],
-    }
-    while offset < total and offset < 500:
-        params_base["offset"] = offset
-        url = f"{MDEX_BASE}/manga/{manga_id}/feed?" + parse.urlencode(params_base, doseq=True)
-        try:
-            with urlrequest.urlopen(url, timeout=30) as resp:
-                data = json.loads(resp.read())
-        except Exception as e:
-            return HTMLResponse(f'<p class="text-red-500 text-sm">API error: {e}</p>')
-        total = data.get("total", 0)
-        items = data.get("data", [])
-        for item in items:
-            ch_str = item["attributes"].get("chapter")
-            if not ch_str:
-                continue
-            try:
-                ch_num = float(ch_str)
-            except ValueError:
-                continue
-            for rel in item.get("relationships", []):
-                if rel["type"] == "scanlation_group":
-                    name = (rel.get("attributes") or {}).get("name") or "Unknown"
-                    groups.setdefault(name, set()).add(ch_num)
-        offset += len(items)
-        if not items:
-            break
-        await asyncio.sleep(0.2)
-
-    sorted_groups = sorted(
-        [(name, len(chs)) for name, chs in groups.items()],
-        key=lambda x: x[1], reverse=True,
-    )
-    return templates.TemplateResponse(request=request, name="partials/group_picker.html",
-        context={"groups": sorted_groups})
-
-
-@app.get("/api/manga/{manga_id}")
-async def get_manga(manga_id: str):
-    url = f"{MDEX_BASE}/manga/{manga_id}?includes[]=cover_art"
-    try:
-        with urlrequest.urlopen(url, timeout=10) as resp:
-            data = json.loads(resp.read())
-    except Exception as e:
-        raise HTTPException(404, str(e))
-    attr = data["data"]["attributes"]
-    title = (attr.get("title") or {}).get("en") or next(iter((attr.get("title") or {}).values()), "Unknown")
-    return {"id": manga_id, "title": title}
-
 
 @app.get("/api/search", response_class=HTMLResponse)
 async def search(request: Request, q: str = ""):
@@ -209,6 +199,61 @@ async def search(request: Request, q: str = ""):
     return templates.TemplateResponse(request=request, name="partials/search_results.html",
         context={"results": results})
 
+
+@app.get("/api/manga/{manga_id}/setup", response_class=HTMLResponse)
+async def get_manga_setup(request: Request, manga_id: str):
+    loop = asyncio.get_event_loop()
+    try:
+        data = await loop.run_in_executor(None, lambda: _mdex_get(
+            f"/manga/{manga_id}", {"includes[]": "cover_art"}))
+    except Exception as e:
+        return HTMLResponse(f'<p class="text-red-500 text-sm">Could not load manga: {e}</p>')
+
+    manga_data = data["data"]
+    attr = manga_data["attributes"]
+    title = (attr.get("title") or {}).get("en") or next(iter((attr.get("title") or {}).values()), "Unknown")
+    status = attr.get("status", "unknown")
+    year = attr.get("year")
+    available_langs = attr.get("availableTranslatedLanguages") or []
+
+    cover_url = None
+    for rel in manga_data.get("relationships", []):
+        if rel["type"] == "cover_art":
+            fname = (rel.get("attributes") or {}).get("fileName")
+            if fname:
+                cover_url = f"https://uploads.mangadex.org/covers/{manga_id}/{fname}.256.jpg"
+
+    # Fetch chapter counts per language in parallel (cap at 10 languages)
+    lang_counts: dict[str, int] = {}
+    if available_langs:
+        tasks = [loop.run_in_executor(None, _lang_chapter_count, manga_id, lang)
+                 for lang in available_langs[:10]]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for r in results:
+            if isinstance(r, tuple) and r[1] > 0:
+                lang_counts[r[0]] = r[1]
+    lang_counts = dict(sorted(lang_counts.items(), key=lambda x: x[1], reverse=True))
+
+    # Fetch groups for the most-translated language
+    default_lang = next(iter(lang_counts), "en")
+    groups_data = await _fetch_groups(manga_id, default_lang)
+
+    return templates.TemplateResponse(request=request, name="partials/manga_setup.html",
+        context={"manga_id": manga_id, "title": title, "status": status, "year": year,
+                 "cover_url": cover_url, "lang_counts": lang_counts,
+                 "default_lang": default_lang, **groups_data})
+
+
+@app.get("/api/manga/{manga_id}/groups", response_class=HTMLResponse)
+async def get_manga_groups(request: Request, manga_id: str, language: str = "en"):
+    groups_data = await _fetch_groups(manga_id, language)
+    return templates.TemplateResponse(request=request, name="partials/group_picker.html",
+        context=groups_data)
+
+
+# ---------------------------------------------------------------------------
+# API — series CRUD
+# ---------------------------------------------------------------------------
 
 @app.post("/api/series")
 async def add_series(
@@ -241,6 +286,10 @@ async def delete_series(path: str):
     return HTMLResponse("")
 
 
+# ---------------------------------------------------------------------------
+# API — sync
+# ---------------------------------------------------------------------------
+
 @app.get("/api/sync/stream")
 async def sync_stream():
     global _sync_running
@@ -272,6 +321,10 @@ async def sync_stream():
                              headers={"Cache-Control": "no-cache"})
 
 
+# ---------------------------------------------------------------------------
+# API — fix
+# ---------------------------------------------------------------------------
+
 @app.post("/api/fix/apply", response_class=HTMLResponse)
 async def apply_fix(
     old_path: str = Form(...),
@@ -288,20 +341,15 @@ async def apply_fix(
 
 
 @app.post("/api/fix/apply-dup", response_class=HTMLResponse)
-async def apply_dup(keep_path: str = Form(...), delete_paths: str = Form(...), needs_rename: str = Form(""), keep_name: str = Form(...)):
+async def apply_dup(keep_path: str = Form(...), delete_paths: str = Form(...),
+                    needs_rename: str = Form(""), keep_name: str = Form(...)):
     log_path = os.path.join(MANGA_ROOT, _fix.LOG_FILENAME)
     log_data = _fix.load_log(log_path)
-    sizes = {}
-    for p in [keep_path] + [x for x in delete_paths.split("|") if x]:
-        if os.path.exists(p):
-            sizes[p] = os.path.getsize(p)
-    group = {
-        "keep_path": keep_path,
-        "keep_name": keep_name,
-        "needs_rename": needs_rename == "true",
-        "delete_paths": [x for x in delete_paths.split("|") if x],
-        "sizes": sizes,
-    }
+    sizes = {p: os.path.getsize(p) for p in [keep_path] + [x for x in delete_paths.split("|") if x]
+             if os.path.exists(p)}
+    group = {"keep_path": keep_path, "keep_name": keep_name,
+              "needs_rename": needs_rename == "true",
+              "delete_paths": [x for x in delete_paths.split("|") if x], "sizes": sizes}
     try:
         _fix.apply_dup_group(group, log_data, log_path)
     except Exception as e:

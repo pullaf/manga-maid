@@ -7,71 +7,43 @@
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
 
-  <!-- Add series -->
+  <!-- Add series: two-phase -->
   <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
     <h2 class="font-semibold text-gray-900 mb-4">Add Series</h2>
 
-    <div class="mb-3">
-      <input type="text" id="url-input" placeholder="Paste MangaDex URL or UUID…"
-             class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
-             oninput="handleUrlPaste(this.value)">
-      <p id="url-status" class="text-xs mt-1 text-gray-400 hidden"></p>
-    </div>
-    <div class="flex items-center gap-2 mb-3">
-      <div class="flex-1 border-t border-gray-200"></div>
-      <span class="text-xs text-gray-400">or search</span>
-      <div class="flex-1 border-t border-gray-200"></div>
-    </div>
-    <div class="mb-3">
-      <input type="text" id="search-input" placeholder="Search MangaDex…"
-             class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
-             hx-get="/api/search" hx-target="#search-results" hx-trigger="keyup changed delay:400ms" name="q">
-    </div>
-    <div id="search-results" class="space-y-2 max-h-72 overflow-y-auto mb-4"></div>
-
-    <form method="post" action="/api/series" id="add-form" class="space-y-4 border-t border-gray-100 pt-4">
-      <input type="hidden" name="manga_id" id="manga_id">
-      <input type="hidden" name="translator" id="translator">
-
-      <div>
-        <label class="block text-xs font-medium text-gray-600 mb-1">Title (folder name)</label>
-        <input type="text" name="title" id="title-input" required
+    <!-- Phase 1: pick manga -->
+    <div id="phase1">
+      <div class="mb-3">
+        <input type="text" id="url-input" placeholder="Paste MangaDex URL or UUID…"
                class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
-               placeholder="Series name">
+               oninput="handleUrlPaste(this.value)">
+        <p id="url-status" class="text-xs mt-1 hidden"></p>
       </div>
-
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1">Language</label>
-          <input type="text" name="language" id="language-input" value="en"
-                 class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
-                 onchange="fetchGroups()">
-        </div>
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1">Skip chapters ≤</label>
-          <input type="number" name="since" value="0" min="0"
-                 class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
-        </div>
+      <div class="flex items-center gap-2 mb-3">
+        <div class="flex-1 border-t border-gray-200"></div>
+        <span class="text-xs text-gray-400">or search</span>
+        <div class="flex-1 border-t border-gray-200"></div>
       </div>
+      <input type="text" id="search-input" placeholder="Search MangaDex…"
+             class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 mb-3"
+             hx-get="/api/search" hx-target="#search-results" hx-trigger="keyup changed delay:400ms" name="q">
+      <div id="search-results" class="space-y-2 max-h-64 overflow-y-auto"></div>
+    </div>
 
-      <div id="group-section" class="hidden">
-        <div class="flex items-center justify-between mb-1.5">
-          <label class="text-xs font-medium text-gray-600">Scanlation group</label>
-          <span id="selected-group-label" class="text-xs text-violet-600 font-medium"></span>
-        </div>
-        <div id="groups-loading" class="hidden text-xs text-gray-400 py-1">Fetching groups…</div>
-        <div id="group-picker" class="max-h-48 overflow-y-auto space-y-1.5"></div>
+    <!-- Phase 2: setup form (loaded via HTMX) -->
+    <div id="phase2" class="hidden">
+      <div id="setup-loading" class="flex items-center gap-2 text-xs text-gray-400 py-4">
+        <span class="inline-block w-2 h-2 rounded-full bg-violet-400 animate-pulse"></span>
+        Loading manga details…
       </div>
-
-      <button type="submit" id="add-btn" disabled
-              class="w-full bg-violet-600 disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-violet-700 text-white text-sm font-medium py-2 rounded-lg transition-colors">
-        Add Series
-      </button>
-    </form>
+      <div id="setup-form"></div>
+      <button type="button" onclick="resetToPhase1()"
+              class="mt-3 text-xs text-gray-400 hover:text-gray-600">← Pick a different manga</button>
+    </div>
   </div>
 
   <!-- Series list -->
-  <div class="space-y-3" id="series-list">
+  <div class="space-y-3">
     {% if not series %}
     <p class="text-gray-400 text-sm text-center py-12">No series tracked yet.</p>
     {% endif %}
@@ -101,65 +73,67 @@
 <script>
   const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
-  function selectManga(id, title) {
-    document.getElementById('manga_id').value = id;
-    document.getElementById('title-input').value = title;
-    document.getElementById('add-btn').disabled = false;
-    fetchGroups();
+  async function loadSetup(mangaId) {
+    document.getElementById('phase1').classList.add('hidden');
+    document.getElementById('phase2').classList.remove('hidden');
+    document.getElementById('setup-loading').classList.remove('hidden');
+    document.getElementById('setup-form').innerHTML = '';
+
+    const resp = await fetch(`/api/manga/${mangaId}/setup`);
+    document.getElementById('setup-loading').classList.add('hidden');
+    document.getElementById('setup-form').innerHTML = await resp.text();
+    htmx.process(document.getElementById('setup-form'));
   }
 
-  async function fetchGroups() {
-    const mangaId = document.getElementById('manga_id').value;
-    if (!mangaId) return;
-    const lang = document.getElementById('language-input').value || 'en';
-    const section = document.getElementById('group-section');
-    const loading = document.getElementById('groups-loading');
-    const picker = document.getElementById('group-picker');
-    section.classList.remove('hidden');
-    loading.classList.remove('hidden');
-    picker.innerHTML = '';
-    document.getElementById('translator').value = '';
-    document.getElementById('selected-group-label').textContent = '';
-    const resp = await fetch(`/api/manga/${mangaId}/groups?language=${lang}`);
-    loading.classList.add('hidden');
-    picker.innerHTML = await resp.text();
-  }
-
-  function selectGroup(card) {
-    document.querySelectorAll('.group-card').forEach(c => c.classList.remove('border-violet-500', 'bg-violet-50'));
-    card.classList.add('border-violet-500', 'bg-violet-50');
-    const group = card.dataset.group;
-    document.getElementById('translator').value = group;
-    document.getElementById('selected-group-label').textContent = group || 'any';
+  function resetToPhase1() {
+    document.getElementById('phase1').classList.remove('hidden');
+    document.getElementById('phase2').classList.add('hidden');
+    document.getElementById('setup-form').innerHTML = '';
+    document.getElementById('url-input').value = '';
+    document.getElementById('url-status').classList.add('hidden');
+    document.getElementById('search-results').innerHTML = '';
   }
 
   async function handleUrlPaste(value) {
     const status = document.getElementById('url-status');
     const match = value.match(UUID_RE);
     if (!match) { status.classList.add('hidden'); return; }
-    const uuid = match[0];
-    status.textContent = 'Fetching…';
-    status.classList.remove('hidden', 'text-red-500', 'text-green-600');
-    status.classList.add('text-gray-400');
+    status.textContent = 'Found UUID, loading…';
+    status.className = 'text-xs mt-1 text-gray-400';
     try {
-      const resp = await fetch(`/api/manga/${uuid}`);
-      if (!resp.ok) throw new Error('Not found');
-      const data = await resp.json();
-      selectManga(data.id, data.title);
-      status.textContent = '✓ ' + data.title;
-      status.classList.replace('text-gray-400', 'text-green-600');
-    } catch (e) {
-      status.textContent = '✗ Could not find manga';
-      status.classList.replace('text-gray-400', 'text-red-500');
+      await loadSetup(match[0]);
+    } catch(e) {
+      status.textContent = '✗ Could not load manga';
+      status.className = 'text-xs mt-1 text-red-500';
     }
   }
 
-  document.getElementById('search-results').addEventListener('click', function(e) {
+  document.getElementById('search-results').addEventListener('click', async function(e) {
     const card = e.target.closest('.search-result');
     if (!card) return;
-    selectManga(card.dataset.id, card.dataset.title);
-    document.querySelectorAll('.search-result').forEach(el => el.classList.remove('border-violet-500', 'bg-violet-50'));
-    card.classList.add('border-violet-500', 'bg-violet-50');
+    await loadSetup(card.dataset.id);
   });
+
+  async function selectLang(btn, lang, mangaId) {
+    document.querySelectorAll('.lang-btn').forEach(b => {
+      b.className = b.className.replace('bg-violet-600 border-violet-600 text-white', 'border-gray-200 text-gray-600 hover:border-violet-400');
+    });
+    btn.className = btn.className.replace('border-gray-200 text-gray-600 hover:border-violet-400', 'bg-violet-600 border-violet-600 text-white');
+    document.getElementById('language-hidden').value = lang;
+    document.getElementById('translator').value = '';
+    document.getElementById('selected-group-label').textContent = '';
+    document.getElementById('groups-loading').classList.remove('hidden');
+    document.getElementById('group-picker').innerHTML = '';
+    const resp = await fetch(`/api/manga/${mangaId}/groups?language=${lang}`);
+    document.getElementById('groups-loading').classList.add('hidden');
+    document.getElementById('group-picker').innerHTML = await resp.text();
+  }
+
+  function selectGroup(card) {
+    document.querySelectorAll('.group-card').forEach(c => c.classList.remove('border-violet-500', 'bg-violet-50'));
+    card.classList.add('border-violet-500', 'bg-violet-50');
+    document.getElementById('translator').value = card.dataset.group;
+    document.getElementById('selected-group-label').textContent = card.dataset.group || 'any';
+  }
 </script>
 {% endblock %}
