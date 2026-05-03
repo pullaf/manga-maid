@@ -13,7 +13,8 @@ RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") \
        https://github.com/aptible/supercronic/releases/download/v${SUPERCRONIC_VERSION}/supercronic-linux-${ARCH} \
     && chmod +x /usr/local/bin/supercronic
 
-RUN pip install --no-cache-dir fastapi uvicorn jinja2 python-multipart
+RUN apk add --no-cache su-exec && \
+    pip install --no-cache-dir fastapi uvicorn jinja2 python-multipart
 
 COPY entrypoint.sh /entrypoint.sh
 COPY manga-fix.py manga-sync.py sync_config.py kavita.py /app/

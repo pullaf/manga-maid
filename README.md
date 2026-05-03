@@ -2,21 +2,38 @@
 
 A containerised toolset that keeps a [Kavita](https://www.kavitareader.com/) manga library in sync with [MangaDex](https://mangadex.org/). Runs on a configurable schedule alongside your existing stack — no cron jobs, no manual downloads, no SSH.
 
+Includes a **web UI** (port `4649`) for managing series, triggering syncs, browsing logs, and configuring Kavita integration.
+
 ---
 
 ## Features
 
-**`manga-sync`** — automatic chapter downloader
+**manga-sync** — automatic chapter downloader
 - Polls the MangaDex API for new chapters on a cron schedule
 - Filters by translator/scanlation group per series
-- Downloads chapters as CBZ via the [`mdx`](https://github.com/arimatakao/mdx) CLI
-- Automatically adds volume labels (`vol. N ch. N`) once a volume is complete on disk
+- Downloads chapters as CBZ (or ZIP/CBR) via the [`mdx`](https://github.com/arimatakao/mdx) CLI
+- Supports volume mode — one file per volume instead of per chapter
+- Automatically adds volume labels (`vol.N ch.N`) once a volume is complete on disk
 - Skips back-catalogue on first run via a configurable `since` chapter
+- Configurable delay between downloads to be polite to the API
 
-**`manga-fix`** — Kavita filename fixer
+**manga-fix** — Kavita filename fixer
 - Fixes filenames that confuse Kavita's parser: malformed brackets, empty volume tags, front-loaded group tags
 - Deduplicates files left behind by download managers (`name (1).cbz`, `name (2).cbz`)
-- Runs automatically after every sync pass; also available interactively
+- Runs automatically after every sync pass; also available through the web UI
+
+**Kavita integration**
+- Auto-trigger a Kavita library scan after every sync
+- Fetch volume cover art from MangaDex and push it to Kavita automatically
+- Configurable via the web UI — just enter your Kavita URL and API key
+
+**Web UI** — dark-themed browser interface at port `4649`
+- Dashboard showing all tracked series with edit/remove controls
+- Add Series: search MangaDex by title or paste a URL, pick language and scanlation group
+- Sync page with live streaming output
+- Fix Files page for interactive filename repair
+- Logs page showing sync history and rename/delete audit trail
+- Settings page for download format, file naming, Kavita integration
 
 ---
 
@@ -28,9 +45,30 @@ A containerised toolset that keeps a [Kavita](https://www.kavitareader.com/) man
 docker pull ghcr.io/pullaf/mangadex-kavita-sync:latest
 ```
 
-### 2. Add a `.mangadex.json` to each series you want to track
+### 2. Add to your compose stack
 
-Place this file inside the series directory (e.g. `manga/Isekai Ojisan/`):
+```yaml
+services:
+  manga-sync:
+    image: ghcr.io/pullaf/mangadex-kavita-sync:latest
+    ports:
+      - "4649:4649"          # web UI
+    environment:
+      PUID: 1000             # run as your user — match your host UID
+      PGID: 1000             # match your host GID
+      SYNC_CRON: "0 */6 * * *"
+      MANGA_ROOT: "/manga"
+    volumes:
+      - /path/to/your/manga:/manga
+      - /path/to/data:/data  # config + logs
+    restart: unless-stopped
+```
+
+Then open `http://your-host:4649` and use the web UI to add series.
+
+### 3. (Optional) Add series manually
+
+Place a `.mangadex.json` inside each series directory:
 
 ```json
 {
@@ -44,26 +82,25 @@ Place this file inside the series directory (e.g. `manga/Isekai Ojisan/`):
 | Field | Required | Description |
 |---|---|---|
 | `id` | Yes | MangaDex title UUID (from the series URL) |
-| `language` | No | Language code. Defaults to `DEFAULT_LANGUAGE` env var (`en`) |
+| `language` | No | Language code, e.g. `en`, `ja`. Defaults to `en` |
 | `translator` | No | Scanlation group name filter. Omit to accept any group |
-| `since` | No | Skip chapters at or below this number — useful to avoid downloading an existing back-catalogue |
+| `since` | No | Skip chapters at or below this number — avoids re-downloading an existing back-catalogue |
 
-Series directories without a `.mangadex.json` are silently skipped.
+---
 
-### 3. Add to your compose stack
+## Volumes
 
-```yaml
-services:
-  manga-sync:
-    image: ghcr.io/pullaf/mangadex-kavita-sync:latest
-    environment:
-      SYNC_CRON: "0 */6 * * *"   # every 6 hours — standard cron syntax
-      DEFAULT_LANGUAGE: "en"
-      MANGA_ROOT: "/manga"
-    volumes:
-      - /path/to/your/manga:/manga
-      - /path/to/logs:/logs      # optional — omit if you don't need persistent logs
-    restart: unless-stopped
+| Mount | Purpose |
+|---|---|
+| `/manga` | Your manga library root. The sync tool recursively finds `.mangadex.json` configs at any depth. |
+| `/data` | Persistent config and logs. Contains `/data/config/settings.json` and `/data/logs/sync.log`. |
+
+```
+/data/
+  config/
+    settings.json   ← web UI settings (download format, Kavita URL/key, etc.)
+  logs/
+    sync.log        ← rolling sync log, trimmed to 5000 lines
 ```
 
 ---
@@ -72,87 +109,103 @@ services:
 
 | Variable | Default | Description |
 |---|---|---|
-| `SYNC_CRON` | `0 */6 * * *` | Cron expression controlling how often the sync runs |
-| `DEFAULT_LANGUAGE` | `en` | Fallback language when a series config omits the `language` field |
-| `SYNC_LOG` | `/logs/.sync.log` | Log file path. Mount a volume at `/logs` to persist it |
+| `PUID` | `0` (root) | UID to run as. Set to your host user's UID so downloaded files are owned correctly. |
+| `PGID` | `0` (root) | GID to run as. |
+| `MANGA_ROOT` | `/manga` | Path inside the container where your library is mounted. |
+| `SYNC_CRON` | `0 */6 * * *` | Cron expression controlling sync frequency. |
+| `DATA_DIR` | `/data` | Base path for config and logs. |
+| `CONFIG_PATH` | `$DATA_DIR/config/settings.json` | Override config file location. |
+| `SYNC_LOG` | `$DATA_DIR/logs/sync.log` | Override log file location. |
+
+### Finding your PUID/PGID
+
+```bash
+id $USER
+# uid=1000(yourname) gid=1000(yourname) ...
+```
 
 ---
 
 ## Library layout
 
-The container expects your library mounted at `MANGA_ROOT` (`/manga` by default). Any folder structure that Kavita accepts will work — the sync tool recursively searches for `.mangadex.json` files at any depth. Flat layout, language-split, genre-split, whatever you have:
+The container expects your library at `MANGA_ROOT`. Any folder structure Kavita accepts works — flat, language-split, genre-split, etc.:
 
 ```
 manga/
-  Isekai Ojisan/              ← flat: series directly under root
+  Isekai Ojisan/              ← flat layout
     .mangadex.json
-    Isekai Ojisan vol. 1 ch. 1.cbz
+    Isekai Ojisan vol.1 ch.1.cbz
 
-  en/                         ← or grouped however you like
-    Isekai Ojisan/
-      .mangadex.json
-      Isekai Ojisan vol. 1 ch. 1.cbz
-  jp/
+  en/                         ← language-split layout
     Isekai Ojisan/
       .mangadex.json
       ...
+  jp/
+    ...
 ```
 
-Only directories that contain a `.mangadex.json` are synced — everything else is ignored.
+Directories without a `.mangadex.json` are silently skipped.
 
 ---
 
-## Volume completion
+## File naming
+
+Downloaded filenames use format codes from the `mdx` CLI. Configure them in Settings:
+
+| Code | Meaning |
+|---|---|
+| `%1` | Language |
+| `%2` | Scanlation group |
+| `%3` | Title |
+| `%4` | Volume number |
+| `%5` | Chapter number |
+| `%6` | Chapter title |
+
+Default chapter pattern: `[%1 %2] %3 vol.%4 ch.%5`  
+Default volume pattern: `[%1 %2] %3 vol.%4`
+
+---
+
+## Volume mode
+
+Enable **Volume mode** in Settings to download one merged file per volume instead of individual chapter files. Uses `mdx`'s `-v` flag. Good for completed series where you want a single archive per volume.
+
+---
+
+## Volume completion (chapter mode)
 
 When all chapters belonging to a volume are present on disk, the sync script automatically renames untagged files from:
 
 ```
-Series ch. 45.cbz
+Series ch.45.cbz
 ```
 to:
 ```
-Series vol. 5 ch. 45.cbz
+Series vol.5 ch.45.cbz
 ```
 
-Volume membership is determined by querying the MangaDex API, so it only triggers when the API reports a complete volume.
+Volume membership is determined by querying the MangaDex API, so it only triggers when the API reports a complete set.
+
+---
+
+## Kavita integration
+
+In the Settings page:
+1. Enter your Kavita server URL (e.g. `http://kavita:5000`)
+2. Enter your API key (Kavita → User Settings → 3rd Party Clients)
+3. Enable **Auto library scan** to trigger a Kavita scan after every sync
+4. Enable **Auto set covers** to push MangaDex volume cover art to Kavita
 
 ---
 
 ## Running manga-fix manually
 
-To run the filename fixer interactively against your library (outside of the automatic sync pass):
-
 ```bash
 # Interactive — walk through each issue
-docker run --rm -it \
-  -e MANGA_ROOT=/manga \
-  -v /path/to/your/manga:/manga \
-  --entrypoint python3 \
-  ghcr.io/pullaf/mangadex-kavita-sync:latest \
-  /app/manga-fix.py
+docker exec -it manga-sync python3 /app/manga-fix.py
 
 # Auto-fix everything without prompts
-docker run --rm \
-  -e MANGA_ROOT=/manga \
-  -v /path/to/your/manga:/manga \
-  --entrypoint python3 \
-  ghcr.io/pullaf/mangadex-kavita-sync:latest \
-  /app/manga-fix.py --yes
-```
-
----
-
-## Testing
-
-Run a one-off sync against your library to verify everything is working before committing to the schedule:
-
-```bash
-docker run --rm \
-  -e MANGA_ROOT=/manga \
-  -v /path/to/your/manga:/manga \
-  --entrypoint python3 \
-  ghcr.io/pullaf/mangadex-kavita-sync:latest \
-  /app/manga-sync.py
+docker exec manga-sync python3 /app/manga-fix.py --yes
 ```
 
 ---
