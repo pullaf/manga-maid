@@ -74,6 +74,7 @@ services:
 | `SYNC_CRON` | `0 */6 * * *` | Cron expression controlling how often the sync runs |
 | `MANGA_ROOT` | `/manga` | Path inside the container where the library is mounted |
 | `DEFAULT_LANGUAGE` | `en` | Fallback language when a series config omits the `language` field |
+| `SYNC_LOG` | `$MANGA_ROOT/.sync.log` | Path for the sync log file. Override if the volume isn't writable by the container user |
 
 ---
 

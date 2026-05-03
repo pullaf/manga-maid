@@ -26,7 +26,7 @@ from urllib import parse, request
 MANGA_ROOT = os.environ.get("MANGA_ROOT", os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_LANGUAGE = os.environ.get("DEFAULT_LANGUAGE", "en")
 CONFIG_FILENAME = ".mangadex.json"
-SYNC_LOG = os.path.join(MANGA_ROOT, ".sync.log")
+SYNC_LOG = os.environ.get("SYNC_LOG", os.path.join(MANGA_ROOT, ".sync.log"))
 MDEX_BASE = "https://api.mangadex.org"
 CONTENT_RATINGS = ["safe", "suggestive", "erotica", "pornographic"]
 
@@ -50,8 +50,11 @@ MANGA_EXTENSIONS = _fix.MANGA_EXTENSIONS
 def _log(msg):
     line = f"{datetime.now().isoformat(timespec='seconds')} {msg}"
     print(line, flush=True)
-    with open(SYNC_LOG, "a") as f:
-        f.write(line + "\n")
+    try:
+        with open(SYNC_LOG, "a") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
 
 
 # ---------------------------------------------------------------------------
