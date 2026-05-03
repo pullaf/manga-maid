@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="mb-8">
+  <h1 class="text-2xl font-bold">Sync</h1>
+  <p class="text-gray-500 text-sm mt-1">Download new chapters from MangaDex</p>
+</div>
+
+<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 max-w-2xl">
+  <div class="flex items-center gap-3 mb-6">
+    <button id="sync-btn" onclick="startSync()"
+            class="bg-violet-600 hover:bg-violet-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
+      Run Sync
+    </button>
+    <span id="sync-status" class="text-sm text-gray-500"></span>
+  </div>
+
+  <div id="output"
+       class="hidden bg-slate-900 text-slate-100 rounded-lg p-4 font-mono text-xs leading-relaxed max-h-[60vh] overflow-y-auto space-y-0.5">
+  </div>
+</div>
+
+<script>
+let source = null;
+
+function startSync() {
+  if (source) return;
+  const btn = document.getElementById('sync-btn');
+  const status = document.getElementById('sync-status');
+  const output = document.getElementById('output');
+
+  btn.disabled = true;
+  status.textContent = 'Running…';
+  output.classList.remove('hidden');
+  output.innerHTML = '';
+
+  source = new EventSource('/api/sync/stream');
+
+  source.onmessage = function(e) {
+    if (e.data === '[done]') {
+      source.close();
+      source = null;
+      btn.disabled = false;
+      status.textContent = 'Done.';
+      return;
+    }
+    const line = document.createElement('div');
+    line.textContent = e.data;
+    if (e.data.includes('downloaded=') || e.data.includes('→')) line.classList.add('text-green-400');
+    else if (e.data.includes('[warn]') || e.data.includes('error')) line.classList.add('text-yellow-400');
+    output.appendChild(line);
+    output.scrollTop = output.scrollHeight;
+  };
+
+  source.onerror = function() {
+    source.close();
+    source = null;
+    btn.disabled = false;
+    status.textContent = 'Connection lost.';
+  };
+}
+</script>
+{% endblock %}

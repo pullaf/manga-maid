@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="mb-8">
+  <h1 class="text-2xl font-bold">Series</h1>
+  <p class="text-gray-500 text-sm mt-1">Manage your tracked series</p>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+
+  <!-- Add series -->
+  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+    <h2 class="font-semibold text-gray-900 mb-4">Add Series</h2>
+
+    <div class="mb-3">
+      <input type="text" id="search-input" placeholder="Search MangaDex…"
+             class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+             hx-get="/api/search" hx-target="#search-results" hx-trigger="keyup changed delay:400ms" name="q">
+    </div>
+    <div id="search-results" class="space-y-2 max-h-72 overflow-y-auto mb-4"></div>
+
+    <form method="post" action="/api/series" id="add-form" class="space-y-3 border-t border-gray-100 pt-4">
+      <input type="hidden" name="manga_id" id="manga_id">
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Title (folder name)</label>
+        <input type="text" name="title" id="title-input" required
+               class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+               placeholder="Series name">
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Language</label>
+          <input type="text" name="language" value="en"
+                 class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1">Skip chapters ≤</label>
+          <input type="number" name="since" value="0" min="0"
+                 class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+        </div>
+      </div>
+      <div>
+        <label class="block text-xs font-medium text-gray-600 mb-1">Scanlation group (optional)</label>
+        <input type="text" name="translator"
+               class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400"
+               placeholder="e.g. Kirei Cake">
+      </div>
+      <button type="submit" id="add-btn" disabled
+              class="w-full bg-violet-600 disabled:bg-gray-300 disabled:cursor-not-allowed hover:bg-violet-700 text-white text-sm font-medium py-2 rounded-lg transition-colors">
+        Add Series
+      </button>
+    </form>
+  </div>
+
+  <!-- Series list -->
+  <div class="space-y-3" id="series-list">
+    {% if not series %}
+    <p class="text-gray-400 text-sm text-center py-12">No series tracked yet.</p>
+    {% endif %}
+    {% for s in series %}
+    <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex items-center justify-between group" id="series-{{ loop.index }}">
+      <div class="min-w-0">
+        <div class="font-medium text-sm truncate">{{ s.name }}</div>
+        <div class="text-xs text-gray-500 mt-0.5">
+          {{ s.config.get("language", "en") }}
+          {% if s.config.get("translator") %} · {{ s.config.translator }}{% endif %}
+          {% if s.last_chapter %} · ch. {{ s.last_chapter | int }}{% endif %}
+        </div>
+      </div>
+      <button class="text-red-400 hover:text-red-600 text-xs px-2 py-1 opacity-0 group-hover:opacity-100 transition-opacity"
+              hx-delete="/api/series/{{ s.path }}"
+              hx-target="closest div[id^='series-']"
+              hx-swap="outerHTML"
+              hx-confirm="Remove '{{ s.name }}' from sync? (files stay on disk)">
+        Remove
+      </button>
+    </div>
+    {% endfor %}
+  </div>
+
+</div>
+
+<script>
+  document.getElementById('search-results').addEventListener('click', function(e) {
+    const card = e.target.closest('.search-result');
+    if (!card) return;
+    document.getElementById('manga_id').value = card.dataset.id;
+    document.getElementById('title-input').value = card.dataset.title;
+    document.getElementById('add-btn').disabled = false;
+    document.querySelectorAll('.search-result').forEach(el => el.classList.remove('border-violet-500', 'bg-violet-50'));
+    card.classList.add('border-violet-500', 'bg-violet-50');
+  });
+</script>
+{% endblock %}

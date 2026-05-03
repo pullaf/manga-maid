@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>manga-kavita</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { theme: { extend: { colors: { accent: "#7c3aed" } } } }</script>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+</head>
+<body class="bg-gray-50 text-gray-900 flex h-screen overflow-hidden">
+
+  <aside class="w-52 bg-slate-900 text-white flex flex-col shrink-0">
+    <div class="px-5 py-4 border-b border-slate-700">
+      <span class="text-violet-400 font-bold tracking-wide text-sm">manga-kavita</span>
+    </div>
+    <nav class="flex-1 p-3 space-y-0.5 text-sm">
+      {% set links = [("dashboard", "/", "Dashboard"), ("series", "/series", "Series"), ("sync", "/sync", "Sync"), ("fix", "/fix", "Fix Files"), ("logs", "/logs", "Logs")] %}
+      {% for key, href, label in links %}
+      <a href="{{ href }}"
+         class="flex items-center px-3 py-2 rounded-lg transition-colors
+                {% if active == key %}bg-violet-600 text-white{% else %}text-slate-400 hover:bg-slate-800 hover:text-white{% endif %}">
+        {{ label }}
+      </a>
+      {% endfor %}
+    </nav>
+    <div class="px-5 py-3 border-t border-slate-700 text-xs text-slate-500">よろしく :4649</div>
+  </aside>
+
+  <main class="flex-1 overflow-auto p-8">
+    {% block content %}{% endblock %}
+  </main>
+
+</body>
+</html>
