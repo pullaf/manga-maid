@@ -369,6 +369,9 @@ def run_fix_pass(series_dir):
 
 def kavita_set_covers(client, series_dir, config):
     series_name = os.path.basename(series_dir)
+    if not config.get("id"):
+        _log(f"[kavita] skipping covers for {series_name}: no MangaDex ID in config")
+        return
     try:
         covers = fetch_volume_covers(config["id"])
         if not covers:
@@ -396,7 +399,7 @@ def kavita_set_covers(client, series_dir, config):
 # Main
 # ---------------------------------------------------------------------------
 
-def main():
+def main(series_filter=None, covers_only=False):
     _rotate_log()
     settings = load_settings()
     volume_mode = settings.get("volume_mode", False)
@@ -405,12 +408,21 @@ def main():
     kavita_client = None
     kavita_url = settings.get("kavita_url", "").strip()
     kavita_key = settings.get("kavita_api_key", "").strip()
-    if kavita_url and kavita_key and (settings.get("auto_scan") or settings.get("auto_covers")):
+    if kavita_url and kavita_key and (settings.get("auto_scan") or settings.get("auto_covers") or covers_only):
         kavita_client = KavitaClient(kavita_url, kavita_key)
+
+    dirs = [series_filter] if series_filter else all_series_dirs()
+
+    if covers_only:
+        for series_dir in dirs:
+            config = load_config(series_dir)
+            if config and kavita_client:
+                kavita_set_covers(kavita_client, series_dir, config)
+        return
 
     any_downloaded = False
 
-    for series_dir in all_series_dirs():
+    for series_dir in dirs:
         config = load_config(series_dir)
         if not config:
             continue
@@ -526,4 +538,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--series", help="Absolute path to a single series directory")
+    parser.add_argument("--covers-only", action="store_true")
+    args = parser.parse_args()
+    main(series_filter=args.series, covers_only=args.covers_only)

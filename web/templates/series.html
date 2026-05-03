@@ -5,6 +5,23 @@
   <p class="text-sm mt-1" style="color:var(--text-muted)">Search MangaDex and add a series to sync</p>
 </div>
 
+{% if no_root_folders %}
+<div class="max-w-lg">
+  <div class="rounded-xl border p-10 text-center"
+       style="background:var(--surface);border-color:rgba(251,191,36,.3)">
+    <div class="mb-4 text-4xl opacity-30">📁</div>
+    <p class="font-semibold text-sm" style="color:#fbbf24;font-family:'Syne',sans-serif">Root folder required</p>
+    <p class="text-xs mt-2 mb-6" style="color:var(--text-muted)">
+      You need at least one root folder before you can add or track series.
+    </p>
+    <a href="/settings"
+       class="inline-block text-xs font-semibold px-5 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition-colors"
+       style="font-family:'Syne',sans-serif">
+      Go to Settings →
+    </a>
+  </div>
+</div>
+{% else %}
 <div class="max-w-lg">
   <div class="rounded-xl border p-6" style="background:var(--surface);border-color:var(--border)">
 
@@ -86,4 +103,5 @@
     await loadSetup(card.dataset.id);
   });
 </script>
+{% endif %}
 {% endblock %}

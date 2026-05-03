@@ -1,5 +1,6 @@
 <form hx-put="/api/series/{{ path }}" hx-swap="none" class="space-y-4">
   <input type="hidden" name="manga_id" value="{{ manga_id }}">
+  <input type="hidden" name="cover_filename" value="{{ current_cover_filename }}">
   <input type="hidden" name="translator" id="translator" value="{{ current_translator }}">
 
   <!-- Header -->
@@ -52,7 +53,7 @@
     <div>
       <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Location</label>
       <select name="subfolder" class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
-        <option value="" {% if not subfolder %}selected{% endif %}>(root)</option>
+        {% if not subdirs %}<option value="" {% if not subfolder %}selected{% endif %}>(root)</option>{% endif %}
         {% for d in subdirs %}
         <option value="{{ d }}" {% if d == subfolder %}selected{% endif %}>{{ d }}/</option>
         {% endfor %}

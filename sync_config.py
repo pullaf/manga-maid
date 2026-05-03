@@ -4,6 +4,7 @@ import os
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/data/config/settings.json")
 
 DEFAULTS = {
+    "root_folders": [],
     "file_format": "cbz",
     "chapter_naming": "[%1 %2] %3 vol.%4 ch.%5",
     "volume_naming": "[%1 %2] %3 vol.%4",

@@ -7,6 +7,49 @@
 
 <form method="post" action="/api/settings" class="space-y-6 max-w-xl">
 
+  <!-- Root Folders -->
+  <div class="rounded-xl border p-6 space-y-4"
+       style="background:var(--surface);border-color:{% if not settings.root_folders %}rgba(251,191,36,.35){% else %}var(--border){% endif %}">
+    <div>
+      <h2 class="font-semibold text-sm flex items-center gap-2" style="font-family:'Syne',sans-serif;color:var(--text)">
+        Root Folders
+        <span class="text-xs px-1.5 py-0.5 rounded font-semibold"
+              style="background:rgba(251,191,36,.12);color:#fbbf24;font-family:'Syne',sans-serif">required</span>
+      </h2>
+      <p class="text-xs mt-1" style="color:var(--text-dim)">
+        Only series inside these directories are monitored and synced.
+        Paths are relative to <code class="font-mono" style="color:var(--text-muted)">{{ manga_root }}</code>.
+      </p>
+    </div>
+
+    <div id="rf-list" class="space-y-2"></div>
+
+    <p id="rf-empty" class="text-xs py-3 text-center rounded-lg border border-dashed"
+       style="color:var(--text-dim);border-color:rgba(251,191,36,.3){% if settings.root_folders %};display:none{% endif %}">
+      No root folders added yet
+    </p>
+
+    <div class="flex gap-2">
+      <input type="text" id="rf-add-input" list="rf-datalist"
+             placeholder="{{ manga_root }}/…"
+             class="flex-1 border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+      <datalist id="rf-datalist">
+        <option value="{{ manga_root }}"></option>
+        {% for d in available_dirs %}
+        <option value="{{ manga_root }}/{{ d }}"></option>
+        {% endfor %}
+      </datalist>
+      <button type="button" onclick="rfAdd()"
+              class="shrink-0 text-xs font-semibold border rounded-lg px-4 py-2.5 transition-colors"
+              style="border-color:var(--accent);color:var(--accent-light);font-family:'Syne',sans-serif">
+        Add
+      </button>
+    </div>
+
+    <input type="hidden" name="root_folders_json" id="rf-json"
+           value="{{ settings.root_folders | tojson }}">
+  </div>
+
   <!-- Download -->
   <div class="rounded-xl border p-6 space-y-5" style="background:var(--surface);border-color:var(--border)">
     <h2 class="font-semibold text-sm" style="font-family:'Syne',sans-serif;color:var(--text)">Download</h2>
@@ -61,7 +104,7 @@
           <span class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform
                        {{ 'translate-x-6' if settings.volume_mode else 'translate-x-1' }}"></span>
         </button>
-        <input type="hidden" name="volume_mode" id="volume_mode_input"
+        <input type="hidden" name="volume_mode" id="input_volume_mode"
                value="{{ 'true' if settings.volume_mode else 'false' }}">
       </label>
 
@@ -135,6 +178,58 @@
 </form>
 
 <script>
+/* ── Root folders ─────────────────────────── */
+const _rfRoot = {{ manga_root | tojson }};
+let _rfFolders = {{ settings.root_folders | tojson }};
+
+function rfRender() {
+  const list = document.getElementById('rf-list');
+  const empty = document.getElementById('rf-empty');
+  list.innerHTML = _rfFolders.map((rf, i) => {
+    const display = rf === '' ? _rfRoot : `${_rfRoot}/${rf}`;
+    return `
+    <div class="flex items-center gap-2">
+      <div class="flex-1 text-sm font-mono px-3 py-2 rounded-lg"
+           style="background:var(--surface-alt);color:var(--text-muted);border:1px solid var(--border-mid)">
+        ${display}
+      </div>
+      <button type="button" onclick="rfRemove(${i})"
+              class="shrink-0 text-xs px-2.5 py-1.5 rounded-lg border transition-colors"
+              style="border-color:var(--border-mid);color:var(--danger)">
+        Remove
+      </button>
+    </div>`;
+  }).join('');
+  empty.style.display = _rfFolders.length ? 'none' : '';
+  document.getElementById('rf-json').value = JSON.stringify(_rfFolders);
+  const section = document.getElementById('rf-json').closest('.rounded-xl');
+  section.style.borderColor = _rfFolders.length ? 'var(--border)' : 'rgba(251,191,36,.35)';
+}
+
+function rfAdd() {
+  const inp = document.getElementById('rf-add-input');
+  let val = inp.value.trim().replace(/\/+$/, '');
+  if (val === _rfRoot) val = '';
+  else if (val.startsWith(_rfRoot + '/')) val = val.slice(_rfRoot.length + 1);
+  else val = val.replace(/^\/+|\/+$/g, '');
+  if (_rfFolders.includes(val)) { inp.value = ''; return; }
+  _rfFolders.push(val);
+  inp.value = '';
+  rfRender();
+}
+
+function rfRemove(i) {
+  _rfFolders.splice(i, 1);
+  rfRender();
+}
+
+document.getElementById('rf-add-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); rfAdd(); }
+});
+
+rfRender();
+
+/* ── Toggles ──────────────────────────────── */
 function toggleSwitch(btn) {
   const on = btn.dataset.on !== 'true';
   btn.dataset.on = on;
@@ -150,7 +245,6 @@ function toggleVolMode(btn) {
   btn.dataset.name = 'volume_mode';
   toggleSwitch(btn);
   const on = btn.dataset.on === 'true';
-  document.getElementById('volume_mode_input').value = on;
   document.getElementById('volume-naming-row').classList.toggle('hidden', !on);
 }
 

@@ -1,15 +1,235 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="mb-8 flex items-center justify-between">
+
+<style>
+  /* ── Cover images ──────────────────────────────────────── */
+  .cover-img {
+    object-fit: cover;
+    background: var(--surface-alt);
+  }
+  .cover-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, var(--surface-alt) 0%, var(--border-mid) 100%);
+    color: var(--border-hi);
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    letter-spacing: .04em;
+    user-select: none;
+  }
+
+  /* ── Grid view ─────────────────────────────────────────── */
+  #series-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: 18px;
+  }
+  .sc-grid {
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    overflow: hidden;
+    transition: border-color .18s, box-shadow .18s, transform .15s;
+    cursor: default;
+  }
+  .sc-grid:hover {
+    border-color: var(--border-hi);
+    box-shadow: 0 12px 40px rgba(0,0,0,.55);
+    transform: translateY(-3px);
+  }
+  .sc-grid .cover-wrap {
+    width: 100%;
+    aspect-ratio: 2/3;
+    overflow: hidden;
+    position: relative;
+  }
+  .sc-grid .cover-wrap img,
+  .sc-grid .cover-wrap .cover-placeholder {
+    width: 100%; height: 100%;
+  }
+  .sc-grid .cover-overlay {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 60%;
+    background: linear-gradient(to top, rgba(8,8,16,.97) 0%, rgba(8,8,16,.4) 55%, transparent 100%);
+    pointer-events: none;
+  }
+  .sc-grid .cover-title {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    padding: 12px 13px 10px;
+    font-family: 'Syne', sans-serif;
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1.3;
+    color: #ede9f8;
+    pointer-events: none;
+  }
+  .sc-grid .card-body {
+    padding: 10px 13px 13px;
+  }
+  .sc-grid .card-meta {
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+    min-height: 18px;
+  }
+  .sc-grid .card-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+
+  /* ── List view ─────────────────────────────────────────── */
+  #series-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .sc-list {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 18px;
+    background: var(--surface);
+    transition: background .15s;
+  }
+  .sc-list:hover { background: var(--surface-hover); }
+  .sc-list + .sc-list { border-top: 1px solid var(--border); }
+  .sc-list .cover-wrap {
+    width: 50px;
+    height: 70px;
+    border-radius: 7px;
+    overflow: hidden;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,.4);
+  }
+  .sc-list .cover-wrap img,
+  .sc-list .cover-wrap .cover-placeholder {
+    width: 100%; height: 100%;
+  }
+  .sc-list .list-name {
+    flex: 1;
+    min-width: 0;
+    font-size: 15px;
+    font-weight: 600;
+    font-family: 'Syne', sans-serif;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sc-list .list-meta {
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .sc-list .list-actions {
+    display: flex;
+    gap: 7px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  @media (max-width: 640px) {
+    .sc-list .list-meta { display: none; }
+    #series-grid { grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); gap: 12px; }
+  }
+
+  /* ── Toggle button ─────────────────────────────────────── */
+  .view-toggle {
+    display: flex;
+    background: var(--surface-alt);
+    border: 1px solid var(--border-mid);
+    border-radius: 9px;
+    padding: 4px;
+    gap: 3px;
+  }
+  .view-toggle button {
+    width: 32px; height: 30px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 6px;
+    border: none; background: transparent; cursor: pointer;
+    color: var(--text-dim); transition: background .13s, color .13s;
+  }
+  .view-toggle button.active {
+    background: var(--surface);
+    color: var(--accent-light);
+    box-shadow: 0 1px 4px rgba(0,0,0,.35);
+  }
+  .view-toggle button:not(.active):hover { color: var(--text-muted); }
+
+  /* ── Action buttons ────────────────────────────────────── */
+  .act-btn {
+    font-size: 12px;
+    font-weight: 500;
+    padding: 4px 11px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    transition: background .13s, color .13s;
+    background: var(--surface-alt);
+    font-family: 'DM Sans', sans-serif;
+  }
+  .act-btn.accent { color: var(--accent-light); }
+  .act-btn.muted  { color: var(--text-muted); }
+  .act-btn.danger { color: var(--danger); }
+  .act-btn:hover  { background: var(--border-mid); }
+  .act-btn:disabled { opacity: .45; cursor: wait; }
+
+  /* ── Inline log strip ──────────────────────────────────── */
+  .series-log {
+    font-size: 11px;
+    font-family: monospace;
+    line-height: 1.55;
+    color: var(--text-dim);
+    background: var(--surface-alt);
+    border-radius: 7px;
+    padding: 7px 10px;
+    max-height: 110px;
+    overflow-y: auto;
+  }
+</style>
+
+<div class="mb-6 flex items-center justify-between gap-3">
   <div>
     <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Dashboard</h1>
-    <p class="text-sm mt-1" style="color:var(--text-muted)">{{ series|length }} series tracked</p>
+    <p class="text-sm mt-0.5" style="color:var(--text-muted)">{{ series|length }} series tracked</p>
   </div>
-  <a href="/sync"
-     class="bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
-     style="font-family:'Syne',sans-serif;letter-spacing:.02em">
-    Sync All
-  </a>
+  <div class="flex items-center gap-3">
+    <div class="view-toggle">
+      <button id="btn-grid" onclick="setView('grid')" title="Grid view">
+        <svg viewBox="0 0 14 14" fill="currentColor" width="13" height="13">
+          <rect x="0" y="0" width="6" height="6" rx="1.2"/>
+          <rect x="8" y="0" width="6" height="6" rx="1.2"/>
+          <rect x="0" y="8" width="6" height="6" rx="1.2"/>
+          <rect x="8" y="8" width="6" height="6" rx="1.2"/>
+        </svg>
+      </button>
+      <button id="btn-list" onclick="setView('list')" title="List view">
+        <svg viewBox="0 0 14 12" fill="currentColor" width="14" height="12">
+          <rect x="0" y="0" width="14" height="2.5" rx="1.2"/>
+          <rect x="0" y="4.75" width="14" height="2.5" rx="1.2"/>
+          <rect x="0" y="9.5" width="14" height="2.5" rx="1.2"/>
+        </svg>
+      </button>
+    </div>
+    <a href="/sync"
+       class="bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+       style="font-family:'Syne',sans-serif;letter-spacing:.02em">
+      Sync All
+    </a>
+  </div>
 </div>
 
 {% if not series %}
@@ -19,41 +239,203 @@
   <a href="/series" class="text-violet-400 hover:text-violet-300 text-sm mt-2 inline-block transition-colors">Add your first series →</a>
 </div>
 {% else %}
-<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+
+<!-- ─── Grid view ─────────────────────────────────────── -->
+<div id="series-grid">
   {% for s in series %}
-  <div class="series-card rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
-    <div class="flex items-start justify-between gap-1">
-      <div class="font-semibold truncate flex-1 text-sm leading-snug" style="color:var(--text);font-family:'Syne',sans-serif" title="{{ s.name }}">{{ s.name }}</div>
-      <div class="flex gap-2 shrink-0 ml-1">
-        <button class="text-xs font-medium transition-colors" style="color:var(--accent-light)"
+  <div class="sc-grid series-item"
+       data-path="{{ s.path }}"
+       data-has-cover="{{ 'yes' if s.cover_url else 'no' }}">
+    <div class="cover-wrap">
+      {% if s.cover_url %}
+      <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.name }}"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <div class="cover-placeholder" style="display:none;font-size:22px">{{ s.name[0].upper() }}</div>
+      {% else %}
+      <div class="cover-placeholder cover-lazy" data-path="{{ s.path }}" style="font-size:32px">{{ s.name[0].upper() }}</div>
+      {% endif %}
+      <div class="cover-overlay"></div>
+      <div class="cover-title">{{ s.name }}</div>
+    </div>
+    <div class="card-body">
+      <div class="card-meta">
+        <span style="color:var(--accent-light);font-weight:600">{{ s.config.get("language","en").upper() }}</span>
+        {% if s.config.get("translator") %}
+        <span style="color:var(--border-hi)">·</span>
+        <span class="truncate" style="max-width:90px" title="{{ s.config.translator }}">{{ s.config.translator }}</span>
+        {% endif %}
+      </div>
+      <div class="card-meta mt-1" style="color:var(--text-dim)">
+        {% if s.last_chapter %}ch.{{ s.last_chapter | int }}{% else %}no chapters{% endif %}
+        <span style="color:var(--border)">·</span>
+        {{ s.chapter_count }} file{{ 's' if s.chapter_count != 1 }}
+      </div>
+      <div class="card-actions">
+        <button class="act-btn accent" onclick="seriesSync(this)" data-path="{{ s.path }}">Sync</button>
+        <button class="act-btn muted"  onclick="seriesCovers(this)" data-path="{{ s.path }}">Covers</button>
+        <button class="act-btn muted"
                 hx-get="/api/series/{{ s.path }}/edit"
                 hx-target="#modal-body"
-                hx-swap="innerHTML">
-          Edit
-        </button>
-        <button class="text-xs font-medium transition-colors" style="color:var(--danger)"
+                hx-swap="innerHTML">Edit</button>
+        <button class="act-btn danger"
                 hx-delete="/api/series/{{ s.path }}"
-                hx-target="closest .series-card"
+                hx-target="closest .series-item"
                 hx-swap="outerHTML"
-                hx-confirm="Remove '{{ s.name }}' from sync? (files stay on disk)">
-          Remove
-        </button>
+                hx-confirm="Remove '{{ s.name }}' from sync? (files stay on disk)">✕</button>
       </div>
-    </div>
-    <div class="mt-1 text-xs" style="color:var(--text-dim)">
-      {{ s.config.get("language", "en").upper() }}
-      {% if s.config.get("translator") %}<span style="color:var(--border-hi)"> · </span><span style="color:var(--text-muted)">{{ s.config.translator }}</span>{% endif %}
-    </div>
-    <div class="mt-3 pt-3 flex items-center justify-between" style="border-top:1px solid var(--border)">
-      <span class="text-xs" style="color:var(--text-muted)">
-        {% if s.last_chapter %}ch.{{ s.last_chapter | int }}{% else %}no chapters{% endif %}
-      </span>
-      <span class="text-xs px-2 py-0.5 rounded-full" style="background:var(--surface-alt);color:var(--text-muted)">
-        {{ s.chapter_count }} file{{ 's' if s.chapter_count != 1 }}
-      </span>
+      <div class="series-log hidden mt-2"></div>
     </div>
   </div>
   {% endfor %}
 </div>
+
+<!-- ─── List view ─────────────────────────────────────── -->
+<div id="series-list" style="display:none">
+  {% for s in series %}
+  <div class="sc-list series-item"
+       data-path="{{ s.path }}"
+       data-has-cover="{{ 'yes' if s.cover_url else 'no' }}">
+    <div class="cover-wrap">
+      {% if s.cover_url %}
+      <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.name }}"
+           onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+      <div class="cover-placeholder" style="display:none;font-size:13px">{{ s.name[0].upper() }}</div>
+      {% else %}
+      <div class="cover-placeholder cover-lazy" data-path="{{ s.path }}" style="font-size:18px">{{ s.name[0].upper() }}</div>
+      {% endif %}
+    </div>
+    <div class="list-name" title="{{ s.name }}">{{ s.name }}</div>
+    <div class="list-meta">
+      <span style="color:var(--accent-light);font-weight:600">{{ s.config.get("language","en").upper() }}</span>
+      {% if s.config.get("translator") %}
+      <span style="color:var(--text-dim)" title="{{ s.config.translator }}">{{ s.config.translator | truncate(20, True) }}</span>
+      {% endif %}
+      <span>{% if s.last_chapter %}ch.{{ s.last_chapter | int }}{% else %}—{% endif %}</span>
+      <span>{{ s.chapter_count }} file{{ 's' if s.chapter_count != 1 }}</span>
+    </div>
+    <div class="list-actions">
+      <button class="act-btn accent" onclick="seriesSync(this)" data-path="{{ s.path }}">Sync</button>
+      <button class="act-btn muted"  onclick="seriesCovers(this)" data-path="{{ s.path }}">Covers</button>
+      <button class="act-btn muted"
+              hx-get="/api/series/{{ s.path }}/edit"
+              hx-target="#modal-body"
+              hx-swap="innerHTML">Edit</button>
+      <button class="act-btn danger"
+              hx-delete="/api/series/{{ s.path }}"
+              hx-target="closest .series-item"
+              hx-swap="outerHTML"
+              hx-confirm="Remove '{{ s.name }}' from sync? (files stay on disk)">✕</button>
+    </div>
+    <div class="series-log hidden" style="width:100%;margin-top:4px"></div>
+  </div>
+  {% endfor %}
+</div>
+
 {% endif %}
+
+<script>
+/* ── View toggle ─────────────────────────────────────── */
+function setView(v) {
+  const isGrid = v === 'grid';
+  document.getElementById('series-grid').style.display = isGrid ? '' : 'none';
+  document.getElementById('series-list').style.display = isGrid ? 'none' : '';
+  document.getElementById('btn-grid').classList.toggle('active', isGrid);
+  document.getElementById('btn-list').classList.toggle('active', !isGrid);
+  localStorage.setItem('dash-view', v);
+}
+(function() {
+  const saved = localStorage.getItem('dash-view') || 'grid';
+  setView(saved);
+})();
+
+/* ── Lazy cover loading ──────────────────────────────── */
+(function() {
+  const lazyCover = document.querySelectorAll('.cover-lazy');
+  if (!lazyCover.length) return;
+
+  const fetched = {};
+
+  function loadCover(el) {
+    const path = el.dataset.path;
+    if (fetched[path]) return;
+    fetched[path] = true;
+
+    fetch('/api/series/' + path.split('/').map(encodeURIComponent).join('/') + '/cover')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data || !data.url) return;
+        // Replace all placeholders for this path with actual images
+        document.querySelectorAll('.cover-lazy[data-path="' + path + '"]').forEach(placeholder => {
+          const img = document.createElement('img');
+          img.src = data.url;
+          img.className = 'cover-img';
+          img.loading = 'lazy';
+          img.alt = '';
+          img.style.width = '100%';
+          img.style.height = '100%';
+          img.onerror = () => img.remove();
+          placeholder.replaceWith(img);
+        });
+      })
+      .catch(() => {});
+  }
+
+  const obs = new IntersectionObserver(entries => {
+    entries.forEach(e => { if (e.isIntersecting) { loadCover(e.target); obs.unobserve(e.target); } });
+  }, { rootMargin: '200px' });
+
+  lazyCover.forEach(el => obs.observe(el));
+})();
+
+/* ── Series action helpers ───────────────────────────── */
+function _seriesUrl(path, suffix) {
+  return '/api/series/' + path.split('/').map(encodeURIComponent).join('/') + suffix;
+}
+
+function _getLog(btn) {
+  return btn.closest('.series-item').querySelector('.series-log');
+}
+
+function seriesSync(btn) {
+  const path = btn.dataset.path;
+  const log = _getLog(btn);
+  btn.disabled = true;
+  btn.textContent = '…';
+  log.innerHTML = '';
+  log.classList.remove('hidden');
+
+  const es = new EventSource(_seriesUrl(path, '/sync/stream'));
+  es.onmessage = (e) => {
+    if (e.data === '[done]') {
+      es.close();
+      btn.disabled = false;
+      btn.textContent = 'Sync';
+      return;
+    }
+    const line = document.createElement('div');
+    line.textContent = e.data;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  };
+  es.onerror = () => { es.close(); btn.disabled = false; btn.textContent = 'Sync'; };
+}
+
+async function seriesCovers(btn) {
+  const path = btn.dataset.path;
+  const log = _getLog(btn);
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const resp = await fetch(_seriesUrl(path, '/covers'), {method: 'POST'});
+    const data = await resp.json();
+    log.textContent = data.output || data.error || (data.ok ? 'Done' : 'Failed');
+    log.classList.remove('hidden');
+    btn.textContent = data.ok ? '✓' : '✗';
+    setTimeout(() => { btn.textContent = 'Covers'; btn.disabled = false; }, 3000);
+  } catch(e) {
+    btn.textContent = '✗';
+    setTimeout(() => { btn.textContent = 'Covers'; btn.disabled = false; }, 2000);
+  }
+}
+</script>
 {% endblock %}

@@ -1,5 +1,6 @@
 <form method="post" action="/api/series" class="space-y-5">
   <input type="hidden" name="manga_id" value="{{ manga_id }}">
+  <input type="hidden" name="cover_filename" value="{{ cover_filename }}">
   <input type="hidden" name="translator" id="translator">
   <input type="hidden" name="language" id="language-hidden" value="{{ default_lang }}">
 
@@ -61,9 +62,9 @@
     <div>
       <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Location</label>
       <select name="subfolder" class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
-        <option value="">(root)</option>
+        {% if not subdirs %}<option value="">(root)</option>{% endif %}
         {% for d in subdirs %}
-        <option value="{{ d }}">{{ d }}/</option>
+        <option value="{{ d }}" {% if loop.first %}selected{% endif %}>{{ d }}/</option>
         {% endfor %}
       </select>
     </div>

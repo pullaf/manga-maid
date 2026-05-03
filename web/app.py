@@ -35,41 +35,51 @@ _sync_running = False
 # Library helpers
 # ---------------------------------------------------------------------------
 
-def get_subdirs():
-    """Immediate subdirectories of MANGA_ROOT, used as location options."""
-    try:
-        return sorted(
-            d for d in os.listdir(MANGA_ROOT)
-            if os.path.isdir(os.path.join(MANGA_ROOT, d)) and not d.startswith(".")
-        )
-    except OSError:
-        return []
+def _root_folders() -> list[str]:
+    return [rf for rf in (load_settings().get("root_folders") or []) if rf is not None]
+
+
+def get_subdirs() -> list[str]:
+    """Configured root folders used as location options in pickers."""
+    return _root_folders()
 
 
 def get_all_series():
+    roots = _root_folders()
+    scan_roots = [MANGA_ROOT if rf == "" else os.path.join(MANGA_ROOT, rf) for rf in roots] if roots else [MANGA_ROOT]
     series = []
-    for root, subdirs, files in os.walk(MANGA_ROOT):
-        subdirs.sort()
-        if CONFIG_FILENAME in files:
-            try:
-                with open(os.path.join(root, CONFIG_FILENAME)) as f:
-                    config = json.load(f)
-            except Exception:
-                config = {}
-            chapters = set()
-            for fname in os.listdir(root):
-                if os.path.splitext(fname)[1].lower() in _fix.MANGA_EXTENSIONS:
-                    m = _fix.CH_RE.search(fname)
-                    if m:
-                        chapters.add(float(m.group(1)))
-            series.append({
-                "path": os.path.relpath(root, MANGA_ROOT),
-                "name": os.path.basename(root),
-                "config": config,
-                "last_chapter": max(chapters) if chapters else None,
-                "chapter_count": len(chapters),
-            })
-            subdirs.clear()
+    for scan_root in scan_roots:
+        if not os.path.isdir(scan_root):
+            continue
+        for root, subdirs, files in os.walk(scan_root):
+            subdirs.sort()
+            if CONFIG_FILENAME in files:
+                try:
+                    with open(os.path.join(root, CONFIG_FILENAME)) as f:
+                        config = json.load(f)
+                except Exception:
+                    config = {}
+                if not config.get("id"):
+                    continue
+                chapters = set()
+                for fname in os.listdir(root):
+                    if os.path.splitext(fname)[1].lower() in _fix.MANGA_EXTENSIONS:
+                        m = _fix.CH_RE.search(fname)
+                        if m:
+                            chapters.add(float(m.group(1)))
+                cover_url = None
+                if config.get("cover_filename"):
+                    cover_url = (f"https://uploads.mangadex.org/covers/"
+                                 f"{config['id']}/{config['cover_filename']}.256.jpg")
+                series.append({
+                    "path": os.path.relpath(root, MANGA_ROOT),
+                    "name": os.path.basename(root),
+                    "config": config,
+                    "last_chapter": max(chapters) if chapters else None,
+                    "chapter_count": len(chapters),
+                    "cover_url": cover_url,
+                })
+                subdirs.clear()
     return sorted(series, key=lambda s: s["name"].lower())
 
 
@@ -174,32 +184,50 @@ async def _fetch_groups(manga_id: str, language: str) -> dict:
 # Pages
 # ---------------------------------------------------------------------------
 
+def _no_rf() -> bool:
+    return not _root_folders()
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     return templates.TemplateResponse(request=request, name="index.html",
-        context={"series": get_all_series(), "active": "dashboard"})
+        context={"series": get_all_series(), "active": "dashboard",
+                 "no_root_folders": _no_rf()})
 
 
 @app.get("/series", response_class=HTMLResponse)
 async def series_page(request: Request):
     return templates.TemplateResponse(request=request, name="series.html",
-        context={"series": get_all_series(), "active": "series"})
+        context={"active": "series", "no_root_folders": _no_rf()})
 
 
 @app.get("/sync", response_class=HTMLResponse)
 async def sync_page(request: Request):
     return templates.TemplateResponse(request=request, name="sync.html",
-        context={"active": "sync"})
+        context={"active": "sync", "no_root_folders": _no_rf()})
 
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
+    settings = load_settings()
+    configured = settings.get("root_folders") or []
+    try:
+        existing = sorted(
+            d for d in os.listdir(MANGA_ROOT)
+            if os.path.isdir(os.path.join(MANGA_ROOT, d)) and not d.startswith(".")
+        )
+    except OSError:
+        existing = []
+    available_dirs = [d for d in existing if d not in configured]
     return templates.TemplateResponse(request=request, name="settings.html",
-        context={"settings": load_settings(), "active": "settings"})
+        context={"settings": settings, "active": "settings",
+                 "available_dirs": available_dirs, "manga_root": MANGA_ROOT,
+                 "no_root_folders": not configured})
 
 
 @app.post("/api/settings")
 async def save_settings_endpoint(
+    root_folders_json: str = Form("[]"),
     file_format: str = Form("cbz"),
     chapter_naming: str = Form("%3 ch.%5"),
     volume_naming: str = Form("%3 vol.%4"),
@@ -210,7 +238,19 @@ async def save_settings_endpoint(
     kavita_url: str = Form(""),
     kavita_api_key: str = Form(""),
 ):
+    try:
+        root_folders = json.loads(root_folders_json)
+        if not isinstance(root_folders, list):
+            root_folders = []
+    except Exception:
+        root_folders = []
+    seen: list[str] = []
+    for rf in root_folders:
+        clean = rf.strip("/").strip() if isinstance(rf, str) else ""
+        if clean not in seen:
+            seen.append(clean)
     save_settings({
+        "root_folders": seen,
         "file_format": file_format,
         "chapter_naming": chapter_naming,
         "volume_naming": volume_naming,
@@ -234,8 +274,8 @@ async def test_kavita(request: Request):
     loop = asyncio.get_event_loop()
     try:
         client = KavitaClient(url, key)
-        ok = await loop.run_in_executor(None, client.ping)
-        return JSONResponse({"ok": ok, "error": None if ok else "No response from server"})
+        await loop.run_in_executor(None, client._authenticate)
+        return JSONResponse({"ok": True, "error": None})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)})
 
@@ -246,7 +286,8 @@ async def fix_page(request: Request):
     dup_groups = _fix.scan_duplicates(MANGA_ROOT)
     return templates.TemplateResponse(request=request, name="fix.html",
         context={"issues": issues, "dup_groups": dup_groups,
-                 "active": "fix", "total": len(issues) + len(dup_groups)})
+                 "active": "fix", "total": len(issues) + len(dup_groups),
+                 "no_root_folders": _no_rf()})
 
 
 @app.get("/logs", response_class=HTMLResponse)
@@ -264,7 +305,7 @@ async def logs_page(request: Request):
         context={"sync_lines": sync_lines,
                  "renames": list(reversed(fix_log.get("renames", [])))[:50],
                  "deletes": list(reversed(fix_log.get("deletes", [])))[:20],
-                 "active": "logs"})
+                 "active": "logs", "no_root_folders": _no_rf()})
 
 
 # ---------------------------------------------------------------------------
@@ -300,10 +341,12 @@ async def get_manga_setup(request: Request, manga_id: str):
     available_langs = attr.get("availableTranslatedLanguages") or []
 
     cover_url = None
+    cover_filename = None
     for rel in manga_data.get("relationships", []):
         if rel["type"] == "cover_art":
             fname = (rel.get("attributes") or {}).get("fileName")
             if fname:
+                cover_filename = fname
                 cover_url = f"https://uploads.mangadex.org/covers/{manga_id}/{fname}.256.jpg"
 
     # Fetch chapter counts per language in parallel (cap at 10 languages)
@@ -323,8 +366,9 @@ async def get_manga_setup(request: Request, manga_id: str):
 
     return templates.TemplateResponse(request=request, name="partials/manga_setup.html",
         context={"manga_id": manga_id, "title": title, "status": status, "year": year,
-                 "cover_url": cover_url, "lang_counts": lang_counts,
-                 "default_lang": default_lang, "subdirs": get_subdirs(), **groups_data})
+                 "cover_url": cover_url, "cover_filename": cover_filename or "",
+                 "lang_counts": lang_counts, "default_lang": default_lang,
+                 "subdirs": get_subdirs(), **groups_data})
 
 
 @app.get("/api/manga/{manga_id}/langs")
@@ -366,6 +410,7 @@ async def add_series(
     language: str = Form("en"),
     translator: str = Form(""),
     since: str = Form("0"),
+    cover_filename: str = Form(""),
 ):
     parts = [p for p in [subfolder.strip("/"), title] if p]
     series_dir = os.path.join(MANGA_ROOT, *parts)
@@ -377,9 +422,46 @@ async def add_series(
         config["since"] = float(since) if since else 0
     except ValueError:
         config["since"] = 0
+    if cover_filename.strip():
+        config["cover_filename"] = cover_filename.strip()
     with open(os.path.join(series_dir, CONFIG_FILENAME), "w") as f:
         json.dump(config, f, indent=2)
     return RedirectResponse("/series", status_code=303)
+
+
+@app.get("/api/series/{path:path}/cover")
+async def series_cover(path: str):
+    config_path = os.path.join(MANGA_ROOT, path, CONFIG_FILENAME)
+    if not os.path.exists(config_path):
+        raise HTTPException(404)
+    with open(config_path) as f:
+        config = json.load(f)
+    if config.get("cover_filename"):
+        return JSONResponse({"url": (f"https://uploads.mangadex.org/covers/"
+                                     f"{config['id']}/{config['cover_filename']}.256.jpg")})
+    manga_id = config.get("id")
+    if not manga_id:
+        raise HTTPException(404)
+    loop = asyncio.get_event_loop()
+    try:
+        data = await loop.run_in_executor(None, lambda: _mdex_get(
+            f"/manga/{manga_id}", {"includes[]": "cover_art"}))
+    except Exception as e:
+        raise HTTPException(502, str(e))
+    cover_filename = None
+    for rel in data["data"].get("relationships", []):
+        if rel["type"] == "cover_art":
+            fname = (rel.get("attributes") or {}).get("fileName")
+            if fname:
+                cover_filename = fname
+                break
+    if not cover_filename:
+        raise HTTPException(404)
+    config["cover_filename"] = cover_filename
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+    return JSONResponse({"url": (f"https://uploads.mangadex.org/covers/"
+                                  f"{manga_id}/{cover_filename}.256.jpg")})
 
 
 @app.delete("/api/series/{path:path}", response_class=HTMLResponse)
@@ -409,6 +491,7 @@ async def edit_series_form(request: Request, path: str):
                  "current_lang": config.get("language", "en"),
                  "current_translator": config.get("translator", ""),
                  "current_since": config.get("since", 0),
+                 "current_cover_filename": config.get("cover_filename", ""),
                  "folder_name": folder_name, "subfolder": subfolder,
                  "subdirs": get_subdirs()})
 
@@ -422,6 +505,7 @@ async def update_series(
     language: str = Form("en"),
     translator: str = Form(""),
     since: str = Form("0"),
+    cover_filename: str = Form(""),
 ):
     old_dir = os.path.join(MANGA_ROOT, path)
     if not os.path.exists(os.path.join(old_dir, CONFIG_FILENAME)):
@@ -441,6 +525,8 @@ async def update_series(
         config["since"] = float(since) if since else 0
     except ValueError:
         config["since"] = 0
+    if cover_filename.strip():
+        config["cover_filename"] = cover_filename.strip()
     with open(os.path.join(new_dir, CONFIG_FILENAME), "w") as f:
         json.dump(config, f, indent=2)
 
@@ -480,6 +566,63 @@ async def sync_stream():
 
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/api/series/{path:path}/sync/stream")
+async def series_sync_stream(path: str):
+    series_dir = os.path.join(MANGA_ROOT, path)
+
+    async def generate():
+        global _sync_running
+        if not os.path.exists(os.path.join(series_dir, CONFIG_FILENAME)):
+            yield "data: Series not found\n\n"
+            yield "data: [done]\n\n"
+            return
+        if _sync_running:
+            yield "data: ⚠ Sync already in progress\n\n"
+            yield "data: [done]\n\n"
+            return
+        _sync_running = True
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "python3", "/app/manga-sync.py", "--series", series_dir,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env={**os.environ, "MANGA_ROOT": MANGA_ROOT},
+            )
+            async for line in proc.stdout:
+                text = line.decode().strip()
+                if text:
+                    yield f"data: {text}\n\n"
+            await proc.wait()
+        finally:
+            _sync_running = False
+        yield "data: [done]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/api/series/{path:path}/covers")
+async def series_covers(path: str):
+    series_dir = os.path.join(MANGA_ROOT, path)
+    if not os.path.exists(os.path.join(series_dir, CONFIG_FILENAME)):
+        raise HTTPException(404, "Series not found")
+    settings = load_settings()
+    if not settings.get("kavita_url") or not settings.get("kavita_api_key"):
+        return JSONResponse({"ok": False, "error": "Kavita not configured in settings"})
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "python3", "/app/manga-sync.py", "--series", series_dir, "--covers-only",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env={**os.environ, "MANGA_ROOT": MANGA_ROOT},
+        )
+        stdout, _ = await proc.communicate()
+        output = stdout.decode().strip()
+        return JSONResponse({"ok": proc.returncode == 0, "output": output})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)})
 
 
 # ---------------------------------------------------------------------------
