@@ -1,0 +1,6 @@
+en/
+jp/
+__pycache__/
+*.pyc
+.manga-fix-log.json
+.sync.log
