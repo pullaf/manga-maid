@@ -1,0 +1,17 @@
+{% if groups %}
+<div class="space-y-1.5">
+  <div class="group-card flex items-center justify-between p-2.5 rounded-lg border border-gray-200 hover:border-violet-400 hover:bg-violet-50 cursor-pointer transition-colors"
+       data-group="" onclick="selectGroup(this)">
+    <span class="text-sm text-gray-500 italic">Any group — no filter</span>
+  </div>
+  {% for name, count in groups %}
+  <div class="group-card flex items-center justify-between p-2.5 rounded-lg border border-gray-200 hover:border-violet-400 hover:bg-violet-50 cursor-pointer transition-colors"
+       data-group="{{ name }}" onclick="selectGroup(this)">
+    <span class="text-sm font-medium truncate">{{ name }}</span>
+    <span class="text-xs text-gray-400 shrink-0 ml-2">{{ count }} ch.</span>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="text-sm text-gray-400 py-2">No chapters found for this language.</p>
+{% endif %}

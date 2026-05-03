@@ -138,6 +138,53 @@ async def logs_page(request: Request):
 # API
 # ---------------------------------------------------------------------------
 
+@app.get("/api/manga/{manga_id}/groups", response_class=HTMLResponse)
+async def get_manga_groups(request: Request, manga_id: str, language: str = "en"):
+    groups: dict[str, set] = {}
+    offset, limit = 0, 100
+    total = 1
+    params_base = {
+        "translatedLanguage[]": language,
+        "limit": limit,
+        "includes[]": "scanlation_group",
+        "order[chapter]": "asc",
+        "contentRating[]": ["safe", "suggestive", "erotica", "pornographic"],
+    }
+    while offset < total and offset < 500:
+        params_base["offset"] = offset
+        url = f"{MDEX_BASE}/manga/{manga_id}/feed?" + parse.urlencode(params_base, doseq=True)
+        try:
+            with urlrequest.urlopen(url, timeout=30) as resp:
+                data = json.loads(resp.read())
+        except Exception as e:
+            return HTMLResponse(f'<p class="text-red-500 text-sm">API error: {e}</p>')
+        total = data.get("total", 0)
+        items = data.get("data", [])
+        for item in items:
+            ch_str = item["attributes"].get("chapter")
+            if not ch_str:
+                continue
+            try:
+                ch_num = float(ch_str)
+            except ValueError:
+                continue
+            for rel in item.get("relationships", []):
+                if rel["type"] == "scanlation_group":
+                    name = (rel.get("attributes") or {}).get("name") or "Unknown"
+                    groups.setdefault(name, set()).add(ch_num)
+        offset += len(items)
+        if not items:
+            break
+        await asyncio.sleep(0.2)
+
+    sorted_groups = sorted(
+        [(name, len(chs)) for name, chs in groups.items()],
+        key=lambda x: x[1], reverse=True,
+    )
+    return templates.TemplateResponse(request=request, name="partials/group_picker.html",
+        context={"groups": sorted_groups})
+
+
 @app.get("/api/manga/{manga_id}")
 async def get_manga(manga_id: str):
     url = f"{MDEX_BASE}/manga/{manga_id}?includes[]=cover_art"
