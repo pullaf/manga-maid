@@ -16,6 +16,6 @@ RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") \
 COPY entrypoint.sh /entrypoint.sh
 COPY manga-fix.py manga-sync.py /app/
 
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh && mkdir -p /logs
 
 ENTRYPOINT ["/entrypoint.sh"]

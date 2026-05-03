@@ -4,7 +4,7 @@ services:
     environment:
       SYNC_CRON: "0 */6 * * *"   # every 6 hours — standard cron syntax
       DEFAULT_LANGUAGE: "en"
-      MANGA_ROOT: "/manga"
     volumes:
       - /path/to/your/manga:/manga
+      - /path/to/logs:/logs      # optional — omit if you don't need persistent logs
     restart: unless-stopped
