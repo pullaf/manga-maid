@@ -1,0 +1,10 @@
+services:
+  manga-sync:
+    image: ghcr.io/pullaf/mangadex-kavita-sync:latest
+    environment:
+      SYNC_CRON: "0 */6 * * *"   # every 6 hours — standard cron syntax
+      DEFAULT_LANGUAGE: "en"
+      MANGA_ROOT: "/manga"
+    volumes:
+      - /path/to/your/manga:/manga
+    restart: unless-stopped
