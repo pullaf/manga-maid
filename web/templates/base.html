@@ -4,43 +4,339 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>manga-kavita</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%237c3aed'/><rect x='4' y='4' width='10' height='14' rx='2' fill='white' opacity='.92'/><rect x='16' y='4' width='12' height='7' rx='2' fill='white' opacity='.92'/><rect x='16' y='13' width='12' height='5' rx='2' fill='white' opacity='.65'/><rect x='4' y='20' width='24' height='8' rx='2' fill='white' opacity='.82'/></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@500;600;700;800&family=DM+Sans:opsz,wght@9..40,300;400;500;600&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
-  <script>tailwind.config = { theme: { extend: { colors: { accent: "#7c3aed" } } } }</script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['Syne', 'sans-serif'],
+            sans: ['DM Sans', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-</head>
-<body class="bg-gray-50 text-gray-900 flex h-screen overflow-hidden">
+  <style>
+    /* ── Custom properties ─────────────────────────────────── */
+    :root {
+      --bg:            #0b0b12;
+      --surface:       #111119;
+      --surface-hover: #16161f;
+      --surface-alt:   #1c1c28;
+      --border:        #1e1e2c;
+      --border-mid:    #282838;
+      --border-hi:     #3a3a54;
+      --text:          #dddaed;
+      --text-muted:    #6b6882;
+      --text-dim:      #3a3850;
+      --accent:        #8b5cf6;
+      --accent-light:  #a78bfa;
+      --accent-glow:   rgba(139,92,246,.12);
+      --success:       #34d399;
+      --warning:       #fbbf24;
+      --danger:        #f87171;
+    }
 
-  <aside class="w-52 bg-slate-900 text-white flex flex-col shrink-0">
-    <div class="px-5 py-4 border-b border-slate-700">
-      <span class="text-violet-400 font-bold tracking-wide text-sm">manga-kavita</span>
+    /* ── Base ──────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Scrollbars ────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border-mid); border-radius: 99px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--border-hi); }
+
+    /* ── Tailwind colour overrides ─────────────────────────── */
+    .bg-gray-50  { background: var(--bg) !important; }
+    .bg-white    { background: var(--surface) !important; }
+    .bg-gray-100, .bg-gray-200 { background: var(--surface-alt) !important; }
+    .hover\:bg-gray-200:hover  { background: var(--border-mid) !important; }
+    .hover\:shadow-md:hover    { box-shadow: 0 4px 20px rgba(0,0,0,.5) !important; }
+
+    .text-gray-900, .text-gray-800, .text-gray-700 { color: var(--text) !important; }
+    .text-gray-600 { color: var(--text-muted) !important; }
+    .text-gray-500 { color: var(--text-muted) !important; }
+    .text-gray-400 { color: var(--text-dim) !important; }
+
+    .border-gray-50  { border-color: var(--border) !important; }
+    .border-gray-100 { border-color: var(--border) !important; }
+    .border-gray-200 { border-color: var(--border-mid) !important; }
+    .divide-gray-100 > * + * { border-color: var(--border) !important; }
+
+    .shadow-sm { box-shadow: 0 1px 4px rgba(0,0,0,.4) !important; }
+
+    /* status badges */
+    .bg-green-100 { background: rgba(52,211,153,.1) !important; }
+    .text-green-700 { color: #34d399 !important; }
+    .bg-blue-100  { background: rgba(96,165,250,.1) !important; }
+    .text-blue-700 { color: #60a5fa !important; }
+    .bg-gray-100.text-gray-600 { background: var(--surface-alt) !important; }
+
+    /* violet tinted hover surfaces */
+    .hover\:bg-violet-50:hover { background: rgba(139,92,246,.08) !important; }
+    .hover\:border-violet-400:hover { border-color: var(--accent) !important; }
+    .border-violet-200 { border-color: rgba(139,92,246,.35) !important; }
+    .border-violet-300 { border-color: rgba(139,92,246,.5) !important; }
+
+    /* ── Forms ─────────────────────────────────────────────── */
+    input, select, textarea {
+      background: var(--surface-alt) !important;
+      border-color: var(--border-mid) !important;
+      color: var(--text) !important;
+      color-scheme: dark;
+    }
+    input::placeholder, textarea::placeholder { color: var(--text-dim) !important; }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent) !important;
+      box-shadow: 0 0 0 3px rgba(139,92,246,.15) !important;
+    }
+    select option { background: #1c1c28; color: var(--text); }
+
+    /* ── Cards ─────────────────────────────────────────────── */
+    .card, .bg-white.rounded-xl {
+      transition: border-color .18s ease, box-shadow .18s ease;
+    }
+    .bg-white.rounded-xl:hover {
+      border-color: var(--border-mid) !important;
+    }
+    .series-card {
+      transition: border-color .18s ease, box-shadow .18s ease;
+    }
+    .series-card:hover {
+      border-color: var(--border-hi) !important;
+      box-shadow: 0 0 0 1px var(--border-mid), 0 8px 24px rgba(0,0,0,.35) !important;
+    }
+
+    /* ── Sidebar nav ───────────────────────────────────────── */
+    .nav-link {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 12px;
+      border-radius: 8px;
+      font-family: 'Syne', sans-serif;
+      font-size: 12.5px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: background .15s, color .15s;
+      position: relative;
+    }
+    .nav-link:hover {
+      background: rgba(255,255,255,.04);
+      color: var(--text);
+    }
+    .nav-link--active {
+      background: var(--accent-glow);
+      color: var(--accent-light);
+    }
+    .nav-link--active::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 3px;
+      height: 55%;
+      background: var(--accent);
+      border-radius: 0 3px 3px 0;
+    }
+
+    /* ── Mobile header ─────────────────────────────────────── */
+    .mobile-header {
+      background: #0d0d15;
+      border-bottom: 1px solid var(--border);
+    }
+
+    /* ── Sidebar ───────────────────────────────────────────── */
+    #sidebar {
+      background: #0d0d15;
+      border-right: 1px solid var(--border);
+    }
+
+    /* ── Modal ─────────────────────────────────────────────── */
+    #edit-modal > div:first-child {
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(4px);
+    }
+    #modal-body-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border-mid);
+      border-radius: 16px;
+      box-shadow: 0 24px 64px rgba(0,0,0,.6);
+    }
+
+    /* ── Terminal output ───────────────────────────────────── */
+    .bg-slate-900 {
+      background: #090910 !important;
+      border: 1px solid var(--border) !important;
+    }
+
+    /* ── Search results ────────────────────────────────────── */
+    .search-result {
+      border-color: var(--border-mid) !important;
+      background: var(--surface);
+    }
+    .search-result:hover {
+      border-color: var(--accent) !important;
+      background: var(--accent-glow) !important;
+    }
+
+    /* ── Group cards ───────────────────────────────────────── */
+    .group-card {
+      border-color: var(--border-mid) !important;
+      background: var(--surface);
+      transition: border-color .15s, background .15s;
+    }
+    .group-card:hover {
+      border-color: var(--accent) !important;
+      background: var(--accent-glow) !important;
+    }
+    .group-card.border-violet-500 {
+      border-color: var(--accent) !important;
+      background: var(--accent-glow) !important;
+    }
+
+    /* ── Heading typography ────────────────────────────────── */
+    h1 { font-family: 'Syne', sans-serif; font-weight: 700; letter-spacing: -.02em; }
+    h2 { font-family: 'Syne', sans-serif; font-weight: 600; }
+
+    /* ── Issue/dup cards ───────────────────────────────────── */
+    .issue-card, .dup-card {
+      background: var(--surface) !important;
+      border-color: var(--border) !important;
+    }
+
+    /* ── Logs ──────────────────────────────────────────────── */
+    .border-b.border-gray-50 { border-color: var(--border) !important; }
+
+    /* ── Lang buttons ──────────────────────────────────────── */
+    .lang-btn {
+      border-color: var(--border-mid) !important;
+      background: var(--surface-alt) !important;
+      color: var(--text-muted) !important;
+      transition: border-color .15s, background .15s, color .15s;
+    }
+    .lang-btn:hover {
+      border-color: var(--accent) !important;
+      color: var(--text) !important;
+    }
+    .lang-btn.bg-violet-600 {
+      background: var(--accent) !important;
+      border-color: var(--accent) !important;
+      color: white !important;
+    }
+
+    /* ── Safe area for mobile ──────────────────────────────── */
+    @supports (padding-bottom: env(safe-area-inset-bottom)) {
+      .safe-top { padding-top: env(safe-area-inset-top); }
+    }
+  </style>
+</head>
+<body class="flex h-screen overflow-hidden">
+
+  <!-- Mobile header -->
+  <header class="mobile-header md:hidden fixed top-0 inset-x-0 z-50 flex items-center justify-between px-4 h-13" style="height:52px">
+    <div class="flex items-center gap-2.5">
+      <svg viewBox="0 0 20 20" class="w-5 h-5 shrink-0" fill="none">
+        <rect x="1" y="1" width="7" height="9" rx="1.5" fill="#7c3aed" opacity=".9"/>
+        <rect x="10" y="1" width="9" height="4.5" rx="1.5" fill="#7c3aed" opacity=".9"/>
+        <rect x="10" y="7" width="9" height="3" rx="1.5" fill="#7c3aed" opacity=".6"/>
+        <rect x="1" y="12" width="18" height="7" rx="1.5" fill="#7c3aed" opacity=".75"/>
+      </svg>
+      <span class="font-display font-700 text-sm text-violet-400 tracking-wide" style="font-family:'Syne',sans-serif;font-weight:700">manga-kavita</span>
     </div>
-    <nav class="flex-1 p-3 space-y-0.5 text-sm">
-      {% set links = [("dashboard", "/", "Dashboard"), ("series", "/series", "Add Series"), ("sync", "/sync", "Sync"), ("fix", "/fix", "Fix Files"), ("logs", "/logs", "Logs"), ("settings", "/settings", "Settings")] %}
+    <button onclick="openMobileNav()" class="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition-colors" aria-label="Menu">
+      <svg viewBox="0 0 18 14" fill="currentColor" class="w-4.5" style="width:18px;height:14px">
+        <rect width="18" height="2" rx="1"/>
+        <rect y="6" width="18" height="2" rx="1"/>
+        <rect y="12" width="18" height="2" rx="1"/>
+      </svg>
+    </button>
+  </header>
+
+  <!-- Sidebar overlay (mobile) -->
+  <div id="sidebar-overlay" class="md:hidden hidden fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" onclick="closeMobileNav()"></div>
+
+  <!-- Sidebar -->
+  <aside id="sidebar" class="fixed md:static inset-y-0 left-0 z-50 w-48 flex flex-col shrink-0
+              -translate-x-full md:translate-x-0 transition-transform duration-200 ease-out">
+    <!-- Logo -->
+    <div class="flex items-center gap-3 px-4 py-5 border-b border-white/5">
+      <svg viewBox="0 0 20 20" class="w-6 h-6 shrink-0" fill="none">
+        <rect x="1" y="1" width="7" height="9" rx="1.5" fill="#7c3aed" opacity=".9"/>
+        <rect x="10" y="1" width="9" height="4.5" rx="1.5" fill="#7c3aed" opacity=".9"/>
+        <rect x="10" y="7" width="9" height="3" rx="1.5" fill="#7c3aed" opacity=".6"/>
+        <rect x="1" y="12" width="18" height="7" rx="1.5" fill="#7c3aed" opacity=".75"/>
+      </svg>
+      <span style="font-family:'Syne',sans-serif;font-weight:700;font-size:13px;letter-spacing:.01em" class="text-violet-400">manga-kavita</span>
+    </div>
+
+    <!-- Nav -->
+    <nav class="flex-1 p-2.5 space-y-0.5 overflow-y-auto">
+      {% set links = [
+        ("dashboard", "/",         "Dashboard"),
+        ("series",   "/series",    "Add Series"),
+        ("sync",     "/sync",      "Sync"),
+        ("fix",      "/fix",       "Fix Files"),
+        ("logs",     "/logs",      "Logs"),
+        ("settings", "/settings",  "Settings"),
+      ] %}
       {% for key, href, label in links %}
-      <a href="{{ href }}"
-         class="flex items-center px-3 py-2 rounded-lg transition-colors
-                {% if active == key %}bg-violet-600 text-white{% else %}text-slate-400 hover:bg-slate-800 hover:text-white{% endif %}">
+      <a href="{{ href }}" onclick="closeMobileNav()"
+         class="nav-link {{ 'nav-link--active' if active == key else '' }}">
         {{ label }}
       </a>
       {% endfor %}
     </nav>
-    <div class="px-5 py-3 border-t border-slate-700 text-xs text-slate-500">よろしく :4649</div>
+
+    <div class="px-4 py-3 border-t border-white/5 text-xs" style="color:var(--text-dim);font-family:'Syne',sans-serif">
+      よろしく · 4649
+    </div>
   </aside>
 
-  <main class="flex-1 overflow-auto p-8">
+  <!-- Main -->
+  <main class="flex-1 overflow-auto p-5 md:p-8 pt-[68px] md:pt-8" style="background:var(--bg)">
     {% block content %}{% endblock %}
   </main>
 
-  <!-- Global edit modal -->
-  <div id="edit-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
-    <div class="absolute inset-0 bg-black/40 backdrop-blur-sm" onclick="closeModal()"></div>
-    <div class="relative bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 max-h-[90vh] overflow-y-auto">
+  <!-- Edit modal -->
+  <div id="edit-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div class="absolute inset-0" onclick="closeModal()"></div>
+    <div id="modal-body-wrap" class="relative w-full max-w-md max-h-[90vh] overflow-y-auto">
       <div id="modal-body" class="p-6"></div>
     </div>
   </div>
 
   <script>
-    function openModal() { document.getElementById('edit-modal').classList.remove('hidden'); }
+    /* ── Mobile nav ──────────────────────────── */
+    function openMobileNav() {
+      document.getElementById('sidebar').classList.remove('-translate-x-full');
+      document.getElementById('sidebar-overlay').classList.remove('hidden');
+    }
+    function closeMobileNav() {
+      document.getElementById('sidebar').classList.add('-translate-x-full');
+      document.getElementById('sidebar-overlay').classList.add('hidden');
+    }
+
+    /* ── Edit modal ──────────────────────────── */
+    function openModal()  { document.getElementById('edit-modal').classList.remove('hidden'); }
     function closeModal() {
       document.getElementById('edit-modal').classList.add('hidden');
       document.getElementById('modal-body').innerHTML = '';
@@ -50,11 +346,12 @@
       if (e.target.id === 'modal-body') openModal();
     });
 
+    /* ── Lang / group pickers ────────────────── */
     function selectLang(btn, lang, mangaId) {
       document.querySelectorAll('.lang-btn').forEach(b => {
-        b.className = b.className.replace('bg-violet-600 border-violet-600 text-white', 'border-gray-200 text-gray-600 hover:border-violet-400');
+        b.classList.remove('bg-violet-600');
       });
-      btn.className = btn.className.replace('border-gray-200 text-gray-600 hover:border-violet-400', 'bg-violet-600 border-violet-600 text-white');
+      btn.classList.add('bg-violet-600');
       document.getElementById('language-hidden').value = lang;
       document.getElementById('translator').value = '';
       document.getElementById('selected-group-label').textContent = '';
@@ -69,12 +366,12 @@
     }
 
     function selectGroup(card) {
-      document.querySelectorAll('.group-card').forEach(c => c.classList.remove('border-violet-500', 'bg-violet-50'));
+      document.querySelectorAll('.group-card').forEach(c =>
+        c.classList.remove('border-violet-500', 'bg-violet-50'));
       card.classList.add('border-violet-500', 'bg-violet-50');
       document.getElementById('translator').value = card.dataset.group;
       document.getElementById('selected-group-label').textContent = card.dataset.group || 'any';
     }
   </script>
-
 </body>
 </html>

@@ -4,12 +4,12 @@
   <input type="hidden" name="language" id="language-hidden" value="{{ default_lang }}">
 
   <!-- Manga header -->
-  <div class="flex gap-4 pb-4 border-b border-gray-100">
+  <div class="flex gap-4 pb-4" style="border-bottom:1px solid var(--border)">
     {% if cover_url %}
     <img src="{{ cover_url }}" class="w-16 h-24 object-cover rounded-lg shrink-0 shadow-sm">
     {% endif %}
     <div class="min-w-0">
-      <h3 class="font-semibold text-gray-900 leading-tight">{{ title }}</h3>
+      <h3 class="font-semibold leading-tight" style="color:var(--text);font-family:'Syne',sans-serif">{{ title }}</h3>
       <div class="flex items-center gap-2 mt-1.5 flex-wrap">
         <span class="text-xs px-2 py-0.5 rounded-full font-medium
           {% if status == 'completed' %}bg-green-100 text-green-700
@@ -17,8 +17,8 @@
           {% else %}bg-gray-100 text-gray-600{% endif %}">
           {{ status }}
         </span>
-        {% if year %}<span class="text-xs text-gray-400">{{ year }}</span>{% endif %}
-        {% if total_unique %}<span class="text-xs text-gray-400">{{ total_unique }} chapters</span>{% endif %}
+        {% if year %}<span class="text-xs" style="color:var(--text-dim)">{{ year }}</span>{% endif %}
+        {% if total_unique %}<span class="text-xs" style="color:var(--text-dim)">{{ total_unique }} chapters</span>{% endif %}
       </div>
     </div>
   </div>
@@ -26,15 +26,14 @@
   <!-- Language picker -->
   {% if lang_counts %}
   <div>
-    <label class="block text-xs font-medium text-gray-600 mb-2">Language</label>
+    <label class="block text-xs font-medium mb-2" style="color:var(--text-muted)">Language</label>
     <div class="flex flex-wrap gap-2">
       {% for lang, count in lang_counts.items() %}
       <button type="button"
               onclick="selectLang(this, '{{ lang }}', '{{ manga_id }}')"
               data-lang="{{ lang }}"
               class="lang-btn text-xs px-3 py-1.5 rounded-lg border transition-colors
-                     {% if lang == default_lang %}bg-violet-600 border-violet-600 text-white
-                     {% else %}border-gray-200 text-gray-600 hover:border-violet-400{% endif %}">
+                     {% if lang == default_lang %}bg-violet-600 border-violet-600 text-white{% endif %}">
         {{ lang.upper() }} · {{ count }}
       </button>
       {% endfor %}
@@ -45,11 +44,11 @@
   <!-- Group picker -->
   <div>
     <div class="flex items-center justify-between mb-2">
-      <label class="text-xs font-medium text-gray-600">Scanlation group</label>
-      <span id="selected-group-label" class="text-xs text-violet-600 font-medium"></span>
+      <label class="text-xs font-medium" style="color:var(--text-muted)">Scanlation group</label>
+      <span id="selected-group-label" class="text-xs font-medium" style="color:var(--accent-light)"></span>
     </div>
-    <div id="groups-loading" class="hidden text-xs text-gray-400 py-1 flex items-center gap-1.5">
-      <span class="inline-block w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse"></span>
+    <div id="groups-loading" class="hidden text-xs py-1 flex items-center gap-1.5" style="color:var(--text-dim)">
+      <span class="inline-block w-1.5 h-1.5 rounded-full bg-violet-500 animate-pulse"></span>
       Fetching groups…
     </div>
     <div id="group-picker" class="max-h-48 overflow-y-auto space-y-1.5">
@@ -57,12 +56,11 @@
     </div>
   </div>
 
-  <!-- Location + folder name + since -->
+  <!-- Location + skip + folder -->
   <div class="grid grid-cols-2 gap-3">
     <div>
-      <label class="block text-xs font-medium text-gray-600 mb-1">Location</label>
-      <select name="subfolder"
-              class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white">
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Location</label>
+      <select name="subfolder" class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
         <option value="">(root)</option>
         {% for d in subdirs %}
         <option value="{{ d }}">{{ d }}/</option>
@@ -70,19 +68,30 @@
       </select>
     </div>
     <div>
-      <label class="block text-xs font-medium text-gray-600 mb-1">Skip chapters ≤</label>
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Skip chapters ≤</label>
       <input type="number" name="since" value="0" min="0"
-             class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+             class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
     </div>
   </div>
   <div>
-    <label class="block text-xs font-medium text-gray-600 mb-1">Folder name</label>
+    <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Folder name</label>
     <input type="text" name="title" required value="{{ title }}"
-           class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+           class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+  </div>
+
+  <!-- Format codes reference -->
+  <div class="rounded-lg px-3 py-2.5 grid grid-cols-3 gap-x-4 gap-y-1" style="background:var(--surface-alt);border:1px solid var(--border)">
+    {% for code, meaning in [("%1","language"), ("%2","group"), ("%3","title"), ("%4","volume"), ("%5","chapter"), ("%6","ch. title")] %}
+    <div class="flex items-center gap-1.5">
+      <code class="text-xs font-mono" style="color:var(--accent-light)">{{ code }}</code>
+      <span class="text-xs" style="color:var(--text-dim)">{{ meaning }}</span>
+    </div>
+    {% endfor %}
   </div>
 
   <button type="submit"
-          class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium py-2 rounded-lg transition-colors">
+          class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold py-2.5 rounded-lg transition-colors"
+          style="font-family:'Syne',sans-serif">
     Add Series
   </button>
 </form>

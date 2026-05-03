@@ -3,54 +3,55 @@
   <input type="hidden" name="translator" id="translator" value="{{ current_translator }}">
 
   <!-- Header -->
-  <div class="flex items-center justify-between pb-3 border-b border-gray-100">
-    <h2 class="font-semibold text-gray-900">Edit — {{ manga_title }}</h2>
+  <div class="flex items-center justify-between pb-3" style="border-bottom:1px solid var(--border)">
+    <h2 class="font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">Edit — {{ manga_title }}</h2>
     <button type="button" onclick="closeModal()"
-            class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+            class="text-2xl leading-none transition-colors" style="color:var(--text-dim)">&times;</button>
   </div>
 
   <!-- Language -->
   <div>
-    <label class="block text-xs font-medium text-gray-600 mb-1">Language</label>
+    <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Language</label>
     <div class="flex gap-2">
       <input type="text" name="language" value="{{ current_lang }}" id="edit-lang-input"
-             class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+             class="flex-1 border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
       <button type="button"
               onclick="loadEditLangs('{{ manga_id }}')"
-              class="shrink-0 text-xs border border-gray-200 rounded-lg px-3 py-2 text-gray-600 hover:border-violet-400 hover:text-violet-600 transition-colors">
+              class="shrink-0 text-xs border rounded-lg px-3 py-2.5 transition-colors"
+              style="border-color:var(--border-mid);color:var(--text-muted)">
         Browse
       </button>
     </div>
-    <div id="lang-picker" class="mt-1.5 flex flex-wrap gap-2"></div>
+    <div id="lang-picker" class="mt-2 flex flex-wrap gap-2"></div>
   </div>
 
   <!-- Group -->
   <div>
-    <label class="block text-xs font-medium text-gray-600 mb-1">Scanlation group</label>
+    <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Scanlation group</label>
     <div class="flex gap-2">
       <input type="text" id="translator-display" value="{{ current_translator }}"
              placeholder="any group"
              oninput="document.getElementById('translator').value = this.value"
-             class="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+             class="flex-1 border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
       <button type="button"
               onclick="loadEditGroups('{{ manga_id }}')"
-              class="shrink-0 text-xs border border-gray-200 rounded-lg px-3 py-2 text-gray-600 hover:border-violet-400 hover:text-violet-600 transition-colors">
+              class="shrink-0 text-xs border rounded-lg px-3 py-2.5 transition-colors"
+              style="border-color:var(--border-mid);color:var(--text-muted)">
         Browse
       </button>
     </div>
-    <div id="groups-loading" class="hidden text-xs text-gray-400 py-1 mt-1 flex items-center gap-1.5">
-      <span class="inline-block w-1.5 h-1.5 rounded-full bg-violet-400 animate-pulse"></span>
+    <div id="groups-loading" class="hidden text-xs py-1.5 mt-1 flex items-center gap-1.5" style="color:var(--text-dim)">
+      <span class="inline-block w-1.5 h-1.5 rounded-full bg-violet-500 animate-pulse"></span>
       Fetching groups…
     </div>
-    <div id="group-picker" class="mt-1.5 max-h-40 overflow-y-auto space-y-1.5"></div>
+    <div id="group-picker" class="mt-2 max-h-40 overflow-y-auto space-y-1.5"></div>
   </div>
 
   <!-- Location + since -->
   <div class="grid grid-cols-2 gap-3">
     <div>
-      <label class="block text-xs font-medium text-gray-600 mb-1">Location</label>
-      <select name="subfolder"
-              class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400 bg-white">
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Location</label>
+      <select name="subfolder" class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
         <option value="" {% if not subfolder %}selected{% endif %}>(root)</option>
         {% for d in subdirs %}
         <option value="{{ d }}" {% if d == subfolder %}selected{% endif %}>{{ d }}/</option>
@@ -58,21 +59,22 @@
       </select>
     </div>
     <div>
-      <label class="block text-xs font-medium text-gray-600 mb-1">Skip chapters ≤</label>
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Skip chapters ≤</label>
       <input type="number" name="since" value="{{ current_since }}" min="0"
-             class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+             class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
     </div>
   </div>
 
   <!-- Folder name -->
   <div>
-    <label class="block text-xs font-medium text-gray-600 mb-1">Folder name</label>
+    <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Folder name</label>
     <input type="text" name="title" required value="{{ folder_name }}"
-           class="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-violet-400">
+           class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
   </div>
 
   <button type="submit"
-          class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium py-2 rounded-lg transition-colors">
+          class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold py-2.5 rounded-lg transition-colors"
+          style="font-family:'Syne',sans-serif">
     Save Changes
   </button>
 </form>
@@ -80,7 +82,7 @@
 <script>
 function loadEditLangs(mangaId) {
   const picker = document.getElementById('lang-picker');
-  picker.innerHTML = '<span class="text-xs text-gray-400">Loading…</span>';
+  picker.innerHTML = '<span class="text-xs" style="color:var(--text-dim)">Loading…</span>';
   fetch(`/api/manga/${mangaId}/langs`)
     .then(r => r.json())
     .then(langs => {
@@ -88,12 +90,18 @@ function loadEditLangs(mangaId) {
       langs.forEach(([lang, count]) => {
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'text-xs px-3 py-1.5 rounded-lg border border-gray-200 text-gray-600 hover:border-violet-400 hover:text-violet-600 transition-colors';
+        btn.style.cssText = 'font-size:12px;padding:5px 10px;border-radius:8px;border:1px solid var(--border-mid);background:var(--surface-alt);color:var(--text-muted);cursor:pointer;transition:border-color .15s,color .15s';
         btn.textContent = `${lang.toUpperCase()} · ${count}`;
         btn.onclick = () => {
           document.getElementById('edit-lang-input').value = lang;
-          picker.querySelectorAll('button').forEach(b => b.className = b.className.replace('bg-violet-600 border-violet-600 text-white', 'border-gray-200 text-gray-600 hover:border-violet-400 hover:text-violet-600'));
-          btn.className = btn.className.replace('border-gray-200 text-gray-600 hover:border-violet-400 hover:text-violet-600', 'bg-violet-600 border-violet-600 text-white');
+          picker.querySelectorAll('button').forEach(b => {
+            b.style.background = 'var(--surface-alt)';
+            b.style.borderColor = 'var(--border-mid)';
+            b.style.color = 'var(--text-muted)';
+          });
+          btn.style.background = 'var(--accent)';
+          btn.style.borderColor = 'var(--accent)';
+          btn.style.color = 'white';
         };
         picker.appendChild(btn);
       });
@@ -113,8 +121,12 @@ function loadEditGroups(mangaId) {
 }
 
 function selectGroup(card) {
-  document.querySelectorAll('.group-card').forEach(c => c.classList.remove('border-violet-500', 'bg-violet-50'));
-  card.classList.add('border-violet-500', 'bg-violet-50');
+  document.querySelectorAll('.group-card').forEach(c => {
+    c.style.borderColor = 'var(--border-mid)';
+    c.style.background = 'var(--surface)';
+  });
+  card.style.borderColor = 'var(--accent)';
+  card.style.background = 'var(--accent-glow)';
   const group = card.dataset.group;
   document.getElementById('translator').value = group;
   document.getElementById('translator-display').value = group;

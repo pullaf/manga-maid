@@ -1,25 +1,26 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="mb-8">
-  <h1 class="text-2xl font-bold">Sync</h1>
-  <p class="text-gray-500 text-sm mt-1">Download new chapters from MangaDex</p>
+  <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Sync</h1>
+  <p class="text-sm mt-1" style="color:var(--text-muted)">Download new chapters from MangaDex</p>
 </div>
 
-<div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6 max-w-2xl">
-  <div class="flex items-center gap-3 mb-6">
+<div class="rounded-xl border p-6 max-w-2xl" style="background:var(--surface);border-color:var(--border)">
+  <div class="flex items-center gap-3 mb-5">
     <button id="sync-btn" onclick="startSync()"
-            class="bg-violet-600 hover:bg-violet-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white text-sm font-medium px-5 py-2 rounded-lg transition-colors">
+            class="bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold px-5 py-2.5 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            style="font-family:'Syne',sans-serif;letter-spacing:.02em">
       Run Sync
     </button>
-    <span id="sync-status" class="text-sm text-gray-500"></span>
+    <span id="sync-status" class="text-xs" style="color:var(--text-dim)"></span>
   </div>
 
-  <div id="output" class="hidden bg-slate-900 rounded-lg overflow-hidden">
-    <div id="waiting-msg" class="flex items-center gap-2 px-4 py-3 text-slate-400 text-xs">
-      <span class="inline-block w-2 h-2 rounded-full bg-violet-400 animate-pulse"></span>
+  <div id="output" class="hidden rounded-lg overflow-hidden" style="background:#090910;border:1px solid var(--border)">
+    <div id="waiting-msg" class="flex items-center gap-2 px-4 py-3 text-xs" style="color:var(--text-dim)">
+      <span class="inline-block w-2 h-2 rounded-full bg-violet-500 animate-pulse"></span>
       Contacting MangaDex and queuing downloads — this can take a minute…
     </div>
-    <div id="lines" class="px-4 pb-4 font-mono text-xs leading-relaxed text-slate-100 space-y-0.5"></div>
+    <div id="lines" class="px-4 pb-4 font-mono text-xs leading-relaxed space-y-0.5" style="color:#c4c0dd"></div>
   </div>
 </div>
 
@@ -53,9 +54,9 @@ function startSync() {
     const lines = document.getElementById('lines');
     const line = document.createElement('div');
     line.textContent = e.data;
-    if (e.data.includes('downloaded=') || e.data.includes('→')) line.classList.add('text-green-400');
-    else if (e.data.includes('[warn]') || e.data.includes('error')) line.classList.add('text-yellow-400');
-    else if (e.data.includes('up-to-date')) line.classList.add('text-slate-500');
+    if (e.data.includes('downloaded=') || e.data.includes('→')) line.style.color = '#34d399';
+    else if (e.data.includes('[warn]') || e.data.includes('error')) line.style.color = '#fbbf24';
+    else if (e.data.includes('up-to-date')) line.style.color = '#3a3850';
     lines.appendChild(line);
     lines.scrollTop = lines.scrollHeight;
   };

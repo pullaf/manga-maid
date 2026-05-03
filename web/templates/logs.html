@@ -1,53 +1,53 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="mb-8">
-  <h1 class="text-2xl font-bold">Logs</h1>
-  <p class="text-gray-500 text-sm mt-1">Sync history and file operations</p>
+  <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Logs</h1>
+  <p class="text-sm mt-1" style="color:var(--text-muted)">Sync history and file operations</p>
 </div>
 
-<div class="space-y-8 max-w-4xl">
+<div class="space-y-6 max-w-4xl">
 
   <!-- Sync log -->
-  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-    <h2 class="font-semibold text-gray-900 mb-4">Sync Log</h2>
+  <div class="rounded-xl border p-6" style="background:var(--surface);border-color:var(--border)">
+    <h2 class="font-semibold text-sm mb-4" style="font-family:'Syne',sans-serif;color:var(--text)">Sync Log</h2>
     {% if sync_lines %}
-    <div class="bg-slate-900 rounded-lg p-4 font-mono text-xs text-slate-300 leading-relaxed max-h-72 overflow-y-auto space-y-0.5">
+    <div class="rounded-lg p-4 font-mono text-xs leading-relaxed max-h-72 overflow-y-auto space-y-0.5" style="background:#090910;border:1px solid var(--border);color:#c4c0dd">
       {% for line in sync_lines %}
-      <div class="{% if 'downloaded=' in line %}text-green-400{% elif 'warn' in line or 'error' in line %}text-yellow-400{% elif 'up-to-date' in line %}text-slate-500{% endif %}">{{ line.strip() }}</div>
+      <div style="{% if 'downloaded=' in line or '→' in line %}color:#34d399{% elif 'warn' in line or 'error' in line %}color:#fbbf24{% elif 'up-to-date' in line %}color:#3a3850{% endif %}">{{ line.strip() }}</div>
       {% endfor %}
     </div>
     {% else %}
-    <p class="text-sm text-gray-400">No sync log yet.</p>
+    <p class="text-sm" style="color:var(--text-dim)">No sync log yet.</p>
     {% endif %}
   </div>
 
   <!-- Fix log — renames -->
-  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-    <h2 class="font-semibold text-gray-900 mb-4">Recent Renames</h2>
+  <div class="rounded-xl border p-6" style="background:var(--surface);border-color:var(--border)">
+    <h2 class="font-semibold text-sm mb-4" style="font-family:'Syne',sans-serif;color:var(--text)">Recent Renames</h2>
     {% if renames %}
     <div class="space-y-2 max-h-72 overflow-y-auto">
       {% for r in renames %}
-      <div class="text-xs border-b border-gray-50 pb-2">
-        <div class="text-gray-400">{{ r.timestamp }} · {{ r.reason }}</div>
-        <div class="font-mono text-gray-600 truncate mt-0.5">{{ r.old.split('/')[-1] }}</div>
-        <div class="font-mono text-violet-600 truncate">→ {{ r.new.split('/')[-1] }}</div>
+      <div class="text-xs pb-2" style="border-bottom:1px solid var(--border)">
+        <div style="color:var(--text-dim)">{{ r.timestamp }} · {{ r.reason }}</div>
+        <div class="font-mono truncate mt-0.5" style="color:var(--text-muted)">{{ r.old.split('/')[-1] }}</div>
+        <div class="font-mono truncate" style="color:var(--accent-light)">→ {{ r.new.split('/')[-1] }}</div>
       </div>
       {% endfor %}
     </div>
     {% else %}
-    <p class="text-sm text-gray-400">No renames logged yet.</p>
+    <p class="text-sm" style="color:var(--text-dim)">No renames logged yet.</p>
     {% endif %}
   </div>
 
   <!-- Fix log — deletes -->
   {% if deletes %}
-  <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
-    <h2 class="font-semibold text-gray-900 mb-4">Recent Deletes</h2>
+  <div class="rounded-xl border p-6" style="background:var(--surface);border-color:var(--border)">
+    <h2 class="font-semibold text-sm mb-4" style="font-family:'Syne',sans-serif;color:var(--text)">Recent Deletes</h2>
     <div class="space-y-2 max-h-72 overflow-y-auto">
       {% for d in deletes %}
-      <div class="text-xs border-b border-gray-50 pb-2">
-        <div class="text-gray-400">{{ d.timestamp }} · {{ d.reason }}</div>
-        <div class="font-mono text-red-400 truncate mt-0.5">{{ d.path.split('/')[-1] }}</div>
+      <div class="text-xs pb-2" style="border-bottom:1px solid var(--border)">
+        <div style="color:var(--text-dim)">{{ d.timestamp }} · {{ d.reason }}</div>
+        <div class="font-mono truncate mt-0.5" style="color:var(--danger)">{{ d.path.split('/')[-1] }}</div>
       </div>
       {% endfor %}
     </div>

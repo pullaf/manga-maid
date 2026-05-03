@@ -2,34 +2,36 @@
 {% block content %}
 <div class="mb-8 flex items-center justify-between">
   <div>
-    <h1 class="text-2xl font-bold">Dashboard</h1>
-    <p class="text-gray-500 text-sm mt-1">{{ series|length }} series tracked</p>
+    <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Dashboard</h1>
+    <p class="text-sm mt-1" style="color:var(--text-muted)">{{ series|length }} series tracked</p>
   </div>
   <a href="/sync"
-     class="bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors">
+     class="bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
+     style="font-family:'Syne',sans-serif;letter-spacing:.02em">
     Sync All
   </a>
 </div>
 
 {% if not series %}
-<div class="text-center py-24 text-gray-400">
-  <p class="text-lg">No series tracked yet.</p>
-  <a href="/series" class="text-violet-600 hover:underline text-sm mt-2 inline-block">Add your first series →</a>
+<div class="text-center py-24" style="color:var(--text-dim)">
+  <div class="text-4xl mb-4 opacity-30">📚</div>
+  <p class="text-base" style="color:var(--text-muted)">No series tracked yet.</p>
+  <a href="/series" class="text-violet-400 hover:text-violet-300 text-sm mt-2 inline-block transition-colors">Add your first series →</a>
 </div>
 {% else %}
-<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
   {% for s in series %}
-  <div class="series-card bg-white rounded-xl shadow-sm border border-gray-100 p-4 hover:shadow-md transition-shadow">
+  <div class="series-card rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
     <div class="flex items-start justify-between gap-1">
-      <div class="font-semibold text-gray-900 truncate flex-1 text-sm" title="{{ s.name }}">{{ s.name }}</div>
-      <div class="flex gap-2 shrink-0">
-        <button class="text-violet-400 hover:text-violet-600 text-xs font-medium"
+      <div class="font-semibold truncate flex-1 text-sm leading-snug" style="color:var(--text);font-family:'Syne',sans-serif" title="{{ s.name }}">{{ s.name }}</div>
+      <div class="flex gap-2 shrink-0 ml-1">
+        <button class="text-xs font-medium transition-colors" style="color:var(--accent-light)"
                 hx-get="/api/series/{{ s.path }}/edit"
                 hx-target="#modal-body"
                 hx-swap="innerHTML">
           Edit
         </button>
-        <button class="text-red-400 hover:text-red-600 text-xs font-medium"
+        <button class="text-xs font-medium transition-colors" style="color:var(--danger)"
                 hx-delete="/api/series/{{ s.path }}"
                 hx-target="closest .series-card"
                 hx-swap="outerHTML"
@@ -38,15 +40,15 @@
         </button>
       </div>
     </div>
-    <div class="mt-1 text-xs text-gray-500">
+    <div class="mt-1 text-xs" style="color:var(--text-dim)">
       {{ s.config.get("language", "en").upper() }}
-      {% if s.config.get("translator") %}<span class="text-gray-400"> · </span>{{ s.config.translator }}{% endif %}
+      {% if s.config.get("translator") %}<span style="color:var(--border-hi)"> · </span><span style="color:var(--text-muted)">{{ s.config.translator }}</span>{% endif %}
     </div>
-    <div class="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between">
-      <span class="text-xs text-gray-500">
-        {% if s.last_chapter %}ch. {{ s.last_chapter | int }}{% else %}no chapters{% endif %}
+    <div class="mt-3 pt-3 flex items-center justify-between" style="border-top:1px solid var(--border)">
+      <span class="text-xs" style="color:var(--text-muted)">
+        {% if s.last_chapter %}ch.{{ s.last_chapter | int }}{% else %}no chapters{% endif %}
       </span>
-      <span class="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
+      <span class="text-xs px-2 py-0.5 rounded-full" style="background:var(--surface-alt);color:var(--text-muted)">
         {{ s.chapter_count }} file{{ 's' if s.chapter_count != 1 }}
       </span>
     </div>

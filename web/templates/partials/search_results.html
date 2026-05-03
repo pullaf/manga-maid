@@ -1,18 +1,19 @@
 {% for r in results %}
-<div class="flex items-center gap-3 p-3 rounded-lg border border-gray-200 hover:border-violet-400 hover:bg-violet-50 cursor-pointer transition-colors search-result"
+<div class="flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors search-result"
+     style="border-color:var(--border-mid);background:var(--surface)"
      data-id="{{ r.id }}" data-title="{{ r.title }}">
   {% if r.cover_url %}
   <img src="{{ r.cover_url }}" class="w-10 h-14 object-cover rounded shrink-0" loading="lazy">
   {% else %}
-  <div class="w-10 h-14 bg-gray-200 rounded shrink-0"></div>
+  <div class="w-10 h-14 rounded shrink-0" style="background:var(--surface-alt)"></div>
   {% endif %}
   <div class="min-w-0">
-    <div class="font-medium text-sm truncate">{{ r.title }}</div>
-    <div class="text-xs text-gray-500 mt-0.5">
+    <div class="font-medium text-sm truncate" style="color:var(--text)">{{ r.title }}</div>
+    <div class="text-xs mt-0.5" style="color:var(--text-dim)">
       {{ r.status }}{% if r.year %} · {{ r.year }}{% endif %}
     </div>
   </div>
 </div>
 {% else %}
-<p class="text-sm text-gray-500 text-center py-4">No results found.</p>
+<p class="text-sm text-center py-4" style="color:var(--text-dim)">No results found.</p>
 {% endfor %}
