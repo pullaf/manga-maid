@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 .manga-fix-log.json
 .sync.log
+CLAUDE.md
