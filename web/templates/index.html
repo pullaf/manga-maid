@@ -147,6 +147,13 @@
     align-items: center;
   }
   .sc-list .series-log { grid-column: 1 / -1; margin-top: 4px; }
+  @media (min-width: 769px) {
+    .sc-list {
+      grid-template-columns: 72px 1fr auto;
+      column-gap: 18px;
+    }
+    .sc-list .cover-wrap { width: 72px; height: 102px; }
+  }
   @media (max-width: 640px) {
     .sc-list {
       grid-template-columns: 50px 1fr;
