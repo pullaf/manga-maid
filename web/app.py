@@ -15,7 +15,10 @@ MANGA_ROOT = os.environ.get("MANGA_ROOT", "/manga")
 CONFIG_FILENAME = ".mangadex.json"
 SYNC_LOG = os.environ.get("SYNC_LOG", "/data/logs/sync.log")
 MDEX_BASE = "https://api.mangadex.org"
+MDEX_COVERS = "https://uploads.mangadex.org/covers"
 CONTENT_RATINGS = ["safe", "suggestive", "erotica", "pornographic"]
+
+_cover_cache: dict[str, bytes] = {}
 
 _spec = importlib.util.spec_from_file_location("manga_fix", "/app/manga-fix.py")
 _fix = importlib.util.module_from_spec(_spec)
@@ -27,6 +30,11 @@ from kavita import KavitaClient                        # noqa: E402
 
 app = FastAPI(title="mangadex-kavita-sync")
 templates = Jinja2Templates(directory="/app/web/templates")
+
+
+def _cover_url(manga_id: str, filename: str) -> str:
+    """Return a same-origin proxy URL for a MangaDex cover thumbnail."""
+    return f"/api/proxy/cover/{manga_id}/{filename}"
 
 _sync_running = False
 
@@ -69,8 +77,7 @@ def get_all_series():
                             chapters.add(float(m.group(1)))
                 cover_url = None
                 if config.get("cover_filename"):
-                    cover_url = (f"https://uploads.mangadex.org/covers/"
-                                 f"{config['id']}/{config['cover_filename']}.256.jpg")
+                    cover_url = _cover_url(config["id"], config["cover_filename"])
                 series.append({
                     "path": os.path.relpath(root, MANGA_ROOT),
                     "name": os.path.basename(root),
@@ -105,7 +112,7 @@ def mdex_search(query: str):
             if rel["type"] == "cover_art":
                 fname = (rel.get("attributes") or {}).get("fileName")
                 if fname:
-                    cover_url = f"https://uploads.mangadex.org/covers/{item['id']}/{fname}.256.jpg"
+                    cover_url = _cover_url(item["id"], fname)
         results.append({"id": item["id"], "title": title, "cover_url": cover_url,
                         "status": attr.get("status", ""), "year": attr.get("year")})
     return results
@@ -347,7 +354,7 @@ async def get_manga_setup(request: Request, manga_id: str):
             fname = (rel.get("attributes") or {}).get("fileName")
             if fname:
                 cover_filename = fname
-                cover_url = f"https://uploads.mangadex.org/covers/{manga_id}/{fname}.256.jpg"
+                cover_url = _cover_url(manga_id, fname)
 
     # Fetch chapter counts per language in parallel (cap at 10 languages)
     lang_counts: dict[str, int] = {}
@@ -437,8 +444,7 @@ async def series_cover(path: str):
     with open(config_path) as f:
         config = json.load(f)
     if config.get("cover_filename"):
-        return JSONResponse({"url": (f"https://uploads.mangadex.org/covers/"
-                                     f"{config['id']}/{config['cover_filename']}.256.jpg")})
+        return JSONResponse({"url": _cover_url(config["id"], config["cover_filename"])})
     manga_id = config.get("id")
     if not manga_id:
         raise HTTPException(404)
@@ -460,8 +466,26 @@ async def series_cover(path: str):
     config["cover_filename"] = cover_filename
     with open(config_path, "w") as f:
         json.dump(config, f, indent=2)
-    return JSONResponse({"url": (f"https://uploads.mangadex.org/covers/"
-                                  f"{manga_id}/{cover_filename}.256.jpg")})
+    return JSONResponse({"url": _cover_url(manga_id, cover_filename)})
+
+
+@app.get("/api/proxy/cover/{manga_id}/{filename}")
+async def proxy_cover(manga_id: str, filename: str):
+    cache_key = f"{manga_id}/{filename}"
+    if cache_key not in _cover_cache:
+        url = f"{MDEX_COVERS}/{manga_id}/{filename}.256.jpg"
+        req = urlrequest.Request(url, headers={
+            "Referer": "https://mangadex.org/",
+            "User-Agent": "Mozilla/5.0",
+        })
+        loop = asyncio.get_event_loop()
+        try:
+            data = await loop.run_in_executor(None, lambda: urlrequest.urlopen(req, timeout=15).read())
+        except Exception:
+            raise HTTPException(404)
+        _cover_cache[cache_key] = data
+    return Response(_cover_cache[cache_key], media_type="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.delete("/api/series/{path:path}", response_class=HTMLResponse)
