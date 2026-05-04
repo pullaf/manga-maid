@@ -56,7 +56,7 @@ function startSync() {
     line.textContent = e.data;
     if (e.data.includes('downloaded=') || e.data.includes('→')) line.style.color = '#34d399';
     else if (e.data.includes('[warn]') || e.data.includes('error')) line.style.color = '#fbbf24';
-    else if (e.data.includes('up-to-date')) line.style.color = '#3a3850';
+    else if (e.data.includes('up-to-date')) line.style.color = '#6b6880';
     lines.appendChild(line);
     lines.scrollTop = lines.scrollHeight;
   };

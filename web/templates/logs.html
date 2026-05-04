@@ -13,7 +13,7 @@
     {% if sync_lines %}
     <div class="rounded-lg p-4 font-mono text-xs leading-relaxed max-h-72 overflow-y-auto space-y-0.5" style="background:#090910;border:1px solid var(--border);color:#c4c0dd">
       {% for line in sync_lines %}
-      <div style="{% if 'downloaded=' in line or '→' in line %}color:#34d399{% elif 'warn' in line or 'error' in line %}color:#fbbf24{% elif 'up-to-date' in line %}color:#3a3850{% endif %}">{{ line.strip() }}</div>
+      <div style="{% if 'downloaded=' in line or '→' in line %}color:#34d399{% elif 'warn' in line or 'error' in line %}color:#fbbf24{% elif 'up-to-date' in line %}color:#6b6880{% endif %}">{{ line.strip() }}</div>
       {% endfor %}
     </div>
     {% else %}
