@@ -95,21 +95,25 @@
     border: 1px solid var(--border);
   }
   .sc-list {
-    display: flex;
-    align-items: center;
-    gap: 16px;
+    display: grid;
+    grid-template-columns: 50px 1fr auto;
+    grid-template-areas: "cover name actions" "cover meta actions";
+    column-gap: 14px;
+    row-gap: 2px;
     padding: 12px 18px;
     background: var(--surface);
     transition: background .15s;
+    align-items: center;
   }
   .sc-list:hover { background: var(--surface-hover); }
   .sc-list + .sc-list { border-top: 1px solid var(--border); }
   .sc-list .cover-wrap {
+    grid-area: cover;
+    align-self: center;
     width: 50px;
     height: 70px;
     border-radius: 7px;
     overflow: hidden;
-    flex-shrink: 0;
     box-shadow: 0 2px 8px rgba(0,0,0,.4);
   }
   .sc-list .cover-wrap img,
@@ -117,9 +121,8 @@
     width: 100%; height: 100%;
   }
   .sc-list .list-name {
-    flex: 1;
-    min-width: 0;
-    font-size: 15px;
+    grid-area: name;
+    font-size: 14.5px;
     font-weight: 600;
     font-family: 'Syne', sans-serif;
     color: var(--text);
@@ -128,21 +131,36 @@
     text-overflow: ellipsis;
   }
   .sc-list .list-meta {
+    grid-area: meta;
     font-size: 12px;
     color: var(--text-dim);
     display: flex;
-    gap: 12px;
+    flex-wrap: wrap;
+    gap: 4px 10px;
     align-items: center;
-    flex-shrink: 0;
   }
   .sc-list .list-actions {
+    grid-area: actions;
+    align-self: center;
     display: flex;
     gap: 7px;
     align-items: center;
-    flex-shrink: 0;
+  }
+  .sc-list .series-log { grid-column: 1 / -1; margin-top: 4px; }
+  @media (min-width: 769px) {
+    .sc-list {
+      grid-template-columns: 72px 1fr auto;
+      column-gap: 18px;
+    }
+    .sc-list .cover-wrap { width: 72px; height: 102px; }
   }
   @media (max-width: 640px) {
-    .sc-list .list-meta { display: none; }
+    .sc-list {
+      grid-template-columns: 50px 1fr;
+      grid-template-areas: "cover name" "cover meta" "cover actions";
+      row-gap: 5px;
+    }
+    .sc-list .list-actions { flex-wrap: wrap; gap: 5px; }
     #series-grid { grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); gap: 12px; }
   }
 
@@ -326,7 +344,7 @@
               hx-swap="outerHTML"
               hx-confirm="Remove '{{ s.name }}' from sync? (files stay on disk)">✕</button>
     </div>
-    <div class="series-log hidden" style="width:100%;margin-top:4px"></div>
+    <div class="series-log hidden"></div>
   </div>
   {% endfor %}
 </div>
