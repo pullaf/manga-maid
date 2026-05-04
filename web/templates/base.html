@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script>(function(){var t=localStorage.getItem('theme')||'dark';document.documentElement.setAttribute('data-theme',t);})()</script>
   <title>manga-kavita</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%237c3aed'/><rect x='4' y='4' width='10' height='14' rx='2' fill='white' opacity='.92'/><rect x='16' y='4' width='12' height='7' rx='2' fill='white' opacity='.92'/><rect x='16' y='13' width='12' height='5' rx='2' fill='white' opacity='.65'/><rect x='4' y='20' width='24' height='8' rx='2' fill='white' opacity='.82'/></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -41,6 +42,26 @@
       --success:       #34d399;
       --warning:       #fbbf24;
       --danger:        #f87171;
+      --sidebar-bg:    #0d0d15;
+    }
+    [data-theme="light"] {
+      --bg:            #f6f5fb;
+      --surface:       #ffffff;
+      --surface-hover: #f0eeff;
+      --surface-alt:   #eeecf8;
+      --border:        #dddaf2;
+      --border-mid:    #c8c4e4;
+      --border-hi:     #a9a3d0;
+      --text:          #1a1825;
+      --text-muted:    #4f4b6b;
+      --text-dim:      #8a879f;
+      --accent:        #7c3aed;
+      --accent-light:  #8b5cf6;
+      --accent-glow:   rgba(124,58,237,.10);
+      --success:       #059669;
+      --warning:       #b45309;
+      --danger:        #dc2626;
+      --sidebar-bg:    #ede9fb;
     }
 
     /* ── Base ──────────────────────────────────────────────── */
@@ -123,15 +144,23 @@
       box-shadow: 0 0 0 1px var(--border-mid), 0 8px 24px rgba(0,0,0,.35) !important;
     }
 
+    /* ── Light-mode patches ────────────────────────────────── */
+    [data-theme="light"] input,
+    [data-theme="light"] select,
+    [data-theme="light"] textarea { color-scheme: light; }
+    [data-theme="light"] select option { background: #eeecf8; }
+    [data-theme="light"] .nav-link:hover { background: rgba(0,0,0,.05); }
+    [data-theme="light"] #theme-toggle:hover { background: var(--surface-alt); }
+
     /* ── Sidebar nav ───────────────────────────────────────── */
     .nav-link {
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 7px 12px;
+      padding: 9px 12px;
       border-radius: 8px;
       font-family: 'Syne', sans-serif;
-      font-size: 12.5px;
+      font-size: 13px;
       font-weight: 600;
       color: var(--text-muted);
       text-decoration: none;
@@ -160,13 +189,13 @@
 
     /* ── Mobile header ─────────────────────────────────────── */
     .mobile-header {
-      background: #0d0d15;
+      background: var(--sidebar-bg);
       border-bottom: 1px solid var(--border);
     }
 
     /* ── Sidebar ───────────────────────────────────────────── */
     #sidebar {
-      background: #0d0d15;
+      background: var(--sidebar-bg);
       border-right: 1px solid var(--border);
     }
 
@@ -278,7 +307,7 @@
   <aside id="sidebar" class="fixed md:static inset-y-0 left-0 z-50 w-48 flex flex-col shrink-0
               -translate-x-full md:translate-x-0 transition-transform duration-200 ease-out">
     <!-- Logo -->
-    <div class="flex items-center gap-3 px-4 py-5 border-b border-white/5">
+    <div class="flex items-center gap-3 px-4 py-5" style="border-bottom:1px solid var(--border)">
       <svg viewBox="0 0 20 20" class="w-6 h-6 shrink-0" fill="none">
         <rect x="1" y="1" width="7" height="9" rx="1.5" fill="#7c3aed" opacity=".9"/>
         <rect x="10" y="1" width="9" height="4.5" rx="1.5" fill="#7c3aed" opacity=".9"/>
@@ -291,23 +320,39 @@
     <!-- Nav -->
     <nav class="flex-1 p-2.5 space-y-0.5 overflow-y-auto">
       {% set links = [
-        ("dashboard", "/",         "Dashboard"),
-        ("series",   "/series",    "Add Series"),
-        ("sync",     "/sync",      "Sync"),
-        ("fix",      "/fix",       "Fix Files"),
-        ("logs",     "/logs",      "Logs"),
-        ("settings", "/settings",  "Settings"),
+        ("dashboard", "/",         "Dashboard",
+         '<svg viewBox="0 0 14 14" fill="currentColor" width="14" height="14" aria-hidden="true" style="flex-shrink:0"><rect x="0" y="0" width="6" height="6" rx="1.2"/><rect x="8" y="0" width="6" height="6" rx="1.2"/><rect x="0" y="8" width="6" height="6" rx="1.2"/><rect x="8" y="8" width="6" height="6" rx="1.2"/></svg>'),
+        ("series",   "/series",    "Add Series",
+         '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" width="14" height="14" aria-hidden="true" style="flex-shrink:0"><circle cx="7" cy="7" r="5.5"/><line x1="7" y1="4.5" x2="7" y2="9.5"/><line x1="4.5" y1="7" x2="9.5" y2="7"/></svg>'),
+        ("sync",     "/sync",      "Sync",
+         '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" width="14" height="14" aria-hidden="true" style="flex-shrink:0"><path d="M1 4.5C1.8 2.5 3.8 1 6 1c2.5 0 4.5 1.5 5 3.5"/><polyline points="9.5,1 11,4.5 7.5,5.5"/><path d="M13 9.5C12.2 11.5 10.2 13 8 13c-2.5 0-4.5-1.5-5-3.5"/><polyline points="4.5,13 3,9.5 6.5,8.5"/></svg>'),
+        ("fix",      "/fix",       "Fix Files",
+         '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" width="14" height="14" aria-hidden="true" style="flex-shrink:0"><path d="M9.8 1.5a3 3 0 0 0-3.4 4L2 9.8a1.5 1.5 0 0 0 2.2 2.2L8.5 7.6a3 3 0 0 0 4-3.4L11 5.7 8.3 3z"/></svg>'),
+        ("logs",     "/logs",      "Logs",
+         '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" width="14" height="14" aria-hidden="true" style="flex-shrink:0"><rect x="2" y="1" width="10" height="12" rx="2"/><line x1="4.5" y1="4.5" x2="9.5" y2="4.5"/><line x1="4.5" y1="7" x2="9.5" y2="7"/><line x1="4.5" y1="9.5" x2="7.5" y2="9.5"/></svg>'),
+        ("settings", "/settings",  "Settings",
+         '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14" aria-hidden="true" style="flex-shrink:0"><circle cx="7" cy="7" r="2.2"/><path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.6 2.6l1.1 1.1M10.3 10.3l1.1 1.1M2.6 11.4l1.1-1.1M10.3 3.7l1.1-1.1"/></svg>'),
       ] %}
-      {% for key, href, label in links %}
+      {% for key, href, label, icon in links %}
       <a href="{{ href }}" onclick="closeMobileNav()"
          class="nav-link {{ 'nav-link--active' if active == key else '' }}">
+        {{ icon | safe }}
         {{ label }}
       </a>
       {% endfor %}
     </nav>
 
-    <div class="px-4 py-3 border-t border-white/5 text-xs" style="color:var(--text-dim);font-family:'Syne',sans-serif">
-      よろしく · 4649
+    <div class="px-3 py-3" style="border-top:1px solid var(--border)">
+      <button id="theme-toggle" onclick="toggleTheme()"
+              title="Toggle light/dark mode"
+              class="w-full flex items-center justify-between px-2.5 py-2 rounded-lg transition-colors"
+              style="color:var(--text-dim);font-family:'Syne',sans-serif;font-size:11.5px;font-weight:600;background:transparent;border:none;cursor:pointer">
+        <span id="theme-label"></span>
+        <span id="theme-icon" style="display:flex;align-items:center"></span>
+      </button>
+      <div class="px-2.5 mt-0.5 text-xs" style="color:var(--text-dim);font-family:'Syne',sans-serif;opacity:.6">
+        よろしく · 4649
+      </div>
     </div>
   </aside>
 
@@ -361,6 +406,30 @@
     document.addEventListener('htmx:afterSwap', e => {
       if (e.target.id === 'modal-body') openModal();
     });
+
+    /* ── Theme toggle ────────────────────────── */
+    var _sunSVG = '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" width="13" height="13"><circle cx="7" cy="7" r="2.5"/><line x1="7" y1="1" x2="7" y2="2.5"/><line x1="7" y1="11.5" x2="7" y2="13"/><line x1="1" y1="7" x2="2.5" y2="7"/><line x1="11.5" y1="7" x2="13" y2="7"/><line x1="2.9" y1="2.9" x2="4" y2="4"/><line x1="10" y1="10" x2="11.1" y2="11.1"/><line x1="11.1" y1="2.9" x2="10" y2="4"/><line x1="4" y1="10" x2="2.9" y2="11.1"/></svg>';
+    var _moonSVG = '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" width="13" height="13"><path d="M12 9A6 6 0 0 1 5 2a6 6 0 1 0 7 7z"/></svg>';
+    function toggleTheme() {
+      var html = document.documentElement;
+      var next = html.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+      html.setAttribute('data-theme', next);
+      localStorage.setItem('theme', next);
+      _updateThemeToggle(next);
+    }
+    function _updateThemeToggle(theme) {
+      var label = document.getElementById('theme-label');
+      var icon  = document.getElementById('theme-icon');
+      if (!label) return;
+      if (theme === 'light') {
+        label.textContent = 'Light mode';
+        icon.innerHTML = _moonSVG;
+      } else {
+        label.textContent = 'Dark mode';
+        icon.innerHTML = _sunSVG;
+      }
+    }
+    _updateThemeToggle(document.documentElement.getAttribute('data-theme') || 'dark');
 
     /* ── Lang / group pickers ────────────────── */
     function selectLang(btn, lang, mangaId) {
