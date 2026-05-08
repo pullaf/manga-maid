@@ -145,7 +145,12 @@ async def _startup():
     await loop.run_in_executor(None, _get_conn)
     # Keep runtime scheduler synced with persisted settings on boot.
     cron_expr = sanitize_sync_cron(load_settings().get("sync_cron"))
-    await loop.run_in_executor(None, _write_runtime_crontab, cron_expr)
+    try:
+        await loop.run_in_executor(None, _write_runtime_crontab, cron_expr)
+    except Exception as e:
+        # Do not fail app startup if crontab rewrite is not writable
+        # (e.g. non-root app user with root-owned crontab file).
+        print(f"[startup] warning: could not write runtime crontab '{RUNTIME_CRONTAB_PATH}': {e}")
     _job_worker_stop.clear()
     with contextlib.suppress(Exception):
         _enqueue_reconcile_job("startup")
@@ -1018,7 +1023,10 @@ async def save_settings_endpoint(
         "kavita_api_key": kavita_api_key.strip(),
     })
     if sanitize_sync_cron(before.get("sync_cron")) != normalized_sync_cron:
-        _write_runtime_crontab(normalized_sync_cron)
+        try:
+            _write_runtime_crontab(normalized_sync_cron)
+        except Exception as e:
+            print(f"[settings] warning: could not write runtime crontab '{RUNTIME_CRONTAB_PATH}': {e}")
     if list(before.get("root_folders") or []) != seen:
         with contextlib.suppress(Exception):
             _enqueue_reconcile_job("settings_root_folders_changed")
