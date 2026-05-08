@@ -14,7 +14,7 @@ DEFAULTS = {
     "volume_naming":   "[%1 %2] %3 vol.%4",
     "download_delay":  1.0,
     "sync_cron":       "0 */6 * * *",
-    "merge_volumes":   True,
+    "merge_volumes":   False,
     "auto_covers":     False,
     "auto_scan":       False,
     "kavita_url":      "",

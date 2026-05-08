@@ -477,8 +477,33 @@ def migrate_json_configs(manga_root: str, conn: sqlite3.Connection) -> int:
     return imported
 
 
-def scan_disk_series(manga_root: str, conn: sqlite3.Connection) -> int:
-    """Find dirs with manga files but no DB entry; add as unlinked series."""
+def scan_disk_series(
+    manga_root: str,
+    conn: sqlite3.Connection,
+    allowed_roots: list[str] | None = None,
+) -> int:
+    """Find dirs with manga files but no DB entry; add as unlinked series.
+
+    If ``allowed_roots`` is a list (including empty), only paths under those
+    roots are considered; an empty list discovers nothing. If ``None``, the
+    whole tree under ``manga_root`` is scanned (legacy callers / tests).
+    """
+    unrestricted = allowed_roots is None
+    roots: list[str] = []
+    if not unrestricted:
+        for rf in allowed_roots:
+            s = str(rf or "").strip().strip("/")
+            if s and s not in roots:
+                roots.append(s)
+
+    def _is_allowed(rel_path: str) -> bool:
+        if unrestricted:
+            return True
+        if not roots:
+            return False
+        p = rel_path.replace("\\", "/").strip()
+        return any(p == r or p.startswith(r + "/") for r in roots)
+
     added = 0
     now = _now()
     for root, dirs, files in os.walk(manga_root):
@@ -487,6 +512,8 @@ def scan_disk_series(manga_root: str, conn: sqlite3.Connection) -> int:
         if not has_manga:
             continue
         rel_path = os.path.relpath(root, manga_root)
+        if not _is_allowed(rel_path):
+            continue
         if conn.execute("SELECT 1 FROM series WHERE path=?", (rel_path,)).fetchone():
             dirs.clear()
             continue

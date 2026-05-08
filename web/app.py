@@ -140,7 +140,8 @@ def _get_conn():
     if _conn is None:
         _conn = _db.init_db(DATA_DIR)
         _db.migrate_json_configs(MANGA_ROOT, _conn)
-        _db.scan_disk_series(MANGA_ROOT, _conn)
+        roots = [rf for rf in (load_settings().get("root_folders") or []) if rf is not None]
+        _db.scan_disk_series(MANGA_ROOT, _conn, allowed_roots=roots)
     return _conn
 
 
@@ -154,6 +155,9 @@ def _write_runtime_crontab(cron_expr: str) -> None:
 
 
 def _enqueue_reconcile_job(reason: str) -> int | None:
+    roots = [rf for rf in (load_settings().get("root_folders") or []) if rf is not None]
+    if not roots:
+        return None
     conn = _get_conn()
     active = _db.get_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
     for j in active:
@@ -173,10 +177,14 @@ def _run_disk_reconcile(job_id: int, payload: dict | None = None) -> None:
     reason = str(payload.get("reason") or "manual").strip()
     _db.append_job_log(conn, job_id, f"[reconcile] started (reason: {reason})")
 
-    added = _db.scan_disk_series(MANGA_ROOT, conn)
-    _db.append_job_log(conn, job_id, f"[reconcile] discovered {added} new series")
-
     roots = [rf for rf in (load_settings().get("root_folders") or []) if rf is not None]
+    if not roots:
+        _db.append_job_log(conn, job_id, "[reconcile] skipped — no root folders configured")
+        _db.append_job_log(conn, job_id, "[reconcile] done")
+        return
+
+    added = _db.scan_disk_series(MANGA_ROOT, conn, allowed_roots=roots)
+    _db.append_job_log(conn, job_id, f"[reconcile] discovered {added} new series")
     series_rows = _db.get_all_series(conn)
     scanned = 0
     for row in series_rows:
@@ -477,13 +485,17 @@ def _resolve_total_volumes(attr: dict | None, manga_id: str) -> int:
     return _mdex_tankobon_volume_count_from_aggregate(agg)
 
 
-def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
+def _scan_settings_naming_issues(series_path: str | None = None) -> list[tuple[str, str, str]]:
     settings = load_settings()
     chapter_tpl = settings.get("chapter_naming", "%3 ch.%5")
     volume_tpl = settings.get("volume_naming", "%3 vol.%4")
     conn = _get_conn()
+    series_scope = (series_path or "").strip()
     findings: list[tuple[str, str, str]] = []
-    for series in _db.get_all_series(conn):
+    series_rows = _db.get_all_series(conn)
+    if series_scope:
+        series_rows = [s for s in series_rows if (s.get("path") or "") == series_scope]
+    for series in series_rows:
         _db.scan_disk_files(os.path.join(MANGA_ROOT, series["path"]), series["id"], conn)
 
     volume_ranges = {
@@ -496,7 +508,7 @@ def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
         """).fetchall()
     }
 
-    chapter_rows = conn.execute("""
+    chapter_sql = """
         SELECT
             c.path,
             c.chapter_num,
@@ -512,7 +524,12 @@ def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
         LEFT JOIN volumes v ON v.id = c.volume_id
         WHERE c.path IS NOT NULL
           AND COALESCE(s.exclude_from_fix, 0) = 0
-    """).fetchall()
+    """
+    chapter_params: list[str] = []
+    if series_scope:
+        chapter_sql += "\n          AND s.path = ?"
+        chapter_params.append(series_scope)
+    chapter_rows = conn.execute(chapter_sql, chapter_params).fetchall()
 
     for row in chapter_rows:
         old_path = os.path.join(MANGA_ROOT, row["path"])
@@ -543,7 +560,7 @@ def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
         if target != old_path and not os.path.exists(target):
             findings.append((old_path, "settings_chapter_naming", new_name))
 
-    volume_rows = conn.execute("""
+    volume_sql = """
         SELECT
             v.id,
             v.path,
@@ -555,7 +572,12 @@ def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
         JOIN series s ON s.id = v.series_id
         WHERE v.path IS NOT NULL
           AND COALESCE(s.exclude_from_fix, 0) = 0
-    """).fetchall()
+    """
+    volume_params: list[str] = []
+    if series_scope:
+        volume_sql += "\n          AND s.path = ?"
+        volume_params.append(series_scope)
+    volume_rows = conn.execute(volume_sql, volume_params).fetchall()
 
     for row in volume_rows:
         old_path = os.path.join(MANGA_ROOT, row["path"])
@@ -697,7 +719,16 @@ def _human_size(size: int | None) -> str:
 
 def get_all_series() -> list[dict]:
     conn = _get_conn()
-    return _db.get_all_series(conn)
+    rows = _db.get_all_series(conn)
+    roots = _root_folders()
+    if not roots:
+        return rows
+    out: list[dict] = []
+    for row in rows:
+        p = (row.get("path") or "").replace("\\", "/").strip()
+        if any(p == rf or p.startswith(rf + "/") for rf in roots):
+            out.append(row)
+    return out
 
 
 def get_subdirs() -> list[str]:
@@ -807,6 +838,14 @@ async def _fetch_groups(manga_id: str, language: str) -> dict:
 
 def _no_rf() -> bool:
     return not _root_folders()
+
+
+def _require_root_folders() -> None:
+    if _no_rf():
+        raise HTTPException(
+            400,
+            "Configure at least one root folder in Settings before running this action.",
+        )
 
 
 class DeleteSeriesFilesBody(BaseModel):
@@ -1051,8 +1090,7 @@ async def series_details_page(request: Request, path: str):
 
 @app.get("/sync", response_class=HTMLResponse)
 async def sync_page(request: Request):
-    return templates.TemplateResponse(request=request, name="sync.html",
-        context={"active": "sync", "no_root_folders": _no_rf()})
+    return RedirectResponse("/jobs", status_code=307)
 
 
 @app.get("/jobs", response_class=HTMLResponse)
@@ -1388,6 +1426,7 @@ async def add_series(
     exclude_from_fix: str = Form("false"),
     merge_volumes_override: str = Form(""),
 ):
+    _require_root_folders()
     parts      = [p for p in [subfolder.strip("/"), title] if p]
     series_dir = os.path.join(MANGA_ROOT, *parts)
     os.makedirs(series_dir, exist_ok=True)
@@ -1471,6 +1510,7 @@ async def series_cover(path: str):
 
 @app.delete("/api/series/{path:path}", response_class=HTMLResponse)
 async def delete_series(path: str):
+    _require_root_folders()
     conn = _get_conn()
     if not _db.get_series_by_path(conn, path):
         raise HTTPException(404, "Series not found")
@@ -1587,6 +1627,7 @@ async def update_series(
     merge_volumes_override: str = Form(""),
     mark_sync_configured: str = Form(""),
 ):
+    _require_root_folders()
     # path here is the URL route parameter (old path)
     old_dir    = os.path.join(MANGA_ROOT, path)
     parts      = [p for p in [subfolder.strip("/"), title] if p]
@@ -1633,6 +1674,7 @@ async def update_series(
 
 @app.post("/api/jobs/sync-all")
 async def enqueue_sync_all():
+    _require_root_folders()
     conn = _get_conn()
     active = _db.get_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
     for j in active:
@@ -1647,8 +1689,26 @@ async def enqueue_sync_all():
     return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id)), "deduped": False})
 
 
+@app.post("/api/jobs/reconcile-disk")
+async def enqueue_reconcile_disk():
+    _require_root_folders()
+    conn = _get_conn()
+    active = _db.get_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
+    for j in active:
+        if j.get("job_type") == JOB_TYPE_RECONCILE_DISK:
+            return JSONResponse({"ok": True, "job": _serialize_job(j), "deduped": True})
+    job_id = _db.enqueue_job(
+        conn,
+        job_type=JOB_TYPE_RECONCILE_DISK,
+        queue_key=JOB_QUEUE_KEY,
+        payload={"reason": "manual"},
+    )
+    return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id)), "deduped": False})
+
+
 @app.post("/api/jobs/sync-series/{path:path}")
 async def enqueue_sync_series(path: str):
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, path)
     if not row:
@@ -1669,6 +1729,7 @@ async def enqueue_sync_series(path: str):
 
 @app.post("/api/jobs/regenerate-comicinfo/{path:path}")
 async def enqueue_regenerate_comicinfo(path: str):
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, path)
     if not row:
@@ -1753,6 +1814,7 @@ async def stream_job(job_id: int, from_seq: int = 0):
 
     async def generate():
         nonlocal from_seq
+        last_status_sent = None
         while True:
             lines = _db.get_job_logs_since(conn, job_id, from_seq=from_seq, limit=200)
             for ln in lines:
@@ -1769,14 +1831,17 @@ async def stream_job(job_id: int, from_seq: int = 0):
                 payload = {"type": "status", "status": "missing"}
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 break
-            if job["status"] in JOB_STATUS_TERMINAL:
+            cur_status = job.get("status")
+            if cur_status != last_status_sent:
                 payload = {
                     "type": "status",
-                    "status": job["status"],
+                    "status": cur_status,
                     "exit_code": job.get("exit_code"),
                     "error_summary": job.get("error_summary"),
                 }
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                last_status_sent = cur_status
+            if job["status"] in JOB_STATUS_TERMINAL:
                 break
             await asyncio.sleep(0.4)
 
@@ -1855,6 +1920,7 @@ async def series_sync_stream(path: str):
 
 @app.post("/api/series/{path:path}/covers")
 async def series_covers(path: str):
+    _require_root_folders()
     conn = _get_conn()
     row  = _db.get_series_by_path(conn, path)
     if not row:
@@ -1880,6 +1946,7 @@ async def series_covers(path: str):
 
 @app.post("/api/series/{path:path}/comicinfo-regenerate")
 async def series_regenerate_comicinfo(path: str):
+    _require_root_folders()
     conn = _get_conn()
     if not _db.get_series_by_path(conn, path):
         raise HTTPException(404, "Series not found")
@@ -1908,6 +1975,7 @@ async def series_regenerate_comicinfo(path: str):
 
 @app.get("/api/series/{path:path}/comicinfo-regenerate/stream")
 async def series_regenerate_comicinfo_stream(path: str):
+    _require_root_folders()
     conn = _get_conn()
     if not _db.get_series_by_path(conn, path):
         raise HTTPException(404, "Series not found")
@@ -1949,6 +2017,7 @@ async def series_regenerate_comicinfo_stream(path: str):
 
 @app.post("/api/series/{path:path}/compact-volumes")
 async def series_compact_volumes(path: str):
+    _require_root_folders()
     conn = _get_conn()
     if not _db.get_series_by_path(conn, path):
         raise HTTPException(404, "Series not found")
@@ -1984,6 +2053,7 @@ async def series_reset_source_metadata(path: str):
     English archives). Catalog rows that have no file are left intact, so
     sync can still discover and download missing chapters afterwards.
     """
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, path)
     if not row:
@@ -1995,6 +2065,7 @@ async def series_reset_source_metadata(path: str):
 @app.post("/api/series/{path:path}/delete-files")
 async def series_delete_files(path: str, body: DeleteSeriesFilesBody):
     """Delete chapter/volume archive files on disk for this series; DB is reconciled via scan."""
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, path)
     if not row:
@@ -2130,6 +2201,7 @@ async def get_chapter_comicinfo(path: str, chapter_id: int):
 
 @app.put("/api/comicinfo/series/{path:path}/chapters/{chapter_id}")
 async def update_chapter_comicinfo(path: str, chapter_id: int, body: ComicInfoUpdateBody):
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, path)
     if not row:
@@ -2197,6 +2269,7 @@ async def get_volume_comicinfo(path: str, volume_id: int):
 
 @app.put("/api/comicinfo/series/{path:path}/volumes/{volume_id}")
 async def update_volume_comicinfo(path: str, volume_id: int, body: ComicInfoUpdateBody):
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, path)
     if not row:
@@ -2237,6 +2310,7 @@ async def apply_fix(
     new_name:   str = Form(...),
     issue_name: str = Form(...),
 ):
+    _require_root_folders()
     log_path = os.path.join(MANGA_ROOT, _fix.LOG_FILENAME)
     log_data = _fix.load_log(log_path)
     try:
@@ -2249,6 +2323,7 @@ async def apply_fix(
 
 @app.post("/api/fix/series-skip", response_class=HTMLResponse)
 async def skip_series_from_fix(series_path: str = Form(...)):
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, series_path)
     if not row:
@@ -2274,6 +2349,59 @@ async def skip_series_from_fix(series_path: str = Form(...)):
     return HTMLResponse("")
 
 
+@app.post("/api/fix/series-apply-all")
+async def apply_all_series_fixes(series_path: str = Form(...)):
+    _require_root_folders()
+    conn = _get_conn()
+    row = _db.get_series_by_path(conn, series_path)
+    if not row:
+        raise HTTPException(404, "Series not found")
+    series_dir = os.path.join(MANGA_ROOT, series_path)
+    if not os.path.isdir(series_dir):
+        raise HTTPException(404, "Series folder not found on disk")
+
+    log_path = os.path.join(MANGA_ROOT, _fix.LOG_FILENAME)
+    log_data = _fix.load_log(log_path)
+    renamed = 0
+    skipped_missing = 0
+    seen_paths: set[str] = set()
+
+    findings = list(_fix.scan(series_dir))
+    findings.extend(_scan_settings_naming_issues(series_path=series_path))
+    findings.sort(key=lambda x: x[0].lower())
+    for old_path, issue_name, new_name in findings:
+        if old_path in seen_paths:
+            continue
+        seen_paths.add(old_path)
+        if not os.path.exists(old_path):
+            skipped_missing += 1
+            continue
+        try:
+            _fix.do_rename(old_path, new_name, issue_name, log_data, log_path)
+            renamed += 1
+        except Exception:
+            continue
+
+    dup_groups = _fix.scan_duplicates(series_dir)
+    dedup_applied = 0
+    for group in dup_groups:
+        try:
+            _fix.apply_dup_group(group, log_data, log_path)
+            dedup_applied += 1
+        except Exception:
+            continue
+
+    _db.scan_disk_files(series_dir, row["id"], conn)
+    return JSONResponse({
+        "ok": True,
+        "series_path": series_path,
+        "renamed": renamed,
+        "dedup_groups": dedup_applied,
+        "resolved": renamed + dedup_applied,
+        "skipped_missing": skipped_missing,
+    })
+
+
 @app.post("/api/fix/apply-dup", response_class=HTMLResponse)
 async def apply_dup(
     keep_path:    str = Form(...),
@@ -2281,6 +2409,7 @@ async def apply_dup(
     needs_rename: str = Form(""),
     keep_name:    str = Form(...),
 ):
+    _require_root_folders()
     log_path = os.path.join(MANGA_ROOT, _fix.LOG_FILENAME)
     log_data = _fix.load_log(log_path)
     all_paths = [keep_path] + [x for x in delete_paths.split("|") if x]

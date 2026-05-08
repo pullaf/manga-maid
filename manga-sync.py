@@ -1091,10 +1091,9 @@ def _sync_one_series(
 
         time.sleep(delay)
 
-    merge_ok = bool(settings.get("merge_volumes", True))
-    ov = series_row.get("merge_volumes_override")
-    if ov is not None:
-        merge_ok = bool(ov)
+    # Legacy UI-level "compact into volume" toggles are intentionally ignored.
+    # Volume merge should only run via explicit compact mode CLI path.
+    merge_ok = False
 
     # Filename cleanup (skip series excluded from Fix Files / manual filenames)
     if not series_row.get("exclude_from_fix"):
@@ -1139,13 +1138,13 @@ def main(
 
     conn = init_db(DATA_DIR)
     migrated = migrate_json_configs(MANGA_ROOT, conn)
-    added    = scan_disk_series(MANGA_ROOT, conn)
+    settings = load_settings()
+    roots = [rf for rf in (settings.get("root_folders") or []) if rf is not None]
+    added = scan_disk_series(MANGA_ROOT, conn, allowed_roots=roots)
     if migrated:
         _log(f"[startup] migrated {migrated} .mangadex.json config(s) to DB")
     if added:
         _log(f"[startup] catalogued {added} unlinked series from disk")
-
-    settings = load_settings()
 
     kavita_client = None
     kurl = settings.get("kavita_url", "").strip()
@@ -1158,6 +1157,13 @@ def main(
         series_list = [s for s in [get_series_by_path(conn, rel_path)] if s]
     else:
         series_list = get_all_series(conn)
+        if roots:
+            filtered: list[dict] = []
+            for s in series_list:
+                p = (s.get("path") or "").replace("\\", "/").strip()
+                if any(p == rf or p.startswith(rf + "/") for rf in roots):
+                    filtered.append(s)
+            series_list = filtered
 
     if covers_only:
         for s in series_list:
