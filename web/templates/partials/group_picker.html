@@ -1,18 +1,21 @@
 {% if groups %}
-<div class="space-y-1.5">
-  <div class="group-card flex items-center justify-between p-2.5 rounded-lg border cursor-pointer transition-colors"
-       data-group="" onclick="selectGroup(this)">
-    <span class="text-sm italic" style="color:var(--text-dim)">Any group — no filter</span>
-  </div>
+<div id="group-picker-list" class="space-y-1.5">
   {% for name, count, complete in groups %}
-  <div class="group-card flex items-center justify-between p-2.5 rounded-lg border cursor-pointer transition-colors"
-       data-group="{{ name }}" onclick="selectGroup(this)">
-    <span class="text-sm font-medium truncate" style="color:var(--text)">{{ name }}</span>
-    <div class="flex items-center gap-1.5 shrink-0 ml-2">
-      {% if complete %}
-      <span class="text-xs px-1.5 py-0.5 rounded-full font-medium" style="background:rgba(52,211,153,.1);color:#34d399">complete</span>
-      {% endif %}
-      <span class="text-xs" style="color:var(--text-dim)">{{ count }} ch.</span>
+  <div class="group-sort-row flex items-stretch gap-1.5">
+    <span class="group-drag-handle flex items-center px-1 rounded cursor-grab select-none text-xs shrink-0"
+          draggable="true"
+          style="color:var(--text-dim);user-select:none" title="Drag to reorder">⠿</span>
+    <div class="group-card flex flex-1 items-center justify-between p-2.5 rounded-lg border cursor-pointer transition-colors"
+         data-group="{{ name|e }}" onclick="selectGroup(this)">
+      <span class="text-sm font-medium truncate" style="color:var(--text)">{{ name }}</span>
+      <div class="flex items-center gap-1.5 shrink-0 ml-2">
+        {% if complete %}
+        <span class="text-xs px-1.5 py-0.5 rounded-full font-medium" style="background:rgba(52,211,153,.1);color:#34d399">complete</span>
+        {% endif %}
+        {% if count is not none %}
+        <span class="text-xs" style="color:var(--text-dim)">{{ count }} ch.</span>
+        {% endif %}
+      </div>
     </div>
   </div>
   {% endfor %}

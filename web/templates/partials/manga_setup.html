@@ -1,7 +1,7 @@
 <form method="post" action="/api/series" class="space-y-5">
   <input type="hidden" name="manga_id" value="{{ manga_id }}">
   <input type="hidden" name="cover_filename" value="{{ cover_filename }}">
-  <input type="hidden" name="translator" id="translator">
+  <input type="hidden" name="preferred_groups_json" id="preferred-groups-json" value="[]">
   <input type="hidden" name="language" id="language-hidden" value="{{ default_lang }}">
 
   <!-- Manga header -->
@@ -45,9 +45,10 @@
   <!-- Group picker -->
   <div>
     <div class="flex items-center justify-between mb-2">
-      <label class="text-xs font-medium" style="color:var(--text-muted)">Scanlation group</label>
+      <label class="text-xs font-medium" style="color:var(--text-muted)">Scanlation group priority</label>
       <span id="selected-group-label" class="text-xs font-medium" style="color:var(--accent-light)"></span>
     </div>
+    <p class="text-xs mb-1.5" style="color:var(--text-dim)">Drag ⠿ to reorder (first = highest priority). Click a group to move it to the top.</p>
     <div id="groups-loading" class="hidden text-xs py-1 flex items-center gap-1.5" style="color:var(--text-dim)">
       <span class="inline-block w-1.5 h-1.5 rounded-full bg-violet-500 animate-pulse"></span>
       Fetching groups…
@@ -80,6 +81,18 @@
            class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
   </div>
 
+  <label class="flex items-start gap-3 cursor-pointer">
+    <input type="checkbox" name="exclude_from_fix" value="true"
+           class="mt-1 rounded border"
+           style="border-color:var(--border-mid);accent-color:var(--accent)">
+    <span class="text-xs" style="color:var(--text-dim)">
+      <span class="font-medium" style="color:var(--text-muted)">Exclude from Fix Files</span>
+      - omit this series from Fix Files suggestions and skip automatic filename cleanup after sync.
+    </span>
+  </label>
+
+  <input type="hidden" name="merge_volumes_override" value="">
+
   <!-- Format codes reference -->
   <div class="rounded-lg px-3 py-2.5 grid grid-cols-3 gap-x-4 gap-y-1" style="background:var(--surface-alt);border:1px solid var(--border)">
     {% for code, meaning in [("%1","language"), ("%2","group"), ("%3","title"), ("%4","volume"), ("%5","chapter"), ("%6","ch. title")] %}
@@ -96,3 +109,11 @@
     Add Series
   </button>
 </form>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  if (document.getElementById('group-picker-list')) {
+    initGroupOrderUI();
+    syncPreferredGroupsFromPicker();
+  }
+});
+</script>

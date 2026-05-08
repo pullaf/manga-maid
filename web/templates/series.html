@@ -71,6 +71,35 @@
     document.getElementById('setup-loading').classList.add('hidden');
     document.getElementById('setup-form').innerHTML = await resp.text();
     htmx.process(document.getElementById('setup-form'));
+
+    // If launched from "Link →", preserve the existing folder name and location
+    const params = new URLSearchParams(location.search);
+    const folder = params.get('folder');
+    const sub = params.get('sub');
+    if (folder) {
+      const titleInp = document.querySelector('#setup-form [name=title]');
+      if (titleInp) {
+        titleInp.value = folder;
+        titleInp.readOnly = true;
+        titleInp.style.cssText += ';opacity:.6;cursor:not-allowed';
+      }
+    }
+    if (sub !== null) {
+      const subSelect = document.querySelector('#setup-form [name=subfolder]');
+      if (subSelect) {
+        for (const opt of subSelect.options) {
+          if (opt.value === sub) { opt.selected = true; break; }
+        }
+        subSelect.disabled = true;
+        subSelect.style.cssText += ';opacity:.6;cursor:not-allowed';
+        // disabled selects don't submit - add a hidden input to carry the value
+        const hidden = document.createElement('input');
+        hidden.type = 'hidden';
+        hidden.name = 'subfolder';
+        hidden.value = sub;
+        subSelect.closest('div').appendChild(hidden);
+      }
+    }
   }
 
   function resetToPhase1() {
@@ -102,6 +131,18 @@
     if (!card) return;
     await loadSetup(card.dataset.id);
   });
+
+  (function() {
+    const q = new URLSearchParams(location.search).get('q');
+    if (!q) return;
+    const inp = document.getElementById('search-input');
+    const results = document.getElementById('search-results');
+    if (!inp) return;
+    inp.value = q;
+    fetch('/api/search?q=' + encodeURIComponent(q))
+      .then(r => r.text())
+      .then(html => { results.innerHTML = html; htmx.process(results); });
+  })();
 </script>
 {% endif %}
 {% endblock %}

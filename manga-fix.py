@@ -30,8 +30,8 @@ ISSUES = [
     },
     {
         "name": "empty_volume",
-        "description": "vol. with no number before ch.: vol.  ch. N → ch. N",
-        "pattern": re.compile(r"vol\.\s{2,}(?=ch\.)"),
+        "description": "vol. with no number before ch.: vol. ch. N → ch. N",
+        "pattern": re.compile(r"vol\.\s+(?=ch\.)"),
         "fix": lambda m: "",
     },
     {

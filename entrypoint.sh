@@ -21,6 +21,7 @@ if [ "$PUID" != "0" ] || [ "$PGID" != "0" ]; then
 else
     RUNAS=""
 fi
+export CRON_RUNAS="$RUNAS"
 
 if ! $RUNAS touch "$MANGA_ROOT/.write_test" 2>/dev/null; then
     echo "ERROR: $MANGA_ROOT is not writable as uid=${PUID} gid=${PGID} — check volume permissions." >&2
@@ -28,10 +29,16 @@ if ! $RUNAS touch "$MANGA_ROOT/.write_test" 2>/dev/null; then
 fi
 $RUNAS rm -f "$MANGA_ROOT/.write_test"
 
-CRON="${SYNC_CRON:-0 */6 * * *}"
-echo "$CRON $RUNAS python3 /app/manga-sync.py" > /tmp/crontab
+CRON="$(python3 - <<'PY'
+import sys
+sys.path.insert(0, "/app")
+from sync_config import load_settings, sanitize_sync_cron
+print(sanitize_sync_cron(load_settings().get("sync_cron")))
+PY
+)"
+echo "$CRON $RUNAS python3 /app/cron_enqueue_sync.py" > /tmp/crontab
 echo "manga-sync starting — schedule: $CRON | root: $MANGA_ROOT | data: $DATA_DIR | uid=${PUID} gid=${PGID}"
 
 $RUNAS uvicorn web.app:app --app-dir /app --host 0.0.0.0 --port 4649 --log-level warning &
 
-exec supercronic /tmp/crontab
+exec supercronic -inotify /tmp/crontab

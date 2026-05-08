@@ -18,7 +18,7 @@
   <div id="output" class="hidden rounded-lg overflow-hidden" style="background:#090910;border:1px solid var(--border)">
     <div id="waiting-msg" class="flex items-center gap-2 px-4 py-3 text-xs" style="color:var(--text-dim)">
       <span class="inline-block w-2 h-2 rounded-full bg-violet-500 animate-pulse"></span>
-      Contacting MangaDex and queuing downloads — this can take a minute…
+      Contacting MangaDex and queuing downloads - this can take a minute...
     </div>
     <div id="lines" class="px-4 pb-4 font-mono text-xs leading-relaxed space-y-0.5" style="color:#c4c0dd"></div>
   </div>
@@ -26,39 +26,51 @@
 
 <script>
 let source = null;
+let currentJobId = null;
 
-function startSync() {
-  if (source) return;
+function bindToJob(jobId) {
+  if (!jobId) return;
+  currentJobId = jobId;
+  localStorage.setItem('sync-job-id', String(jobId));
+  const url = new URL(window.location.href);
+  url.searchParams.set('job', String(jobId));
+  window.history.replaceState({}, '', url.toString());
+
+  if (source) source.close();
   const btn = document.getElementById('sync-btn');
   const status = document.getElementById('sync-status');
   const output = document.getElementById('output');
-
   btn.disabled = true;
   status.textContent = 'Running…';
   output.classList.remove('hidden');
-  document.getElementById('lines').innerHTML = '';
-  document.getElementById('waiting-msg').classList.remove('hidden');
-
-  source = new EventSource('/api/sync/stream');
+  source = new EventSource('/api/jobs/' + jobId + '/stream?from_seq=0');
 
   source.onmessage = function(e) {
-    if (e.data === '[done]') {
-      source.close();
-      source = null;
-      btn.disabled = false;
-      status.textContent = 'Done.';
+    let payload = null;
+    try { payload = JSON.parse(e.data); } catch (err) {}
+    if (!payload) return;
+    if (payload.type === 'line') {
       document.getElementById('waiting-msg').classList.add('hidden');
+      const lines = document.getElementById('lines');
+      const line = document.createElement('div');
+      line.textContent = payload.line || '';
+      if ((payload.line || '').includes('downloaded=') || (payload.line || '').includes('→')) line.style.color = '#34d399';
+      else if ((payload.line || '').includes('[warn]') || (payload.line || '').includes('error')) line.style.color = '#fbbf24';
+      else if ((payload.line || '').includes('up-to-date')) line.style.color = '#9a96b8';
+      lines.appendChild(line);
+      lines.scrollTop = lines.scrollHeight;
       return;
     }
-    document.getElementById('waiting-msg').classList.add('hidden');
-    const lines = document.getElementById('lines');
-    const line = document.createElement('div');
-    line.textContent = e.data;
-    if (e.data.includes('downloaded=') || e.data.includes('→')) line.style.color = '#34d399';
-    else if (e.data.includes('[warn]') || e.data.includes('error')) line.style.color = '#fbbf24';
-    else if (e.data.includes('up-to-date')) line.style.color = '#6b6880';
-    lines.appendChild(line);
-    lines.scrollTop = lines.scrollHeight;
+    if (payload.type === 'status') {
+      if (payload.status === 'queued') status.textContent = 'Queued…';
+      if (payload.status === 'running') status.textContent = 'Running…';
+      if (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled' || payload.status === 'missing') {
+        source.close();
+        source = null;
+        btn.disabled = false;
+        status.textContent = payload.status === 'completed' ? 'Done.' : payload.status + '.';
+      }
+    }
   };
 
   source.onerror = function() {
@@ -68,5 +80,37 @@ function startSync() {
     status.textContent = 'Connection lost.';
   };
 }
+
+function startSync() {
+  if (source) return;
+  const output = document.getElementById('output');
+  output.classList.remove('hidden');
+  document.getElementById('lines').innerHTML = '';
+  document.getElementById('waiting-msg').classList.remove('hidden');
+  fetch('/api/jobs/sync-all', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok || !data.job) throw new Error(data.error || 'Could not enqueue');
+      bindToJob(data.job.id);
+    })
+    .catch(err => {
+      document.getElementById('sync-status').textContent = String(err);
+      document.getElementById('sync-btn').disabled = false;
+    });
+}
+
+(function restoreJobFromUrlOrStorage() {
+  const q = new URLSearchParams(window.location.search);
+  const fromUrl = q.get('job');
+  const fromStore = localStorage.getItem('sync-job-id');
+  const pick = fromUrl || fromStore;
+  if (!pick) return;
+  const n = parseInt(pick, 10);
+  if (!n) return;
+  document.getElementById('output').classList.remove('hidden');
+  document.getElementById('lines').innerHTML = '';
+  document.getElementById('waiting-msg').classList.remove('hidden');
+  bindToJob(n);
+})();
 </script>
 {% endblock %}

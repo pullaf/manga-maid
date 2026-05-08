@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script>(function(){var t=localStorage.getItem('theme')||'dark';document.documentElement.setAttribute('data-theme',t);})()</script>
-  <title>manga-kavita</title>
+  <title>Manga Maid</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%237c3aed'/><rect x='4' y='4' width='10' height='14' rx='2' fill='white' opacity='.92'/><rect x='16' y='4' width='12' height='7' rx='2' fill='white' opacity='.92'/><rect x='16' y='13' width='12' height='5' rx='2' fill='white' opacity='.65'/><rect x='4' y='20' width='24' height='8' rx='2' fill='white' opacity='.82'/></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -289,7 +289,7 @@
         <rect x="10" y="7" width="9" height="3" rx="1.5" fill="#7c3aed" opacity=".6"/>
         <rect x="1" y="12" width="18" height="7" rx="1.5" fill="#7c3aed" opacity=".75"/>
       </svg>
-      <span class="font-display font-700 text-sm text-violet-400 tracking-wide" style="font-family:'Syne',sans-serif;font-weight:700">manga-kavita</span>
+      <span class="font-display font-700 text-sm text-violet-400 tracking-wide" style="font-family:'Syne',sans-serif;font-weight:700">Manga Maid</span>
     </div>
     <button onclick="openMobileNav()" class="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition-colors" aria-label="Menu">
       <svg viewBox="0 0 18 14" fill="currentColor" class="w-4.5" style="width:18px;height:14px">
@@ -314,7 +314,7 @@
         <rect x="10" y="7" width="9" height="3" rx="1.5" fill="#7c3aed" opacity=".6"/>
         <rect x="1" y="12" width="18" height="7" rx="1.5" fill="#7c3aed" opacity=".75"/>
       </svg>
-      <span style="font-family:'Syne',sans-serif;font-weight:700;font-size:13px;letter-spacing:.01em" class="text-violet-400">manga-kavita</span>
+      <span style="font-family:'Syne',sans-serif;font-weight:700;font-size:13px;letter-spacing:.01em" class="text-violet-400">Manga Maid</span>
     </div>
 
     <!-- Nav -->
@@ -326,12 +326,14 @@
          '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" width="14" height="14" aria-hidden="true" style="flex-shrink:0"><circle cx="7" cy="7" r="5.5"/><line x1="7" y1="4.5" x2="7" y2="9.5"/><line x1="4.5" y1="7" x2="9.5" y2="7"/></svg>'),
         ("sync",     "/sync",      "Sync",
          '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" width="14" height="14" aria-hidden="true" style="flex-shrink:0"><path d="M1 4.5C1.8 2.5 3.8 1 6 1c2.5 0 4.5 1.5 5 3.5"/><polyline points="9.5,1 11,4.5 7.5,5.5"/><path d="M13 9.5C12.2 11.5 10.2 13 8 13c-2.5 0-4.5-1.5-5-3.5"/><polyline points="4.5,13 3,9.5 6.5,8.5"/></svg>'),
+        ("jobs",     "/jobs",      "Jobs",
+         '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14" aria-hidden="true" style="flex-shrink:0"><rect x="1.5" y="1.5" width="11" height="11" rx="2"/><path d="M4 4.5h6M4 7h6M4 9.5h4"/></svg>'),
         ("fix",      "/fix",       "Fix Files",
          '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" width="14" height="14" aria-hidden="true" style="flex-shrink:0"><path d="M9.8 1.5a3 3 0 0 0-3.4 4L2 9.8a1.5 1.5 0 0 0 2.2 2.2L8.5 7.6a3 3 0 0 0 4-3.4L11 5.7 8.3 3z"/></svg>'),
         ("logs",     "/logs",      "Logs",
          '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" width="14" height="14" aria-hidden="true" style="flex-shrink:0"><rect x="2" y="1" width="10" height="12" rx="2"/><line x1="4.5" y1="4.5" x2="9.5" y2="4.5"/><line x1="4.5" y1="7" x2="9.5" y2="7"/><line x1="4.5" y1="9.5" x2="7.5" y2="9.5"/></svg>'),
         ("settings", "/settings",  "Settings",
-         '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="14" height="14" aria-hidden="true" style="flex-shrink:0"><circle cx="7" cy="7" r="2.2"/><path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.6 2.6l1.1 1.1M10.3 10.3l1.1 1.1M2.6 11.4l1.1-1.1M10.3 3.7l1.1-1.1"/></svg>'),
+         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" width="14" height="14" aria-hidden="true" style="flex-shrink:0"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.7l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.7-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.2a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.7.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.7 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.7.3h.1a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.7-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.7v.1a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.2a1.6 1.6 0 0 0-1.5 1z"/></svg>'),
       ] %}
       {% for key, href, label, icon in links %}
       <a href="{{ href }}" onclick="closeMobileNav()"
@@ -341,6 +343,15 @@
       </a>
       {% endfor %}
     </nav>
+
+    <div class="px-3 pb-2">
+      <a href="/jobs" id="sidebar-current-job"
+         class="hidden rounded-lg border px-2.5 py-2 block transition-colors"
+         style="border-color:var(--border-mid);background:var(--surface-alt);text-decoration:none">
+        <div class="text-[11px] font-semibold" style="color:var(--text-dim);font-family:'Syne',sans-serif">Current Job</div>
+        <div id="sidebar-current-job-label" class="text-xs mt-0.5 truncate" style="color:var(--text)">-</div>
+      </a>
+    </div>
 
     <div class="px-3 py-3" style="border-top:1px solid var(--border)">
       <button id="theme-toggle" onclick="toggleTheme()"
@@ -385,6 +396,28 @@
     </div>
   </div>
 
+  <!-- Global confirmation modal -->
+  <div id="confirm-modal" class="hidden fixed inset-0 z-[70] flex items-center justify-center p-4">
+    <div class="absolute inset-0" style="background:rgba(0,0,0,.65);backdrop-filter:blur(4px)"></div>
+    <div class="relative w-full max-w-md rounded-2xl border p-6 shadow-2xl"
+         style="background:var(--surface);border-color:var(--border-mid);box-shadow:0 24px 64px rgba(0,0,0,.6)">
+      <h2 class="text-base font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">Confirm Action</h2>
+      <p id="confirm-modal-text" class="text-sm mt-3 leading-relaxed" style="color:var(--text-muted)"></p>
+      <div class="flex justify-end gap-2 mt-5">
+        <button type="button" id="confirm-modal-cancel"
+                class="text-xs px-3 py-2 rounded-lg border transition-colors"
+                style="border-color:var(--border-mid);color:var(--text-muted)">
+          Cancel
+        </button>
+        <button type="button" id="confirm-modal-ok"
+                class="text-xs px-3 py-2 rounded-lg font-semibold transition-colors"
+                style="background:rgba(248,113,113,.15);border:1px solid rgba(248,113,113,.5);color:#f87171">
+          Confirm
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script>
     /* ── Mobile nav ──────────────────────────── */
     function openMobileNav() {
@@ -402,9 +435,29 @@
       document.getElementById('edit-modal').classList.add('hidden');
       document.getElementById('modal-body').innerHTML = '';
     }
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        closeModal();
+        _closeConfirmModal(false);
+      }
+    });
+    function afterGroupPickerInjected() {
+      var list = document.getElementById('group-picker-list');
+      if (!list) return;
+      initGroupOrderUI();
+      var h = document.getElementById('preferred-groups-json');
+      var saved = [];
+      try { saved = JSON.parse(h && h.value ? h.value : '[]'); } catch (err) {}
+      applySavedGroupOrder(Array.isArray(saved) ? saved : []);
+      syncPreferredGroupsFromPicker();
+      _syncManualDisplayFromHidden();
+    }
+
     document.addEventListener('htmx:afterSwap', e => {
-      if (e.target.id === 'modal-body') openModal();
+      if (e.target.id === 'modal-body') {
+        openModal();
+        afterGroupPickerInjected();
+      }
     });
 
     /* ── Theme toggle ────────────────────────── */
@@ -431,15 +484,115 @@
     }
     _updateThemeToggle(document.documentElement.getAttribute('data-theme') || 'dark');
 
-    /* ── Lang / group pickers ────────────────── */
+    /* ── Lang / group pickers (ordered priority + drag) ── */
+    function _setPreferredGroupsHidden(val) {
+      var h = document.getElementById('preferred-groups-json');
+      if (h) h.value = val;
+    }
+
+    function _readPreferredGroups() {
+      var h = document.getElementById('preferred-groups-json');
+      if (!h) return [];
+      try {
+        var names = JSON.parse(h.value || '[]');
+        return Array.isArray(names) ? names : [];
+      } catch (err) {
+        return [];
+      }
+    }
+
+    function _syncManualDisplayFromHidden() {
+      var manual = document.getElementById('translator-display');
+      if (!manual) return;
+      var names = _readPreferredGroups();
+      manual.value = names.length ? names.join(', ') : '';
+    }
+
+    function serializePreferredGroups() {
+      var list = document.getElementById('group-picker-list');
+      if (!list) return '[]';
+      var names = [];
+      list.querySelectorAll(':scope > .group-sort-row .group-card[data-group]').forEach(function(card) {
+        var g = card.dataset.group;
+        if (g) names.push(g);
+      });
+      return JSON.stringify(names);
+    }
+
+    function syncPreferredGroupsFromPicker() {
+      _setPreferredGroupsHidden(serializePreferredGroups());
+    }
+
+    function initGroupOrderUI() {
+      var list = document.getElementById('group-picker-list');
+      if (!list) return;
+      var dragEl = null;
+      list.querySelectorAll('.group-sort-row').forEach(function(row) {
+        var handle = row.querySelector('.group-drag-handle');
+        if (!handle) return;
+        handle.setAttribute('draggable', 'true');
+        handle.addEventListener('dragstart', function(e) {
+          dragEl = row;
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', '');
+        });
+        row.addEventListener('dragover', function(e) {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          if (!dragEl || dragEl === row) return;
+          var rect = row.getBoundingClientRect();
+          var before = (e.clientY - rect.top) < rect.height / 2;
+          if (before) {
+            list.insertBefore(dragEl, row);
+          } else {
+            list.insertBefore(dragEl, row.nextSibling);
+          }
+        });
+        row.addEventListener('drop', function(e) {
+          e.preventDefault();
+        });
+      });
+      list.addEventListener('dragend', function(e) {
+        if (e.target.classList && e.target.classList.contains('group-drag-handle')) {
+          dragEl = null;
+          syncPreferredGroupsFromPicker();
+          _syncManualDisplayFromHidden();
+        }
+      }, true);
+    }
+
+    function applySavedGroupOrder(savedNames) {
+      var list = document.getElementById('group-picker-list');
+      if (!list || !savedNames || !savedNames.length) return;
+      var rows = Array.from(list.querySelectorAll(':scope > .group-sort-row'));
+      if (!rows.length) return;
+      var byName = {};
+      rows.forEach(function(row) {
+        var card = row.querySelector('.group-card[data-group]');
+        if (card && card.dataset.group)
+          byName[card.dataset.group] = row;
+      });
+      var insertBeforeNode = list.firstChild;
+      savedNames.forEach(function(name) {
+        var row = byName[name];
+        if (row) {
+          list.insertBefore(row, insertBeforeNode);
+          insertBeforeNode = row.nextSibling;
+        }
+      });
+    }
+
     function selectLang(btn, lang, mangaId) {
       document.querySelectorAll('.lang-btn').forEach(b => {
         b.classList.remove('bg-violet-600');
       });
       btn.classList.add('bg-violet-600');
       document.getElementById('language-hidden').value = lang;
-      document.getElementById('translator').value = '';
-      document.getElementById('selected-group-label').textContent = '';
+      _setPreferredGroupsHidden('[]');
+      var label = document.getElementById('selected-group-label');
+      if (label) label.textContent = '';
+      var manual = document.getElementById('translator-display');
+      if (manual) manual.value = '';
       document.getElementById('groups-loading').classList.remove('hidden');
       document.getElementById('group-picker').innerHTML = '';
       fetch(`/api/manga/${mangaId}/groups?language=${lang}`)
@@ -447,16 +600,102 @@
         .then(html => {
           document.getElementById('groups-loading').classList.add('hidden');
           document.getElementById('group-picker').innerHTML = html;
+          initGroupOrderUI();
+          syncPreferredGroupsFromPicker();
         });
     }
 
     function selectGroup(card) {
+      var list = document.getElementById('group-picker-list');
       document.querySelectorAll('.group-card').forEach(c =>
         c.classList.remove('border-violet-500', 'bg-violet-50'));
       card.classList.add('border-violet-500', 'bg-violet-50');
-      document.getElementById('translator').value = card.dataset.group;
-      document.getElementById('selected-group-label').textContent = card.dataset.group || 'any';
+      var label = document.getElementById('selected-group-label');
+      var manual = document.getElementById('translator-display');
+      if (list) {
+        var row = card.closest('.group-sort-row');
+        if (row) {
+          var insertBeforeNode = list.firstChild;
+          if (row.parentNode === list)
+            list.insertBefore(row, insertBeforeNode);
+        }
+      }
+      syncPreferredGroupsFromPicker();
+      var names = _readPreferredGroups();
+      var summary = names.length ? names.join(' · ') : '';
+      if (label) label.textContent = summary;
+      if (manual) manual.value = names.length ? names.join(', ') : '';
     }
+
+    function syncPreferredGroupsFromManualDisplay(input) {
+      var h = document.getElementById('preferred-groups-json');
+      if (!h || !input) return;
+      var v = input.value.trim();
+      if (!v) {
+        h.value = '[]';
+        return;
+      }
+      var parts = v.split(/\s*,\s*/).map(function(s) { return s.trim(); }).filter(Boolean);
+      h.value = JSON.stringify(parts.length ? parts : [v]);
+    }
+
+    async function refreshSidebarCurrentJob() {
+      var panel = document.getElementById('sidebar-current-job');
+      var label = document.getElementById('sidebar-current-job-label');
+      if (!panel || !label) return;
+      try {
+        var resp = await fetch('/api/jobs/active');
+        if (!resp.ok) return;
+        var data = await resp.json();
+        var current = data.current || null;
+        if (!current) {
+          panel.classList.add('hidden');
+          return;
+        }
+        panel.classList.remove('hidden');
+        label.textContent = (current.display_name || current.job_type || current.status);
+      } catch (err) {}
+    }
+    setInterval(refreshSidebarCurrentJob, 3000);
+    refreshSidebarCurrentJob();
+
+    var _confirmResolver = null;
+    function _closeConfirmModal(ok) {
+      var modal = document.getElementById('confirm-modal');
+      if (!modal || modal.classList.contains('hidden')) return;
+      modal.classList.add('hidden');
+      if (_confirmResolver) {
+        var r = _confirmResolver;
+        _confirmResolver = null;
+        r(!!ok);
+      }
+    }
+    window.appConfirm = function(message) {
+      var modal = document.getElementById('confirm-modal');
+      var text = document.getElementById('confirm-modal-text');
+      var okBtn = document.getElementById('confirm-modal-ok');
+      var cancelBtn = document.getElementById('confirm-modal-cancel');
+      if (!modal || !text || !okBtn || !cancelBtn) {
+        return Promise.resolve(false);
+      }
+      text.textContent = String(message || 'Are you sure?');
+      modal.classList.remove('hidden');
+      okBtn.focus();
+      return new Promise(function(resolve) {
+        _confirmResolver = resolve;
+      });
+    };
+    document.getElementById('confirm-modal-ok')?.addEventListener('click', function() { _closeConfirmModal(true); });
+    document.getElementById('confirm-modal-cancel')?.addEventListener('click', function() { _closeConfirmModal(false); });
+    document.querySelector('#confirm-modal > .absolute')?.addEventListener('click', function() { _closeConfirmModal(false); });
+
+    document.body.addEventListener('htmx:confirm', function(e) {
+      if (!e.detail || !e.detail.question) return;
+      e.preventDefault();
+      window.appConfirm(e.detail.question).then(function(ok) {
+        if (ok) e.detail.issueRequest(true);
+      });
+    });
   </script>
 </body>
 </html>

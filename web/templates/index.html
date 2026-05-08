@@ -31,7 +31,7 @@
     background: var(--surface);
     overflow: hidden;
     transition: border-color .18s, box-shadow .18s, transform .15s;
-    cursor: default;
+    cursor: pointer;
   }
   .sc-grid:hover {
     border-color: var(--border-hi);
@@ -187,6 +187,30 @@
   }
   .view-toggle button:not(.active):hover { color: var(--text-muted); }
 
+  /* ── Unlinked (local) series ───────────────────────────── */
+  .sc-grid.unlinked  { border-color: rgba(251,191,36,.18); opacity: .88; }
+  .sc-grid.unlinked:hover { border-color: rgba(251,191,36,.5); opacity: 1; }
+  .sc-list.unlinked  { opacity: .88; }
+  .sc-list.unlinked:hover { opacity: 1; }
+  .badge-local {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: 10px; font-weight: 700; letter-spacing: .05em;
+    padding: 1px 6px; border-radius: 4px;
+    background: rgba(251,191,36,.12);
+    color: #fbbf24;
+    border: 1px solid rgba(251,191,36,.3);
+    font-family: 'Syne', sans-serif;
+  }
+  .badge-complete {
+    display: inline-flex; align-items: center; gap: 3px;
+    font-size: 10px; font-weight: 700; letter-spacing: .05em;
+    padding: 1px 6px; border-radius: 4px;
+    background: rgba(52,211,153,.12);
+    color: #34d399;
+    border: 1px solid rgba(52,211,153,.3);
+    font-family: 'Syne', sans-serif;
+  }
+
   /* ── Action buttons ────────────────────────────────────── */
   .act-btn {
     font-size: 12px;
@@ -222,7 +246,9 @@
 <div class="mb-6 flex items-center justify-between gap-3">
   <div>
     <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Dashboard</h1>
-    <p class="text-sm mt-0.5" style="color:var(--text-muted)">{{ series|length }} series tracked</p>
+    <p class="text-sm mt-0.5" style="color:var(--text-muted)">
+      {{ linked_count }} linked{% if unlinked_count %} · <span style="color:#fbbf24">{{ unlinked_count }} local</span>{% endif %}
+    </p>
   </div>
   <div class="flex items-center gap-3">
     <div class="view-toggle">
@@ -261,45 +287,60 @@
 <!-- ─── Grid view ─────────────────────────────────────── -->
 <div id="series-grid">
   {% for s in series %}
-  <div class="sc-grid series-item"
+  <div class="sc-grid series-item{% if not s.linked %} unlinked{% endif %}"
        data-path="{{ s.path }}"
+       data-details-url="/series/{{ s.path }}"
        data-has-cover="{{ 'yes' if s.cover_url else 'no' }}">
     <div class="cover-wrap">
       {% if s.cover_url %}
       <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.name }}"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
       <div class="cover-placeholder" style="display:none;font-size:22px">{{ s.name[0].upper() }}</div>
-      {% else %}
+      {% elif s.linked %}
       <div class="cover-placeholder cover-lazy" data-path="{{ s.path }}" style="font-size:32px">{{ s.name[0].upper() }}</div>
+      {% else %}
+      <div class="cover-placeholder" style="font-size:32px">{{ s.name[0].upper() }}</div>
       {% endif %}
       <div class="cover-overlay"></div>
-      <div class="cover-title">{{ s.name }}</div>
+      <a href="/series/{{ s.path }}" class="cover-title" style="text-decoration:none">{{ s.name }}</a>
     </div>
     <div class="card-body">
       <div class="card-meta">
+        {% if s.linked %}
         <span style="color:var(--accent-light);font-weight:600">{{ s.config.get("language","en").upper() }}</span>
         {% if s.config.get("translator") %}
         <span style="color:var(--border-hi)">·</span>
         <span class="truncate" style="max-width:90px" title="{{ s.config.translator }}">{{ s.config.translator }}</span>
         {% endif %}
+        {% else %}
+        <span class="badge-local">LOCAL</span>
+        {% endif %}
       </div>
       <div class="card-meta mt-1" style="color:var(--text-dim)">
-        {% if s.last_chapter %}ch.{{ s.last_chapter | int }}{% else %}no chapters{% endif %}
-        <span style="color:var(--border)">·</span>
-        {{ s.chapter_count }} file{{ 's' if s.chapter_count != 1 }}
+        {% set vols = s.volume_count or 0 %}{% set chs = s.chapter_count or 0 %}
+        {% if vols %}{{ vols }} vol{{ 's' if vols != 1 }}{% endif %}
+        {% if vols and chs %}<span style="color:var(--border)">·</span>{% endif %}
+        {% if chs %}{{ chs }} ch{{ 's' if chs != 1 }}{% endif %}
+        {% if not vols and not chs %}-{% endif %}
+        {% if s.config.get("status") == "completed" and s.config.get("total_volumes") and vols >= s.config.total_volumes %}<span class="badge-complete">complete</span>{% endif %}
       </div>
       <div class="card-actions">
+        {% if s.linked %}
         <button class="act-btn accent" onclick="seriesSync(this)" data-path="{{ s.path }}">Sync</button>
         <button class="act-btn muted"  onclick="seriesCovers(this)" data-path="{{ s.path }}">Covers</button>
-        <button class="act-btn muted"
-                hx-get="/api/series/{{ s.path }}/edit"
-                hx-target="#modal-body"
-                hx-swap="innerHTML">Edit</button>
+        <a href="/series/{{ s.path }}" class="act-btn muted"
+           style="text-decoration:none;display:inline-flex;align-items:center">Details</a>
+        <a href="https://mangadex.org/title/{{ s.config.id }}" target="_blank" rel="noopener"
+           class="act-btn muted" style="text-decoration:none;display:inline-flex;align-items:center" title="View on MangaDex">↗</a>
         <button class="act-btn danger"
                 hx-delete="/api/series/{{ s.path }}"
                 hx-target="closest .series-item"
                 hx-swap="outerHTML"
                 hx-confirm="Remove '{{ s.name }}' from sync? (files stay on disk)">✕</button>
+        {% else %}
+        <a href="/series?q={{ s.name | urlencode }}&folder={{ s.name | urlencode }}&sub={{ s.subfolder | urlencode }}" class="act-btn accent"
+           style="text-decoration:none;display:inline-flex;align-items:center">Link →</a>
+        {% endif %}
       </div>
       <div class="series-log hidden mt-2"></div>
     </div>
@@ -310,39 +351,50 @@
 <!-- ─── List view ─────────────────────────────────────── -->
 <div id="series-list" style="display:none">
   {% for s in series %}
-  <div class="sc-list series-item"
+  <div class="sc-list series-item{% if not s.linked %} unlinked{% endif %}"
        data-path="{{ s.path }}"
+       data-details-url="/series/{{ s.path }}"
        data-has-cover="{{ 'yes' if s.cover_url else 'no' }}">
     <div class="cover-wrap">
       {% if s.cover_url %}
       <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.name }}"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
       <div class="cover-placeholder" style="display:none;font-size:13px">{{ s.name[0].upper() }}</div>
-      {% else %}
+      {% elif s.linked %}
       <div class="cover-placeholder cover-lazy" data-path="{{ s.path }}" style="font-size:18px">{{ s.name[0].upper() }}</div>
+      {% else %}
+      <div class="cover-placeholder" style="font-size:18px">{{ s.name[0].upper() }}</div>
       {% endif %}
     </div>
-    <div class="list-name" title="{{ s.name }}">{{ s.name }}</div>
+    <a href="/series/{{ s.path }}" class="list-name" title="{{ s.name }}" style="text-decoration:none">{{ s.name }}</a>
     <div class="list-meta">
+      {% if s.linked %}
       <span style="color:var(--accent-light);font-weight:600">{{ s.config.get("language","en").upper() }}</span>
       {% if s.config.get("translator") %}
       <span style="color:var(--text-dim)" title="{{ s.config.translator }}">{{ s.config.translator | truncate(20, True) }}</span>
       {% endif %}
-      <span>{% if s.last_chapter %}ch.{{ s.last_chapter | int }}{% else %}—{% endif %}</span>
-      <span>{{ s.chapter_count }} file{{ 's' if s.chapter_count != 1 }}</span>
+      {% else %}
+      <span class="badge-local">LOCAL</span>
+      {% endif %}
+      <span>{% set vols = s.volume_count or 0 %}{% set chs = s.chapter_count or 0 %}{% if vols %}{{ vols }} vol{{ 's' if vols != 1 }}{% endif %}{% if vols and chs %} · {% endif %}{% if chs %}{{ chs }} ch{{ 's' if chs != 1 }}{% endif %}{% if not vols and not chs %}-{% endif %}{% if s.config.get("status") == "completed" and s.config.get("total_volumes") and vols >= s.config.total_volumes %} <span class="badge-complete">complete</span>{% endif %}</span>
     </div>
     <div class="list-actions">
+      {% if s.linked %}
       <button class="act-btn accent" onclick="seriesSync(this)" data-path="{{ s.path }}">Sync</button>
       <button class="act-btn muted"  onclick="seriesCovers(this)" data-path="{{ s.path }}">Covers</button>
-      <button class="act-btn muted"
-              hx-get="/api/series/{{ s.path }}/edit"
-              hx-target="#modal-body"
-              hx-swap="innerHTML">Edit</button>
+      <a href="/series/{{ s.path }}" class="act-btn muted"
+         style="text-decoration:none;display:inline-flex;align-items:center">Details</a>
+      <a href="https://mangadex.org/title/{{ s.config.id }}" target="_blank" rel="noopener"
+         class="act-btn muted" style="text-decoration:none;display:inline-flex;align-items:center" title="View on MangaDex">↗</a>
       <button class="act-btn danger"
               hx-delete="/api/series/{{ s.path }}"
               hx-target="closest .series-item"
               hx-swap="outerHTML"
               hx-confirm="Remove '{{ s.name }}' from sync? (files stay on disk)">✕</button>
+      {% else %}
+      <a href="/series?q={{ s.name | urlencode }}" class="act-btn accent"
+         style="text-decoration:none;display:inline-flex;align-items:center">Link →</a>
+      {% endif %}
     </div>
     <div class="series-log hidden"></div>
   </div>
@@ -365,6 +417,13 @@ function setView(v) {
   const saved = localStorage.getItem('dash-view') || 'grid';
   setView(saved);
 })();
+
+document.addEventListener('click', (e) => {
+  const card = e.target.closest('.series-item');
+  if (!card || !card.dataset.detailsUrl) return;
+  if (e.target.closest('button, a, form, input, select, textarea, label')) return;
+  window.location.href = card.dataset.detailsUrl;
+});
 
 /* ── Lazy cover loading ──────────────────────────────── */
 (function() {
@@ -421,21 +480,40 @@ function seriesSync(btn) {
   btn.textContent = '…';
   log.innerHTML = '';
   log.classList.remove('hidden');
-
-  const es = new EventSource(_seriesUrl(path, '/sync/stream'));
-  es.onmessage = (e) => {
-    if (e.data === '[done]') {
-      es.close();
+  fetch('/api/jobs/sync-series/' + path.split('/').map(encodeURIComponent).join('/'), { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (!data.ok || !data.job) throw new Error(data.error || 'Could not enqueue');
+      const jobId = data.job.id;
+      const es = new EventSource('/api/jobs/' + jobId + '/stream?from_seq=0');
+      es.onmessage = (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          if (payload.type === 'line') {
+            const line = document.createElement('div');
+            line.textContent = payload.line || '';
+            log.appendChild(line);
+            log.scrollTop = log.scrollHeight;
+          } else if (payload.type === 'status') {
+            if (payload.status === 'queued') btn.textContent = 'Queued';
+            if (payload.status === 'running') btn.textContent = 'Running';
+            if (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled' || payload.status === 'missing') {
+              es.close();
+              btn.disabled = false;
+              btn.textContent = 'Sync';
+            }
+          }
+        } catch (err) {}
+      };
+      es.onerror = () => { es.close(); btn.disabled = false; btn.textContent = 'Sync'; };
+    })
+    .catch((e) => {
+      const line = document.createElement('div');
+      line.textContent = String(e);
+      log.appendChild(line);
       btn.disabled = false;
       btn.textContent = 'Sync';
-      return;
-    }
-    const line = document.createElement('div');
-    line.textContent = e.data;
-    log.appendChild(line);
-    log.scrollTop = log.scrollHeight;
-  };
-  es.onerror = () => { es.close(); btn.disabled = false; btn.textContent = 'Sync'; };
+    });
 }
 
 async function seriesCovers(btn) {
@@ -455,5 +533,31 @@ async function seriesCovers(btn) {
     setTimeout(() => { btn.textContent = 'Covers'; btn.disabled = false; }, 2000);
   }
 }
+
+async function refreshSyncButtonStates() {
+  try {
+    const resp = await fetch('/api/jobs/active');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const jobs = data.jobs || [];
+    const activeByPath = {};
+    jobs.forEach(j => {
+      if (j.series_path_snapshot) activeByPath[j.series_path_snapshot] = j.status;
+    });
+    document.querySelectorAll('.series-item button[onclick="seriesSync(this)"]').forEach(btn => {
+      const path = btn.dataset.path;
+      const state = activeByPath[path];
+      if (state === 'queued' || state === 'running') {
+        btn.disabled = true;
+        btn.textContent = state === 'running' ? 'Running' : 'Queued';
+      } else if (btn.textContent === 'Queued' || btn.textContent === 'Running') {
+        btn.disabled = false;
+        btn.textContent = 'Sync';
+      }
+    });
+  } catch (e) {}
+}
+setInterval(refreshSyncButtonStates, 2500);
+refreshSyncButtonStates();
 </script>
 {% endblock %}
