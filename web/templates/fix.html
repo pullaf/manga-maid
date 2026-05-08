@@ -1,5 +1,26 @@
 {% extends "base.html" %}
 {% block content %}
+{% if no_root_folders %}
+<div class="mb-8">
+  <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Fix Files</h1>
+  <p class="text-sm mt-1" style="color:var(--text-muted)">Filename cleanup runs only after you configure library roots.</p>
+</div>
+<div class="max-w-lg">
+  <div class="rounded-xl border p-10 text-center"
+       style="background:var(--surface);border-color:rgba(251,191,36,.3)">
+    <div class="mb-4 text-4xl opacity-30">📁</div>
+    <p class="font-semibold text-sm" style="color:#fbbf24;font-family:'Syne',sans-serif">Root folder required</p>
+    <p class="text-xs mt-2 mb-6" style="color:var(--text-muted)">
+      Add at least one root folder in Settings, then return here to fix names.
+    </p>
+    <a href="/settings"
+       class="inline-block text-xs font-semibold px-5 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition-colors"
+       style="font-family:'Syne',sans-serif">
+      Open Settings →
+    </a>
+  </div>
+</div>
+{% else %}
 <div class="mb-8 flex items-center justify-between">
   <div>
     <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Fix Files</h1>
@@ -36,15 +57,22 @@
         </p>
       </div>
       {% if sg.series_path %}
-      <form hx-post="/api/fix/series-skip" hx-target="closest .series-fix-card" hx-swap="outerHTML"
-            hx-confirm="Ignore '{{ sg.series_title }}' in Fix Files from now on?"
-            onclick="event.stopPropagation()">
-        <input type="hidden" name="series_path" value="{{ sg.series_path }}">
-        <button class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
-                style="border-color:rgba(251,191,36,.45);color:#fbbf24">
-          Ignore This Series
+      <div class="flex gap-2" onclick="event.stopPropagation()">
+        <button type="button"
+                onclick="fixAllInSeries(this, {{ sg.series_path|tojson }}, {{ sg.series_title|tojson }})"
+                class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
+                style="border-color:rgba(139,92,246,.45);color:var(--accent-light)">
+          Fix All In This Series
         </button>
-      </form>
+        <form hx-post="/api/fix/series-skip" hx-target="closest .series-fix-card" hx-swap="outerHTML"
+              hx-confirm="Ignore '{{ sg.series_title }}' in Fix Files from now on?">
+          <input type="hidden" name="series_path" value="{{ sg.series_path }}">
+          <button class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
+                  style="border-color:rgba(251,191,36,.45);color:#fbbf24">
+            Ignore This Series
+          </button>
+        </form>
+      </div>
       {% endif %}
     </summary>
 
@@ -114,10 +142,36 @@
   <p class="text-base" style="color:var(--text-muted)">Library looks clean!</p>
 </div>
 {% endif %}
+{% endif %}
 
 <script>
 function fixAll() {
   document.querySelectorAll('.issue-card form button, .dup-card form button').forEach(btn => btn.click());
+}
+
+async function fixAllInSeries(btn, seriesPath, seriesTitle) {
+  if (!seriesPath) return;
+  const ok = await window.appConfirm("Apply all fixes in '" + seriesTitle + "'?");
+  if (!ok) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Fixing...';
+  try {
+    const body = new URLSearchParams();
+    body.set('series_path', seriesPath);
+    const resp = await fetch('/api/fix/series-apply-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) throw new Error(data.error || 'Failed to apply fixes');
+    window.location.reload();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = original;
+    alert(String(err));
+  }
 }
 </script>
 {% endblock %}

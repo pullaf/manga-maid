@@ -361,12 +361,24 @@ function seriesDetailApiUrl(path, suffix) {
   return '/api/series/' + path.split('/').map(encodeURIComponent).join('/') + suffix;
 }
 
+function appendDetailJobStatusHint(logEl, status) {
+  if (!logEl) return;
+  if (status !== 'queued' && status !== 'running') return;
+  if ((logEl.dataset.statusHintShown || '') === status) return;
+  var line = document.createElement('div');
+  line.textContent = '[job] status: ' + status + ' (waiting for output)';
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+  logEl.dataset.statusHintShown = status;
+}
+
 function detailSeriesSync(btn) {
   var path = btn.dataset.path;
   var log = document.getElementById('detail-action-log');
   btn.disabled = true;
   btn.textContent = '…';
   log.innerHTML = '';
+  log.dataset.statusHintShown = '';
   log.classList.remove('hidden');
   fetch('/api/jobs/sync-series/' + path.split('/').map(encodeURIComponent).join('/'), { method: 'POST' })
     .then(function(r) { return r.json(); })
@@ -403,6 +415,7 @@ function bindSeriesJobStream(jobId, path, btn) {
     if (payload.type === 'status') {
       if (payload.status === 'queued' && btn) btn.textContent = 'Queued';
       if (payload.status === 'running' && btn) btn.textContent = 'Running';
+      appendDetailJobStatusHint(log, payload.status);
       if (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled' || payload.status === 'missing') {
         es.close();
         if (btn) {
@@ -453,6 +466,7 @@ async function detailSeriesResetSourceMetadata(btn) {
   btn.disabled = true;
   btn.textContent = '…';
   log.textContent = '';
+  log.dataset.statusHintShown = '';
   log.classList.remove('hidden');
   try {
     var resp = await fetch(seriesDetailApiUrl(path, '/reset-source-metadata'), { method: 'POST' });
@@ -482,6 +496,7 @@ async function detailSeriesResetSourceMetadata(btn) {
       if (payload.type === 'status') {
         if (payload.status === 'queued') btn.textContent = 'Queued';
         if (payload.status === 'running') btn.textContent = 'Running';
+        appendDetailJobStatusHint(log, payload.status);
         if (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled' || payload.status === 'missing') {
           es.close();
           btn.textContent = payload.status === 'completed' ? '✓' : '✗';
@@ -509,6 +524,7 @@ async function detailSeriesRegenerateComicInfo(btn) {
   btn.disabled = true;
   btn.textContent = '…';
   log.textContent = '';
+  log.dataset.statusHintShown = '';
   log.classList.remove('hidden');
   try {
     var resp = await fetch('/api/jobs/regenerate-comicinfo/' + path.split('/').map(encodeURIComponent).join('/'), { method: 'POST' });
@@ -529,6 +545,7 @@ async function detailSeriesRegenerateComicInfo(btn) {
       if (payload.type === 'status') {
         if (payload.status === 'queued') btn.textContent = 'Queued';
         if (payload.status === 'running') btn.textContent = 'Running';
+        appendDetailJobStatusHint(log, payload.status);
         if (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled' || payload.status === 'missing') {
           es.close();
           btn.textContent = payload.status === 'completed' ? '✓' : '✗';

@@ -8,6 +8,12 @@ import db
 def main() -> int:
     data_dir = os.environ.get("DATA_DIR", "/data")
     conn = db.init_db(data_dir)
+    stored = db.read_stored_settings(conn)
+    roots = [rf for rf in (stored.get("root_folders") or []) if rf is not None]
+    if not roots:
+        print("[cron] no root folders configured; skipping sync_all enqueue")
+        conn.close()
+        return 0
     # Avoid stacking duplicate global sync jobs.
     exists = conn.execute(
         """
