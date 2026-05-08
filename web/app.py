@@ -1266,7 +1266,8 @@ async def add_series(
         merge_volumes_override=merge_ov,
         preferred_groups_json=preferred_groups_json.strip() or None,
     ))
-    return RedirectResponse("/series", status_code=303)
+    target = f"/series/{parse.quote(rel_path, safe='/')}"
+    return RedirectResponse(target, status_code=303)
 
 
 @app.get("/api/series/{path:path}/cover")
