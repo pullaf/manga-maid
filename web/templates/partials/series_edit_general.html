@@ -1,0 +1,93 @@
+<form id="series-edit-general-form" hx-put="/api/series/{{ path }}" hx-swap="none" class="space-y-4">
+  <input type="hidden" name="manga_id" value="{{ manga_id }}">
+  <input type="hidden" name="cover_filename" value="{{ current_cover_filename }}">
+  <input type="hidden" name="preferred_groups_json" value="{{ current_preferred_groups_json|e }}">
+  <input type="hidden" name="start_chapter" value="{{ current_start }}">
+  <input type="hidden" name="merge_volumes_override" value="">
+
+  <div class="flex items-center justify-between pb-3" style="border-bottom:1px solid var(--border)">
+    <div>
+      <h2 class="font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">Edit settings — {{ manga_title }}</h2>
+      <p class="text-xs mt-1" style="color:var(--text-dim)">
+        Location, folder name, series language (ComicInfo + sync feed), and Fix Files. Group priority and chapter cutoff: use Edit sync settings when sync is configured.
+      </p>
+    </div>
+    <button type="button" onclick="closeModal()"
+            class="text-2xl leading-none transition-colors" style="color:var(--text-dim)">&times;</button>
+  </div>
+
+  <div>
+    <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Location</label>
+    <select name="subfolder" class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+      {% if not subdirs %}<option value="" {% if not subfolder %}selected{% endif %}>(root)</option>{% endif %}
+      {% for d in subdirs %}
+      <option value="{{ d }}" {% if d == subfolder %}selected{% endif %}>{{ d }}/</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div>
+    <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Folder name</label>
+    <input type="text" name="title" required value="{{ folder_name }}"
+           class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+  </div>
+
+  <div>
+    <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Series language</label>
+    <p class="text-xs mb-1.5" style="color:var(--text-dim)">ComicInfo <code class="text-[11px]">LanguageISO</code> and the feed language sync uses to pull new chapters. Uses ISO-style codes (same as MangaDex).</p>
+    <select name="language" class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+      {% for code, label in series_language_choices %}
+      <option value="{{ code }}" {% if code == current_lang %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="pt-1">
+    <div class="flex items-start justify-between gap-3">
+      <span>
+        <span class="block text-sm font-medium" style="color:var(--text)">Exclude from Fix Files</span>
+        <span class="block text-xs mt-0.5" style="color:var(--text-dim)">
+          When enabled, this series is omitted from Fix Files (naming previews, filename cleanup, duplicates).
+          Sync also skips automatic rename cleanup after downloads for this folder.
+        </span>
+      </span>
+      <button type="button" onclick="toggleEditGeneralExclude(this)"
+              data-on="{{ 'true' if exclude_from_fix else 'false' }}"
+              class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0 ml-3"
+              style="{{ 'background:var(--accent)' if exclude_from_fix else 'background:var(--surface-alt)' }}">
+        <span class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform
+                     {{ 'translate-x-6' if exclude_from_fix else 'translate-x-1' }}"></span>
+      </button>
+      <input type="hidden" name="exclude_from_fix" id="exclude-from-fix-input"
+             value="{{ 'true' if exclude_from_fix else 'false' }}">
+    </div>
+  </div>
+
+  <button type="submit"
+          class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold py-2.5 rounded-lg transition-colors"
+          style="font-family:'Syne',sans-serif">
+    Save Changes
+  </button>
+</form>
+
+<script>
+function toggleEditGeneralExclude(btn) {
+  const on = btn.dataset.on !== 'true';
+  btn.dataset.on = on ? 'true' : 'false';
+  btn.style.background = on ? 'var(--accent)' : 'var(--surface-alt)';
+  const knob = btn.querySelector('span');
+  knob.classList.toggle('translate-x-6', on);
+  knob.classList.toggle('translate-x-1', !on);
+  document.getElementById('exclude-from-fix-input').value = on ? 'true' : 'false';
+}
+(function() {
+  var form = document.getElementById('series-edit-general-form');
+  if (!form || form.dataset.bound === '1') return;
+  form.dataset.bound = '1';
+  form.addEventListener('htmx:afterRequest', function(e) {
+    if (!e.detail || !e.detail.successful) return;
+    if (typeof closeModal === 'function') closeModal();
+    window.location.reload();
+  });
+})();
+</script>

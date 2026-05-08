@@ -2,7 +2,9 @@
 {% block content %}
 <div class="mb-8">
   <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Add Series</h1>
-  <p class="text-sm mt-1" style="color:var(--text-muted)">Search MangaDex and add a series to sync</p>
+  <p class="text-sm mt-1" style="color:var(--text-muted)">
+    Search MangaDex, link a title for metadata and covers, then optionally set download language and groups.
+  </p>
 </div>
 
 {% if no_root_folders %}
@@ -46,9 +48,11 @@
 
     <!-- Phase 2: setup form (loaded via fetch) -->
     <div id="phase2" class="hidden">
-      <div id="setup-loading" class="flex items-center gap-2 text-xs py-4" style="color:var(--text-dim)">
-        <span class="inline-block w-2 h-2 rounded-full bg-violet-500 animate-pulse"></span>
-        Loading manga details…
+      <div id="setup-loading" class="hidden flex-col items-center justify-center gap-3 py-10">
+        <div class="modal-spinner" role="status" aria-label="Loading"></div>
+        <p id="setup-loading-label" class="text-sm text-center" style="color:var(--text-muted);font-family:'Syne',sans-serif;white-space:pre-line">
+          Loading…
+        </p>
       </div>
       <div id="setup-form"></div>
       <button type="button" onclick="resetToPhase1()"
@@ -61,23 +65,18 @@
 <script>
   const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
-  async function loadSetup(mangaId) {
-    document.getElementById('phase1').classList.add('hidden');
-    document.getElementById('phase2').classList.remove('hidden');
-    document.getElementById('setup-loading').classList.remove('hidden');
-    document.getElementById('setup-form').innerHTML = '';
+  function apiSeriesUrl(relPath, suffix) {
+    const segs = relPath.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+    return '/api/series/' + segs + (suffix || '');
+  }
 
-    const resp = await fetch(`/api/manga/${mangaId}/setup`);
-    document.getElementById('setup-loading').classList.add('hidden');
-    document.getElementById('setup-form').innerHTML = await resp.text();
-    htmx.process(document.getElementById('setup-form'));
-
-    // If launched from "Link →", preserve the existing folder name and location
+  function applyFolderSubOverrides(container) {
+    if (!container) return;
     const params = new URLSearchParams(location.search);
     const folder = params.get('folder');
     const sub = params.get('sub');
     if (folder) {
-      const titleInp = document.querySelector('#setup-form [name=title]');
+      const titleInp = container.querySelector('[name=title]');
       if (titleInp) {
         titleInp.value = folder;
         titleInp.readOnly = true;
@@ -85,20 +84,157 @@
       }
     }
     if (sub !== null) {
-      const subSelect = document.querySelector('#setup-form [name=subfolder]');
+      const subSelect = container.querySelector('[name=subfolder]');
       if (subSelect) {
         for (const opt of subSelect.options) {
           if (opt.value === sub) { opt.selected = true; break; }
         }
         subSelect.disabled = true;
         subSelect.style.cssText += ';opacity:.6;cursor:not-allowed';
-        // disabled selects don't submit - add a hidden input to carry the value
         const hidden = document.createElement('input');
         hidden.type = 'hidden';
         hidden.name = 'subfolder';
         hidden.value = sub;
         subSelect.closest('div').appendChild(hidden);
       }
+    }
+  }
+
+  function showSetupLoading(label) {
+    var el = document.getElementById('setup-loading');
+    var lbl = document.getElementById('setup-loading-label');
+    if (lbl) lbl.textContent = label || 'Loading…';
+    if (el) {
+      el.classList.remove('hidden');
+      el.classList.add('flex');
+    }
+  }
+  function hideSetupLoading() {
+    var el = document.getElementById('setup-loading');
+    if (el) {
+      el.classList.add('hidden');
+      el.classList.remove('flex');
+    }
+  }
+
+  async function loadSetup(mangaId) {
+    document.getElementById('phase1').classList.add('hidden');
+    document.getElementById('phase2').classList.remove('hidden');
+    showSetupLoading('Loading manga details…');
+    document.getElementById('setup-form').innerHTML = '';
+
+    const resp = await fetch(`/api/manga/${mangaId}/link-preview`);
+    hideSetupLoading();
+    const html = await resp.text();
+    document.getElementById('setup-form').innerHTML = html;
+    if (!resp.ok) return;
+    htmx.process(document.getElementById('setup-form'));
+
+    applyFolderSubOverrides(document.getElementById('setup-form'));
+  }
+
+  window.loadFullMangaSetup = async function(mangaId) {
+    showSetupLoading('Fetching scanlation groups from MangaDex…\nThis can take a few seconds.');
+    document.getElementById('setup-form').innerHTML = '';
+    try {
+      const resp = await fetch(`/api/manga/${mangaId}/setup`);
+      hideSetupLoading();
+      const html = await resp.text();
+      document.getElementById('setup-form').innerHTML = html;
+      if (!resp.ok) return;
+      htmx.process(document.getElementById('setup-form'));
+      applyFolderSubOverrides(document.getElementById('setup-form'));
+      if (document.getElementById('group-picker-list')) {
+        initGroupOrderUI();
+        syncPreferredGroupsFromPicker();
+      }
+    } catch (e) {
+      hideSetupLoading();
+      throw e;
+    }
+  };
+
+  window.linkMangaFromConfirm = async function(opts) {
+    opts = opts || {};
+    const form = document.getElementById('link-confirm-form');
+    if (!form) return;
+    const fd = new FormData(form);
+    fd.set('preferred_groups_json', '[]');
+    fd.set('start_chapter', '0');
+    fd.set('exclude_from_fix', 'false');
+    fd.set('merge_volumes_override', '');
+    try {
+      const res = await fetch('/api/series', {
+        method: 'POST',
+        body: fd,
+        headers: { 'Accept': 'application/json' },
+      });
+      const raw = await res.text();
+      let data = null;
+      try { data = JSON.parse(raw); } catch (_) {}
+      if (!res.ok) {
+        let msg = res.statusText;
+        if (data) {
+          const d = data.detail;
+          if (typeof d === 'string') msg = d;
+          else if (Array.isArray(d)) msg = d.map(function(x) { return x.msg || JSON.stringify(x); }).join('; ');
+          else if (d) msg = String(d);
+          else if (data.message) msg = data.message;
+        } else if (raw) msg = raw;
+        alert('Could not add series: ' + msg);
+        return;
+      }
+      if (!data || !data.path) {
+        alert('Unexpected response from server');
+        return;
+      }
+      if (opts.configureDownloads) {
+        await loadGrabOptionsAfterLink(data.path);
+      } else {
+        window.location.href = seriesDetailUrl(data.path);
+      }
+    } catch (e) {
+      alert('Could not add series: ' + e);
+    }
+  };
+
+  function seriesDetailUrl(relPath) {
+    // Percent-encode each segment so titles with reserved chars like ``&``
+    // (e.g. ``Yotsuba&!``) don't break the redirect target.
+    var segs = (relPath || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
+    return '/series/' + segs;
+  }
+
+  async function loadGrabOptionsAfterLink(relPath) {
+    showSetupLoading('Fetching scanlation groups from MangaDex…\nThis can take a few seconds.');
+    document.getElementById('setup-form').innerHTML = '';
+    const url = apiSeriesUrl(relPath, '/grab-options');
+    let resp;
+    try {
+      resp = await fetch(url);
+    } catch (e) {
+      hideSetupLoading();
+      window.location.href = seriesDetailUrl(relPath);
+      return;
+    }
+    hideSetupLoading();
+    if (!resp.ok) {
+      window.location.href = seriesDetailUrl(relPath);
+      return;
+    }
+    document.getElementById('setup-form').innerHTML = await resp.text();
+    htmx.process(document.getElementById('setup-form'));
+    if (document.getElementById('group-picker-list')) {
+      initGroupOrderUI();
+      syncPreferredGroupsFromPicker();
+    }
+    const grabForm = document.getElementById('grab-options-form');
+    if (grabForm) {
+      grabForm.addEventListener('htmx:afterRequest', function handler(e) {
+        if (!e.detail || !e.detail.successful) return;
+        grabForm.removeEventListener('htmx:afterRequest', handler);
+        window.location.href = seriesDetailUrl(relPath);
+      });
     }
   }
 

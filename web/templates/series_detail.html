@@ -92,6 +92,10 @@
       <button type="button" class="detail-act-btn detail-act-btn--accent" onclick="detailSeriesSync(this)" data-path="{{ series.path }}">Sync now</button>
       <button type="button" class="detail-act-btn detail-act-btn--muted" onclick="detailSeriesCovers(this)" data-path="{{ series.path }}">Push Kavita covers</button>
       <button type="button" class="detail-act-btn detail-act-btn--muted" onclick="detailSeriesRegenerateComicInfo(this)" data-path="{{ series.path }}">Regenerate ComicInfo</button>
+      <button type="button" class="detail-act-btn detail-act-btn--warn"
+              onclick="detailSeriesResetSourceMetadata(this)"
+              data-path="{{ series.path }}"
+              title="Drop per-chapter MangaDex metadata for files already on disk. Series-level info (cover, language, status) stays.">Treat files as local</button>
       <a href="https://mangadex.org/title/{{ series.config.id }}" target="_blank" rel="noopener"
          class="detail-act-btn detail-act-btn--muted" title="Open on MangaDex">Open MangaDex ↗</a>
       {% else %}
@@ -103,6 +107,12 @@
               hx-get="/api/series/{{ series.path }}/edit"
               hx-target="#modal-body"
               hx-swap="innerHTML">Edit settings</button>
+      {% if series.linked and series.sync_configured %}
+      <button type="button" class="detail-act-btn detail-act-btn--muted"
+              hx-get="/api/series/{{ series.path }}/grab-options"
+              hx-target="#modal-body"
+              hx-swap="innerHTML">Edit sync settings</button>
+      {% endif %}
       <button type="button" id="btn-detail-remove-series" class="detail-act-btn detail-act-btn--danger ml-auto"
               hx-delete="/api/series/{{ series.path }}"
               hx-swap="none"
@@ -112,30 +122,53 @@
   </div>
 </div>
 
-<div class="grid gap-4 lg:grid-cols-2">
-  <div class="rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
-    <h2 class="text-sm font-semibold mb-3" style="font-family:'Syne',sans-serif;color:var(--text)">Series Settings</h2>
-    <div class="space-y-2 text-sm">
-      <div style="color:var(--text-muted)">Language: <span style="color:var(--text)">{{ series.language or "en" }}</span></div>
-      <div style="color:var(--text-muted)">Group priority:
-        <span style="color:var(--text)">
-          {% if series.preferred_groups and series.preferred_groups|length > 0 %}
-            {{ series.preferred_groups | join(' → ') }}
-          {% else %}
-            any
-          {% endif %}
-        </span>
+<div class="grid gap-4 lg:grid-cols-2 items-start">
+  <div class="space-y-4">
+    <div class="rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
+      <h2 class="text-sm font-semibold mb-3" style="font-family:'Syne',sans-serif;color:var(--text)">General</h2>
+      <div class="space-y-2 text-sm">
+        <div style="color:var(--text-muted)">Path: <span style="color:var(--text);word-break:break-all">{{ series.path }}</span></div>
+        <div style="color:var(--text-muted)">Linked: <span style="color:var(--text)">{{ "Yes" if series.linked else "No" }}</span></div>
+        <div style="color:var(--text-muted)">Series language: <span style="color:var(--text)">{{ (series.language or "en")|upper }}</span></div>
+        <div style="color:var(--text-muted)">Exclude from Fix Files: <span style="color:var(--text)">{{ "Yes" if series.exclude_from_fix else "No" }}</span></div>
       </div>
-      <div style="color:var(--text-muted)">Skip chapters ≤ <span style="color:var(--text)">{{ series.since or 0 }}</span></div>
-      <div style="color:var(--text-muted)">Exclude from Fix Files: <span style="color:var(--text)">{{ "Yes" if series.exclude_from_fix else "No" }}</span></div>
+    </div>
+
+    <div class="rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
+      <h2 class="text-sm font-semibold mb-3" style="font-family:'Syne',sans-serif;color:var(--text)">Sync Settings</h2>
+      {% if not series.linked %}
+        <p class="text-sm" style="color:var(--text-dim)">
+          Not linked to MangaDex. Link to enable sync.
+        </p>
+      {% elif not series.sync_configured %}
+        <div class="flex items-center justify-between gap-3 text-sm">
+          <span style="color:var(--text-dim)">Sync not configured</span>
+          <button type="button" class="detail-act-btn detail-act-btn--accent text-xs"
+                  hx-get="/api/series/{{ series.path }}/grab-options"
+                  hx-target="#modal-body"
+                  hx-swap="innerHTML">Configure downloads</button>
+        </div>
+      {% else %}
+        <div class="space-y-2 text-sm">
+          <div style="color:var(--text-muted)">Language: <span style="color:var(--text)">{{ series.language or "en" }}</span></div>
+          <div style="color:var(--text-muted)">Group priority:
+            <span style="color:var(--text)">
+              {% if series.preferred_groups and series.preferred_groups|length > 0 %}
+                {{ series.preferred_groups | join(' → ') }}
+              {% else %}
+                any
+              {% endif %}
+            </span>
+          </div>
+          <div style="color:var(--text-muted)">Start from chapter ≥ <span style="color:var(--text)">{{ series.start_chapter or 0 }}</span></div>
+        </div>
+      {% endif %}
     </div>
   </div>
 
   <div class="rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
     <h2 class="text-sm font-semibold mb-3" style="font-family:'Syne',sans-serif;color:var(--text)">Metadata</h2>
     <div class="space-y-2 text-sm">
-      <div style="color:var(--text-muted)">Path: <span style="color:var(--text)">{{ series.path }}</span></div>
-      <div style="color:var(--text-muted)">Linked: <span style="color:var(--text)">{{ "Yes" if series.linked else "No" }}</span></div>
       {% if series.linked %}
       <div style="color:var(--text-muted)">Status: <span style="color:var(--text)">{{ series.config.status or "unknown" }}</span></div>
       <div class="pt-1 space-y-2">
@@ -282,7 +315,7 @@
     <h2 class="text-base font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">Edit ComicInfo</h2>
     <p id="comicinfo-modal-file" class="text-xs mt-1" style="color:var(--text-dim)"></p>
     <div class="grid grid-cols-2 gap-3 mt-4">
-      {% for f in ["Series","Number","Volume","Title","Summary","Writer","Penciller","Publisher","Genre","Count","Web","LanguageISO","Year","Manga","AgeRating","PageCount"] %}
+      {% for f in ["Series","Number","Volume","Title","Summary","Writer","Penciller","Translator","Publisher","Genre","Count","Web","LanguageISO","Year","Manga","AgeRating","PageCount"] %}
       <label class="{{ 'col-span-2' if f in ['Summary','Genre'] else '' }}">
         <span class="block text-[11px] mb-1" style="color:var(--text-muted)">{{ f }}</span>
         {% if f == "Summary" %}
@@ -405,6 +438,66 @@ async function detailSeriesCovers(btn) {
     log.classList.remove('hidden');
     btn.textContent = '✗';
     setTimeout(function() { btn.textContent = 'Kavita covers'; btn.disabled = false; }, 2000);
+  }
+}
+
+async function detailSeriesResetSourceMetadata(btn) {
+  var path = btn.dataset.path;
+  var log = document.getElementById('detail-action-log');
+  var ok = await window.appConfirm(
+    'Drop per-chapter source metadata (title, scanlator, chapter URL, language) for every file on disk in this series? '
+    + 'Files stay on disk, the series stays linked, and series-level info (cover, language, status) is unchanged. '
+    + 'ComicInfo will be regenerated using series-level data only.'
+  );
+  if (!ok) return;
+  btn.disabled = true;
+  btn.textContent = '…';
+  log.textContent = '';
+  log.classList.remove('hidden');
+  try {
+    var resp = await fetch(seriesDetailApiUrl(path, '/reset-source-metadata'), { method: 'POST' });
+    var data = await resp.json();
+    if (!resp.ok || !data.ok) throw new Error(data.detail || data.error || 'Reset failed');
+    log.textContent = 'Detached source metadata from ' + (data.reset || 0) + ' chapter row(s). Regenerating ComicInfo…';
+    var regenResp = await fetch('/api/jobs/regenerate-comicinfo/' + path.split('/').map(encodeURIComponent).join('/'), { method: 'POST' });
+    var regenData = await regenResp.json();
+    if (!regenResp.ok || !regenData.ok || !regenData.job) {
+      log.textContent += '\n(could not enqueue ComicInfo regeneration: ' + (regenData.error || 'unknown') + ')';
+      btn.textContent = '✓';
+      setTimeout(function() { btn.textContent = 'Treat files as local'; btn.disabled = false; }, 2000);
+      return;
+    }
+    var es = new EventSource('/api/jobs/' + regenData.job.id + '/stream?from_seq=0');
+    es.onmessage = function(e) {
+      var payload = null;
+      try { payload = JSON.parse(e.data); } catch (err) {}
+      if (!payload) return;
+      if (payload.type === 'line') {
+        var line = document.createElement('div');
+        line.textContent = payload.line || '';
+        log.appendChild(line);
+        log.scrollTop = log.scrollHeight;
+        return;
+      }
+      if (payload.type === 'status') {
+        if (payload.status === 'queued') btn.textContent = 'Queued';
+        if (payload.status === 'running') btn.textContent = 'Running';
+        if (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled' || payload.status === 'missing') {
+          es.close();
+          btn.textContent = payload.status === 'completed' ? '✓' : '✗';
+          setTimeout(function() { btn.textContent = 'Treat files as local'; btn.disabled = false; }, 1800);
+        }
+      }
+    };
+    es.onerror = function() {
+      es.close();
+      btn.textContent = '✗';
+      setTimeout(function() { btn.textContent = 'Treat files as local'; btn.disabled = false; }, 2200);
+    };
+  } catch (e) {
+    log.textContent = String(e);
+    btn.textContent = '✗';
+    setTimeout(function() { btn.textContent = 'Treat files as local'; btn.disabled = false; }, 2200);
   }
 }
 

@@ -55,15 +55,25 @@ def build_comicinfo_xml(
                 .replace(">", "&gt;")
                 .replace('"', "&quot;"))
 
+    def _trim_chapter_num(value):
+        """Drop trailing ``.0`` for whole chapters; keep ``.5`` style fractions."""
+        if value is None:
+            return None
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            return value
+        return int(num) if num.is_integer() else num
+
     fields = [
         ("Series",      series_title),
-        ("Number",      number),
+        ("Number",      _trim_chapter_num(number)),
         ("Volume",      int(volume_num) if volume_num is not None else None),
         ("Title",       chapter_title),
         ("Summary",     description),
         ("Writer",      ", ".join(authors)  if authors  else None),
         ("Penciller",   ", ".join(artists)  if artists  else None),
-        ("Publisher",   group_name),
+        ("Translator",  group_name),
         ("Genre",       ", ".join(tags)     if tags     else None),
         ("Count",       count),
         ("Web",         web),

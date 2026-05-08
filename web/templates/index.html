@@ -327,16 +327,10 @@
       <div class="card-actions">
         {% if s.linked %}
         <button class="act-btn accent" onclick="seriesSync(this)" data-path="{{ s.path }}">Sync</button>
-        <button class="act-btn muted"  onclick="seriesCovers(this)" data-path="{{ s.path }}">Covers</button>
         <a href="/series/{{ s.path }}" class="act-btn muted"
            style="text-decoration:none;display:inline-flex;align-items:center">Details</a>
         <a href="https://mangadex.org/title/{{ s.config.id }}" target="_blank" rel="noopener"
-           class="act-btn muted" style="text-decoration:none;display:inline-flex;align-items:center" title="View on MangaDex">↗</a>
-        <button class="act-btn danger"
-                hx-delete="/api/series/{{ s.path }}"
-                hx-target="closest .series-item"
-                hx-swap="outerHTML"
-                hx-confirm="Remove '{{ s.name }}' from sync? (files stay on disk)">✕</button>
+           class="act-btn muted" style="text-decoration:none;display:inline-flex;align-items:center" title="View on MangaDex">MangaDex ↗</a>
         {% else %}
         <a href="/series?q={{ s.name | urlencode }}&folder={{ s.name | urlencode }}&sub={{ s.subfolder | urlencode }}" class="act-btn accent"
            style="text-decoration:none;display:inline-flex;align-items:center">Link →</a>
@@ -381,16 +375,10 @@
     <div class="list-actions">
       {% if s.linked %}
       <button class="act-btn accent" onclick="seriesSync(this)" data-path="{{ s.path }}">Sync</button>
-      <button class="act-btn muted"  onclick="seriesCovers(this)" data-path="{{ s.path }}">Covers</button>
       <a href="/series/{{ s.path }}" class="act-btn muted"
          style="text-decoration:none;display:inline-flex;align-items:center">Details</a>
       <a href="https://mangadex.org/title/{{ s.config.id }}" target="_blank" rel="noopener"
-         class="act-btn muted" style="text-decoration:none;display:inline-flex;align-items:center" title="View on MangaDex">↗</a>
-      <button class="act-btn danger"
-              hx-delete="/api/series/{{ s.path }}"
-              hx-target="closest .series-item"
-              hx-swap="outerHTML"
-              hx-confirm="Remove '{{ s.name }}' from sync? (files stay on disk)">✕</button>
+         class="act-btn muted" style="text-decoration:none;display:inline-flex;align-items:center" title="View on MangaDex">MangaDex ↗</a>
       {% else %}
       <a href="/series?q={{ s.name | urlencode }}" class="act-btn accent"
          style="text-decoration:none;display:inline-flex;align-items:center">Link →</a>
@@ -465,10 +453,6 @@ document.addEventListener('click', (e) => {
 })();
 
 /* ── Series action helpers ───────────────────────────── */
-function _seriesUrl(path, suffix) {
-  return '/api/series/' + path.split('/').map(encodeURIComponent).join('/') + suffix;
-}
-
 function _getLog(btn) {
   return btn.closest('.series-item').querySelector('.series-log');
 }
@@ -514,24 +498,6 @@ function seriesSync(btn) {
       btn.disabled = false;
       btn.textContent = 'Sync';
     });
-}
-
-async function seriesCovers(btn) {
-  const path = btn.dataset.path;
-  const log = _getLog(btn);
-  btn.disabled = true;
-  btn.textContent = '…';
-  try {
-    const resp = await fetch(_seriesUrl(path, '/covers'), {method: 'POST'});
-    const data = await resp.json();
-    log.textContent = data.output || data.error || (data.ok ? 'Done' : 'Failed');
-    log.classList.remove('hidden');
-    btn.textContent = data.ok ? '✓' : '✗';
-    setTimeout(() => { btn.textContent = 'Covers'; btn.disabled = false; }, 3000);
-  } catch(e) {
-    btn.textContent = '✗';
-    setTimeout(() => { btn.textContent = 'Covers'; btn.disabled = false; }, 2000);
-  }
 }
 
 async function refreshSyncButtonStates() {

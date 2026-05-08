@@ -210,6 +210,27 @@
       border-radius: 16px;
       box-shadow: 0 24px 64px rgba(0,0,0,.6);
     }
+    .modal-spinner {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: 2.5px solid var(--border);
+      border-top-color: var(--accent);
+      animation: modal-spin .9s linear infinite;
+    }
+    .inline-spinner {
+      display: inline-block;
+      vertical-align: -2px;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      animation: modal-spin .9s linear infinite;
+    }
+    @keyframes modal-spin {
+      to { transform: rotate(360deg); }
+    }
 
     /* ── Terminal output ───────────────────────────────────── */
     .bg-slate-900 {
@@ -441,6 +462,38 @@
         _closeConfirmModal(false);
       }
     });
+    function _showModalLoading(label) {
+      var body = document.getElementById('modal-body');
+      if (!body) return;
+      var safeLabel = String(label || 'Loading…')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      body.innerHTML =
+        '<div class="flex flex-col items-center justify-center gap-4 py-12">' +
+          '<div class="modal-spinner" role="status" aria-label="Loading"></div>' +
+          '<p class="text-sm text-center" style="color:var(--text-muted);font-family:\'Syne\',sans-serif">' +
+            safeLabel +
+          '</p>' +
+        '</div>';
+      openModal();
+    }
+    function _showModalError(label) {
+      var body = document.getElementById('modal-body');
+      if (!body) return;
+      var safeLabel = String(label || 'Request failed')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      body.innerHTML =
+        '<div class="flex flex-col items-start gap-3 py-2">' +
+          '<h2 class="text-base font-semibold" style="font-family:\'Syne\',sans-serif;color:var(--text)">Could not load</h2>' +
+          '<p class="text-sm" style="color:var(--text-muted)">' + safeLabel + '</p>' +
+          '<button type="button" onclick="closeModal()" class="text-xs px-3 py-2 rounded-lg border" style="border-color:var(--border-mid);color:var(--text-muted)">Close</button>' +
+        '</div>';
+    }
+    function _modalLoadingLabelFor(url) {
+      if (!url) return 'Loading…';
+      if (url.indexOf('/grab-options') !== -1) return 'Fetching scanlation groups from MangaDex…\nThis can take a few seconds.';
+      if (url.indexOf('/edit') !== -1) return 'Loading settings…';
+      return 'Loading…';
+    }
     function afterGroupPickerInjected() {
       var list = document.getElementById('group-picker-list');
       if (!list) return;
@@ -452,6 +505,31 @@
       syncPreferredGroupsFromPicker();
       _syncManualDisplayFromHidden();
     }
+
+    // Open the modal immediately when an htmx request targets #modal-body —
+    // otherwise a slow endpoint (e.g. grab-options polls MangaDex feeds) makes
+    // the page feel frozen until the response arrives.
+    document.addEventListener('htmx:beforeRequest', function(e) {
+      if (!e.detail || !e.detail.target) return;
+      if (e.detail.target.id !== 'modal-body') return;
+      var elt = e.detail.elt;
+      var url = elt && (elt.getAttribute('hx-get') || elt.getAttribute('hx-post')
+                        || elt.getAttribute('hx-put') || elt.getAttribute('hx-delete')) || '';
+      _showModalLoading(_modalLoadingLabelFor(url));
+    });
+
+    document.addEventListener('htmx:responseError', function(e) {
+      if (!e.detail || !e.detail.target) return;
+      if (e.detail.target.id !== 'modal-body') return;
+      var status = (e.detail.xhr && e.detail.xhr.status) || '';
+      _showModalError('Server returned ' + status + '. Try again, or close this dialog.');
+    });
+
+    document.addEventListener('htmx:sendError', function(e) {
+      if (!e.detail || !e.detail.target) return;
+      if (e.detail.target.id !== 'modal-body') return;
+      _showModalError('Network error — could not reach the server.');
+    });
 
     document.addEventListener('htmx:afterSwap', e => {
       if (e.target.id === 'modal-body') {
