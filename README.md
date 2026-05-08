@@ -169,8 +169,6 @@ Default volume pattern: `[%1 %2] %3 vol.%4`
 
 The current UI is tuned for chapter-based storage. Downloads are saved as chapter files, with volume numbers added to filenames when source metadata is available.
 
-Advanced volume merge/compaction paths still exist internally, but they are intentionally hidden in the frontend while the chapter-first workflow is the default.
-
 ---
 
 ## Volume completion (chapter mode)
