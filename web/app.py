@@ -24,6 +24,68 @@ MDEX_BASE  = "https://api.mangadex.org"
 MDEX_COVERS = "https://uploads.mangadex.org/covers"
 CONTENT_RATINGS = ["safe", "suggestive", "erotica", "pornographic"]
 
+# ISO-style codes aligned with MangaDex ``translatedLanguage`` (ComicInfo LanguageISO).
+_SERIES_LANGUAGE_CHOICES_BASE = [
+    ("en", "English (en)"),
+    ("ja", "Japanese (ja)"),
+    ("ko", "Korean (ko)"),
+    ("zh", "Chinese (zh)"),
+    ("zh-hk", "Chinese Traditional (zh-hk)"),
+    ("es", "Spanish (es)"),
+    ("fr", "French (fr)"),
+    ("de", "German (de)"),
+    ("it", "Italian (it)"),
+    ("pt-br", "Portuguese Brazil (pt-br)"),
+    ("ru", "Russian (ru)"),
+    ("pl", "Polish (pl)"),
+    ("tr", "Turkish (tr)"),
+    ("vi", "Vietnamese (vi)"),
+    ("id", "Indonesian (id)"),
+    ("th", "Thai (th)"),
+    ("ar", "Arabic (ar)"),
+]
+
+
+def _series_language_choices(
+    current: str | None,
+    available: list[str] | None = None,
+) -> list[tuple[str, str]]:
+    """Dropdown rows for series-language picker.
+
+    Preserves unknown codes already in the DB (so we never silently mutate a
+    stored value), and annotates entries that MangaDex actually has
+    translations for so the user picks something the feed can actually
+    deliver.
+    """
+    cur_raw = (current or "en").strip()
+    cur_key = cur_raw.lower()
+    avail = {(a or "").strip().lower() for a in (available or []) if a}
+    base_codes = {c for c, _ in _SERIES_LANGUAGE_CHOICES_BASE}
+    rows: list[tuple[str, str]] = []
+    for code, label in _SERIES_LANGUAGE_CHOICES_BASE:
+        if avail and code in avail:
+            rows.append((code, f"{label} · on MangaDex"))
+        else:
+            rows.append((code, label))
+    if cur_key and cur_key not in base_codes:
+        rows.insert(0, (cur_key, f"{cur_raw} (stored)"))
+    return rows
+
+
+def _pick_default_series_language(available: list[str]) -> str:
+    """Bias toward English when MangaDex offers it.
+
+    The previous default — ``available_langs[0]`` — picked whatever order
+    MangaDex returned, which is *not* a meaningful preference and is how
+    English libraries ended up tagged with ``vi`` after a one-click link.
+    """
+    norm = [(a or "").strip().lower() for a in (available or []) if a]
+    if "en" in norm:
+        return "en"
+    if norm:
+        return norm[0]
+    return "en"
+
 _WEB_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_WEB_DIR)
 MANGA_SYNC_SCRIPT = os.path.join(_REPO_ROOT, "manga-sync.py")
@@ -367,7 +429,7 @@ def _apply_naming_template(
 
 
 def _mdex_tankobon_volume_count_from_aggregate(agg) -> int:
-    """Buckets in MangaDex /aggregate for translated chapters.
+    """Buckets in MangaDex /aggregate.
 
     Keys ``none`` and ``0`` are not numbered tankōbon volumes: ``0`` holds
     specials/extras that often have no ``chapter`` number in the API, so they
@@ -377,6 +439,41 @@ def _mdex_tankobon_volume_count_from_aggregate(agg) -> int:
         return 0
     vols = agg.get("volumes") or {}
     return len([k for k in vols if k not in ("none", "0")])
+
+
+def _parse_last_volume(attr: dict | None) -> int:
+    """Parse ``attributes.lastVolume`` (canonical tankōbon count) into an int.
+
+    Empty / non-numeric values return 0 so callers fall back to aggregate.
+    """
+    if not attr:
+        return 0
+    raw = (attr.get("lastVolume") or "").strip()
+    if not raw:
+        return 0
+    try:
+        n = int(float(raw))
+        return n if n > 0 else 0
+    except (ValueError, TypeError):
+        return 0
+
+
+def _resolve_total_volumes(attr: dict | None, manga_id: str) -> int:
+    """Best-effort canonical tankōbon count for parity display.
+
+    Prefers ``attributes.lastVolume`` (set for most completed manga); falls
+    back to ``/aggregate`` **without** a language filter — that bucket count
+    matches what MangaDex itself displays on the title page, instead of just
+    the volumes that happen to be translated to the user's chosen language.
+    """
+    n = _parse_last_volume(attr)
+    if n:
+        return n
+    try:
+        agg = _mdex_get(f"/manga/{manga_id}/aggregate", {})
+    except Exception:
+        return 0
+    return _mdex_tankobon_volume_count_from_aggregate(agg)
 
 
 def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
@@ -404,7 +501,7 @@ def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
             c.chapter_num,
             c.title AS chapter_title,
             c.group_name,
-            c.language AS chapter_language,
+            c.status AS chapter_status,
             v.volume_num,
             s.path AS series_path,
             s.language AS series_language,
@@ -421,14 +518,18 @@ def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
         old_name = os.path.basename(old_path)
         old_dir = os.path.dirname(old_path)
         stem, ext = os.path.splitext(old_name)
+        # Files we did not download ourselves (status='on_disk') must be
+        # named with series-level info only — no per-chapter title/group
+        # leaking into the proposed filename.
+        is_on_disk = row["chapter_status"] == "on_disk"
         new_stem = _apply_naming_template(
             chapter_tpl,
-            language=row["chapter_language"] or row["series_language"] or "en",
-            group=row["group_name"] or row["preferred_group"] or "",
+            language=row["series_language"] or "en",
+            group="" if is_on_disk else (row["group_name"] or row["preferred_group"] or ""),
             title=os.path.basename(row["series_path"]),
             volume_num=row["volume_num"],
             chapter_num=row["chapter_num"],
-            chapter_title=row["chapter_title"] or "",
+            chapter_title="" if is_on_disk else (row["chapter_title"] or ""),
         )
         # Guard against dangerous suggestions that drop chapter identity.
         ch_token = _format_num(row["chapter_num"])
@@ -753,7 +854,7 @@ def _realpath_under_series(series_rel: str, file_rel: str) -> str | None:
 def _comicinfo_fields_to_xml(fields: dict[str, str]) -> str:
     allowed_order = [
         "Series", "Number", "Volume", "Title", "Summary",
-        "Writer", "Penciller", "Publisher", "Genre", "Count",
+        "Writer", "Penciller", "Translator", "Publisher", "Genre", "Count",
         "Web", "LanguageISO", "Year", "Manga", "AgeRating", "PageCount",
     ]
     lines = [
@@ -844,10 +945,9 @@ async def series_details_page(request: Request, path: str):
                         authors.append(rname)
                     elif rtype == "artist":
                         artists.append(rname)
-                agg = await loop.run_in_executor(
-                    None, lambda: _mdex_get(f"/manga/{row['source_id']}/aggregate", {"translatedLanguage[]": row.get("language", "en")})
+                total_vols = await loop.run_in_executor(
+                    None, lambda: _resolve_total_volumes(attr, row["source_id"])
                 )
-                total_vols = _mdex_tankobon_volume_count_from_aggregate(agg)
                 _db.upsert_series_metadata(
                     conn, row["id"], row.get("source_name") or "mangadex",
                     description=description,
@@ -861,10 +961,9 @@ async def series_details_page(request: Request, path: str):
                 )
                 row = _db.get_series_by_path(conn, path) or row
             else:
-                agg = await loop.run_in_executor(
-                    None, lambda: _mdex_get(f"/manga/{row['source_id']}/aggregate", {"translatedLanguage[]": row.get("language", "en")})
+                total_vols = await loop.run_in_executor(
+                    None, lambda: _resolve_total_volumes(None, row["source_id"])
                 )
-                total_vols = _mdex_tankobon_volume_count_from_aggregate(agg)
                 stored = row.get("total_volumes")
                 if stored is None or int(stored) != int(total_vols):
                     _db.upsert_series_metadata(
@@ -1158,6 +1257,52 @@ async def get_manga_setup(request: Request, manga_id: str):
                  "subdirs": get_subdirs(), **groups_data})
 
 
+@app.get("/api/manga/{manga_id}/link-preview", response_class=HTMLResponse)
+async def get_manga_link_preview(request: Request, manga_id: str):
+    """Fast step-1 panel: link manga ID only (no feed/group scans)."""
+    loop = asyncio.get_event_loop()
+    try:
+        data = await loop.run_in_executor(
+            None, lambda: _mdex_get(f"/manga/{manga_id}", {"includes[]": "cover_art"})
+        )
+    except Exception as e:
+        return HTMLResponse(f'<p class="text-red-500 text-sm">Could not load manga: {e}</p>')
+
+    manga_data = data["data"]
+    attr   = manga_data["attributes"]
+    title  = (attr.get("title") or {}).get("en") or \
+             next(iter((attr.get("title") or {}).values()), "Unknown")
+    status = attr.get("status", "unknown")
+    year   = attr.get("year")
+    available_langs = attr.get("availableTranslatedLanguages") or []
+
+    cover_url = None
+    cover_filename = ""
+    for rel in manga_data.get("relationships", []):
+        if rel["type"] == "cover_art":
+            fname = (rel.get("attributes") or {}).get("fileName")
+            if fname:
+                cover_filename = fname
+                cover_url      = _cover_url(manga_id, fname)
+                break
+
+    default_lang = _pick_default_series_language(available_langs)
+
+    return templates.TemplateResponse(request=request, name="partials/manga_link_confirm.html",
+        context={
+            "manga_id": manga_id,
+            "title": title,
+            "status": status,
+            "year": year,
+            "cover_url": cover_url,
+            "cover_filename": cover_filename,
+            "available_langs": available_langs,
+            "default_lang": default_lang,
+            "series_language_choices": _series_language_choices(default_lang, available_langs),
+            "subdirs": get_subdirs(),
+        })
+
+
 @app.get("/api/manga/{manga_id}/langs")
 async def get_manga_langs(manga_id: str):
     loop = asyncio.get_event_loop()
@@ -1229,12 +1374,13 @@ def _parse_merge_volumes_override(raw: str | None) -> int | None:
 
 @app.post("/api/series")
 async def add_series(
+    request: Request,
     manga_id:       str   = Form(...),
     title:          str   = Form(...),
     subfolder:      str   = Form(""),
     language:       str   = Form("en"),
     preferred_groups_json: str = Form("[]"),
-    since:          str   = Form("0"),
+    start_chapter:  str   = Form("0"),
     cover_filename: str   = Form(""),
     exclude_from_fix: str = Form("false"),
     merge_volumes_override: str = Form(""),
@@ -1245,12 +1391,16 @@ async def add_series(
     rel_path   = os.path.relpath(series_dir, MANGA_ROOT)
 
     try:
-        since_f = float(since) if since else 0.0
+        start_f = float(start_chapter) if start_chapter else 0.0
     except ValueError:
-        since_f = 0.0
+        start_f = 0.0
 
     excl = 1 if exclude_from_fix == "true" else 0
     merge_ov = _parse_merge_volumes_override(merge_volumes_override)
+
+    accept = request.headers.get("accept") or ""
+    link_only = "application/json" in accept
+    sync_conf = 0 if link_only else 1
 
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, lambda: _db.insert_series(
@@ -1258,14 +1408,17 @@ async def add_series(
         path=rel_path,
         title=title,
         language=language,
-        since=since_f,
+        start_chapter=start_f,
         source="mangadex" if manga_id else None,
         source_id=manga_id or None,
         cover_filename=cover_filename.strip() or None,
         exclude_from_fix=excl,
         merge_volumes_override=merge_ov,
         preferred_groups_json=preferred_groups_json.strip() or None,
+        sync_configured=sync_conf,
     ))
+    if link_only:
+        return JSONResponse({"ok": True, "path": rel_path}, status_code=201)
     target = f"/series/{parse.quote(rel_path, safe='/')}"
     return RedirectResponse(target, status_code=303)
 
@@ -1325,6 +1478,10 @@ async def delete_series(path: str):
 
 @app.get("/api/series/{path:path}/edit", response_class=HTMLResponse)
 async def edit_series_form(request: Request, path: str):
+    """General settings: location, folder name, series language, exclude-from-fix.
+
+    Sync-only settings (groups, chapter cutoff) use ``grab-options``.
+    """
     conn = _get_conn()
     row  = _db.get_series_by_path(conn, path)
     if not row:
@@ -1334,29 +1491,82 @@ async def edit_series_form(request: Request, path: str):
     folder_name = parts[-1]
     subfolder   = "/".join(parts[:-1])
 
-    mov = row.get("merge_volumes_override")
     prefs = row.get("preferred_groups") or []
     manga_id = row["config"].get("id", "") or ""
-    # Keep modal open fast: render saved preferences only.
-    # Fresh group availability can be pulled on demand via "Refetch".
-    groups_list = [(name, None, False) for name in prefs]
+    lang_norm = (row.get("language") or "en").strip().lower()
 
-    return templates.TemplateResponse(request=request, name="partials/series_edit.html",
+    return templates.TemplateResponse(request=request, name="partials/series_edit_general.html",
         context={
             "path":                path,
             "manga_id":            manga_id,
             "manga_title":         folder_name,
-            "current_lang":        row.get("language", "en"),
+            "current_lang":        lang_norm,
+            "series_language_choices": _series_language_choices(row.get("language")),
             "current_preferred_groups_json": json.dumps(prefs, ensure_ascii=False),
-            "current_translator_display": ", ".join(prefs),
-            "current_since":       row.get("since", 0),
+            "current_start":       row.get("start_chapter", 0),
             "current_cover_filename": row["config"].get("cover_filename", ""),
             "exclude_from_fix":    bool(row.get("exclude_from_fix")),
-            "merge_volumes_override": mov,
             "folder_name":         folder_name,
             "subfolder":           subfolder,
             "subdirs":             get_subdirs(),
-            "groups":              groups_list,
+        })
+
+
+@app.get("/api/series/{path:path}/grab-options", response_class=HTMLResponse)
+async def get_grab_options_form(request: Request, path: str):
+    """Optional step 2 after linking: language, groups, start chapter (PUT same series)."""
+    conn = _get_conn()
+    row  = _db.get_series_by_path(conn, path)
+    if not row:
+        raise HTTPException(404, "Series not found")
+
+    manga_id = (row.get("config") or {}).get("id") or row.get("source_id")
+    if not manga_id:
+        raise HTTPException(400, "Series is not linked to MangaDex")
+
+    loop = asyncio.get_event_loop()
+    cur_lang = row.get("language") or "en"
+
+    lang_counts: dict[str, int] = {}
+    try:
+        data = await loop.run_in_executor(
+            None, lambda: _mdex_get(f"/manga/{manga_id}", {})
+        )
+        available_langs = data["data"]["attributes"].get("availableTranslatedLanguages") or []
+        if available_langs:
+            tasks = [
+                loop.run_in_executor(None, _lang_chapter_count, manga_id, lang)
+                for lang in available_langs[:10]
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in results:
+                if isinstance(r, tuple) and r[1] > 0:
+                    lang_counts[r[0]] = r[1]
+        lang_counts = dict(sorted(lang_counts.items(), key=lambda x: x[1], reverse=True))
+    except Exception:
+        pass
+
+    groups_data = await _fetch_groups(manga_id, cur_lang)
+
+    parts       = path.split("/")
+    folder_name = parts[-1]
+    subfolder   = "/".join(parts[:-1])
+
+    prefs = row.get("preferred_groups") or []
+
+    return templates.TemplateResponse(request=request, name="partials/manga_grab_options.html",
+        context={
+            "path": path,
+            "manga_id": manga_id,
+            "folder_name": folder_name,
+            "subfolder": subfolder,
+            "cover_filename": row["config"].get("cover_filename") or "",
+            "current_lang": cur_lang,
+            "lang_counts": lang_counts,
+            "current_start": row.get("start_chapter", 0),
+            "exclude_from_fix": bool(row.get("exclude_from_fix")),
+            "current_preferred_groups_json": json.dumps(prefs, ensure_ascii=False),
+            **groups_data,
         })
 
 
@@ -1368,10 +1578,11 @@ async def update_series(
     subfolder:      str   = Form(""),
     language:       str   = Form("en"),
     preferred_groups_json: str = Form("[]"),
-    since:          str   = Form("0"),
+    start_chapter:  str   = Form("0"),
     cover_filename: str   = Form(""),
     exclude_from_fix: str = Form("false"),
     merge_volumes_override: str = Form(""),
+    mark_sync_configured: str = Form(""),
 ):
     # path here is the URL route parameter (old path)
     old_dir    = os.path.join(MANGA_ROOT, path)
@@ -1384,28 +1595,30 @@ async def update_series(
         shutil.move(old_dir, new_dir)
 
     try:
-        since_f = float(since) if since else 0.0
+        start_f = float(start_chapter) if start_chapter else 0.0
     except ValueError:
-        since_f = 0.0
+        start_f = 0.0
 
     excl = 1 if exclude_from_fix == "true" else 0
     merge_ov = _parse_merge_volumes_override(merge_volumes_override)
 
     conn = _get_conn()
     loop = asyncio.get_event_loop()
+    sync_conf: int | None = 1 if mark_sync_configured == "true" else None
     await loop.run_in_executor(None, lambda: _db.update_series(
         conn,
         old_path=path,
         new_path=new_rel,
         title=title,
         language=language,
-        since=since_f,
+        start_chapter=start_f,
         source="mangadex" if manga_id else None,
         source_id=manga_id or None,
         cover_filename=cover_filename.strip() or None,
         exclude_from_fix=excl,
         merge_volumes_override=merge_ov,
         preferred_groups_json=preferred_groups_json.strip() or None,
+        sync_configured=sync_conf,
     ))
     return Response(status_code=204)
 
@@ -1759,6 +1972,23 @@ async def series_compact_volumes(path: str):
     return JSONResponse({"ok": proc.returncode == 0, "log": log_text})
 
 
+@app.post("/api/series/{path:path}/reset-source-metadata")
+async def series_reset_source_metadata(path: str):
+    """Detach per-chapter source metadata from files already on disk.
+
+    Use this when a series was linked just for covers / catalog progress and
+    chapter rows ended up with foreign metadata (e.g. ``LanguageISO=vi`` on
+    English archives). Catalog rows that have no file are left intact, so
+    sync can still discover and download missing chapters afterwards.
+    """
+    conn = _get_conn()
+    row = _db.get_series_by_path(conn, path)
+    if not row:
+        raise HTTPException(404, "Series not found")
+    n = _db.reset_chapter_source_metadata(conn, row["id"])
+    return JSONResponse({"ok": True, "reset": int(n)})
+
+
 @app.post("/api/series/{path:path}/delete-files")
 async def series_delete_files(path: str, body: DeleteSeriesFilesBody):
     """Delete chapter/volume archive files on disk for this series; DB is reconciled via scan."""
@@ -2017,7 +2247,7 @@ async def skip_series_from_fix(series_path: str = Form(...)):
             new_path=series_path,
             title=row["title"],
             language=row["language"],
-            since=float(row.get("since") or 0),
+            start_chapter=float(row.get("start_chapter") or 0),
             source=row.get("source_name"),
             source_id=row.get("source_id"),
             cover_filename=row["config"].get("cover_filename"),

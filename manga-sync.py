@@ -202,9 +202,26 @@ def _fetch_and_cache_meta(
             if rtype == "cover_art":
                 cover_filename = (rel.get("attributes") or {}).get("fileName")
 
-        agg = _api_get(f"/manga/{manga_id}/aggregate", {"translatedLanguage[]": language})
-        vols = agg.get("volumes") or {}
-        total_vols = len([k for k in vols if k not in ("none", "0")])
+        # Canonical tankōbon count: prefer attributes.lastVolume; fall back
+        # to /aggregate **without** a language filter (filtering by language
+        # under-counts series that aren't fully translated, e.g. only EN vols
+        # 1–11 published when the manga has 15 in print).
+        total_vols = 0
+        last_vol_raw = (attr.get("lastVolume") or "").strip()
+        if last_vol_raw:
+            try:
+                lv = int(float(last_vol_raw))
+                if lv > 0:
+                    total_vols = lv
+            except (ValueError, TypeError):
+                pass
+        if not total_vols:
+            try:
+                agg = _api_get(f"/manga/{manga_id}/aggregate", {})
+                vols = agg.get("volumes") or {}
+                total_vols = len([k for k in vols if k not in ("none", "0")])
+            except Exception:
+                total_vols = 0
 
         # Cache per-volume cover URLs so the merge step can embed them
         try:
@@ -212,9 +229,9 @@ def _fetch_and_cache_meta(
                 "manga[]": manga_id, "limit": 100, "order[volume]": "asc",
             })
             for item in covers_data.get("data", []):
-                attr    = item["attributes"]
-                vol_str = attr.get("volume")
-                fname   = attr.get("fileName")
+                cover_attr = item["attributes"]
+                vol_str    = cover_attr.get("volume")
+                fname      = cover_attr.get("fileName")
                 if vol_str and fname:
                     try:
                         cover_url = (
@@ -294,13 +311,28 @@ def _sync_chapters_to_db(
             except (ValueError, TypeError):
                 pass
 
+        # Never propagate per-chapter feed metadata (title, group, source_id,
+        # publish_date) onto a row whose file is already on disk. The whole
+        # point of ``status='on_disk'`` is that ComicInfo for that file uses
+        # series-level info only — re-tagging it on every sync would undo
+        # that. We still ensure the volume mapping so merge logic can reason
+        # about coverage.
+        existing = conn.execute(
+            "SELECT id, path, status FROM chapters"
+            " WHERE series_id=? AND chapter_num=?",
+            (series_id, ch_num),
+        ).fetchone()
+        if existing and (existing["path"] or existing["status"] == "on_disk"):
+            if vol_id is not None:
+                assign_chapter_to_volume(conn, existing["id"], vol_id)
+            continue
+
         chapter_id = upsert_chapter(
             conn, series_id, ch_num,
             source="mangadex",
             source_chapter_id=picked_id,
             title=picked.title,
             group_name=picked.group,
-            language=language,
             publish_date=picked.publish_date,
         )
 
@@ -782,14 +814,29 @@ def _ensure_comicinfo_all(
         vol_num_by_vol_id[row["id"]] = row["volume_num"]
 
     injected_ch = 0
+    total_ch    = len(ch_rows)
 
-    for ch in ch_rows:
+    for idx, ch in enumerate(ch_rows, start=1):
         cbz_path = os.path.join(MANGA_ROOT, ch["path"])
         if not os.path.exists(cbz_path):
             continue
-        # Strict rule: take MangaDex chapter title as-is, otherwise keep empty.
-        ch_title = (ch.get("title") or "").strip() or None
         vol_num = vol_num_by_vol_id.get(ch.get("volume_id")) if ch.get("volume_id") else None
+        # ``on_disk`` rows never carry trustworthy per-chapter source info —
+        # the file got there outside the sync pipeline (user import, manual
+        # rip, etc.). Use only series-level fields for ComicInfo so we do
+        # not stamp foreign translator names / chapter titles / chapter URLs
+        # onto archives we did not download ourselves.
+        if ch.get("status") == "on_disk":
+            ch_title = None
+            group_name = None
+            ch_web = series_web
+        else:
+            ch_title = (ch.get("title") or "").strip() or None
+            group_name = ch.get("group_name")
+            ch_id = ch.get("source_chapter_id")
+            ch_web = (
+                f"https://mangadex.org/chapter/{ch_id}" if ch_id else series_web
+            )
         xml = build_comicinfo_xml(
             series_title=series_title,
             number=ch["chapter_num"],
@@ -798,20 +845,22 @@ def _ensure_comicinfo_all(
             description=description,
             authors=authors,
             artists=artists,
-            group_name=ch.get("group_name"),
-            language=ch.get("language") or language,
+            group_name=group_name,
+            language=language,
             year=year,
             tags=tags,
             content_rating=content_rating,
             page_count=count_pages(cbz_path),
-            web=series_web,
+            web=ch_web,
         )
         if inject_comicinfo(cbz_path, xml, overwrite=True):
             mark_chapter_comicinfo(conn, ch["id"])
             injected_ch += 1
+            _log(f"[{label}] ComicInfo {idx}/{total_ch}: {os.path.basename(cbz_path)}")
 
     injected_vol = 0
-    for vol in vol_rows:
+    total_vol    = len(vol_rows)
+    for idx, vol in enumerate(vol_rows, start=1):
         cbz_path = os.path.join(MANGA_ROOT, vol["path"])
         if not os.path.exists(cbz_path):
             continue
@@ -841,6 +890,7 @@ def _ensure_comicinfo_all(
         if inject_comicinfo(cbz_path, xml, overwrite=True):
             mark_volume_comicinfo(conn, vol["id"])
             injected_vol += 1
+            _log(f"[{label}] ComicInfo vol {idx}/{total_vol}: {os.path.basename(cbz_path)}")
     _log(f"[{label}] ComicInfo done: {injected_ch} chapter(s), {injected_vol} volume(s) updated")
 
 
@@ -908,7 +958,7 @@ def _sync_one_series(
     language    = series_row.get("language", "en")
     prefs       = _series_preferred_groups(series_row)
     group       = prefs[0] if prefs else None
-    since       = float(series_row.get("since") or 0)
+    start_chapter = float(series_row.get("start_chapter") or 0)
     manga_id    = series_row.get("source_id")
     source_name = series_row.get("source_name") or "mangadex"
     name        = series_row.get("name") or os.path.basename(series_path)
@@ -923,6 +973,17 @@ def _sync_one_series(
     if is_metadata_stale(meta and meta.get("fetched_at")):
         meta = _fetch_and_cache_meta(manga_id, series_id, source_name, language, conn)
 
+    # Linked-only (no download options chosen yet): refresh metadata+ComicInfo,
+    # do not pull the chapter feed or queue downloads.
+    if not series_row.get("sync_configured"):
+        _log(f"[{name}] sync not configured — skipping feed/download")
+        _ensure_comicinfo_all(
+            series_id, series_dir, conn, meta, language,
+            series_web=series_web, series_label=name,
+        )
+        update_source_sync_time(conn, series_id, source_name)
+        return False
+
     # Sync chapter feed → DB
     try:
         _sync_chapters_to_db(manga_id, language, prefs, series_id, conn)
@@ -930,7 +991,7 @@ def _sync_one_series(
         _log(f"[{name}] feed error: {e}")
         return False
 
-    to_download = get_chapters_to_download(conn, series_id, since)
+    to_download = get_chapters_to_download(conn, series_id, start_chapter)
 
     if not to_download:
         _log(f"[{name}] up-to-date")
@@ -970,7 +1031,7 @@ def _sync_one_series(
                         vol_num = vr["volume_num"]
                 desired_stem = _apply_chapter_template(
                     ch_naming,
-                    lang=ch_row.get("language") or language,
+                    lang=language,
                     group=ch_row.get("group_name") or "",
                     title=name,
                     vol_num=vol_num,

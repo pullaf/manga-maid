@@ -34,9 +34,15 @@ CREATE TABLE IF NOT EXISTS series (
     language                 TEXT    NOT NULL DEFAULT 'en',
     preferred_group          TEXT,
     preferred_groups_json    TEXT,
-    since                    REAL    NOT NULL DEFAULT 0,
+    -- ``start_chapter``: download chapters where chapter_num >= this value.
+    -- 0 means "download everything". Replaced the old ``since`` column whose
+    -- semantics were "skip chapters <= since" (download where chapter_num >
+    -- since) — the new ``>=`` form lets users type the first chapter they
+    -- actually want (e.g. 105 for Yotsuba) instead of guessing 104.999...
+    start_chapter            REAL    NOT NULL DEFAULT 0,
     exclude_from_fix         INTEGER NOT NULL DEFAULT 0,
     merge_volumes_override   INTEGER,
+    sync_configured          INTEGER NOT NULL DEFAULT 1,
     created_at               TEXT    NOT NULL,
     updated_at               TEXT    NOT NULL
 );
@@ -184,6 +190,44 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     if "preferred_groups_json" not in cols:
         conn.execute("ALTER TABLE series ADD COLUMN preferred_groups_json TEXT")
         _migrate_preferred_groups_json(conn)
+    if "sync_configured" not in cols:
+        conn.execute(
+            "ALTER TABLE series ADD COLUMN sync_configured INTEGER NOT NULL DEFAULT 1"
+        )
+
+    # ``since`` (skip <= N) → ``start_chapter`` (download where >= N). Convert
+    # the value so the resulting download set is unchanged: 0 stays 0; any
+    # positive value becomes ``floor(value) + 1``, i.e. the smallest integer
+    # strictly greater than the old cutoff. ``CAST(real AS INTEGER)`` in
+    # SQLite truncates toward zero, which equals floor for non-negatives.
+    if "since" in cols and "start_chapter" not in cols:
+        conn.execute("ALTER TABLE series RENAME COLUMN since TO start_chapter")
+        conn.execute(
+            """
+            UPDATE series
+            SET start_chapter = CASE
+                WHEN start_chapter IS NULL OR start_chapter <= 0 THEN 0
+                ELSE CAST(start_chapter AS INTEGER) + 1
+            END
+            """
+        )
+
+    # One-shot: chapters with files but no real source identity were treated
+    # as ``downloaded`` by older builds, which leaked feed metadata
+    # (group_name, language, etc.) into ComicInfo for user-placed files. Tag
+    # those rows as ``on_disk`` so series-level data drives ComicInfo. Rows
+    # with ``source_chapter_id`` set are left alone — they may be real mdx
+    # downloads. Use the ``Reset chapter metadata`` UI to clear ambiguous
+    # cases (e.g. linked-only-for-covers like Yotsuba).
+    conn.execute(
+        """
+        UPDATE chapters
+        SET status = 'on_disk'
+        WHERE path IS NOT NULL
+          AND COALESCE(source_chapter_id, '') = ''
+          AND status != 'on_disk'
+        """
+    )
 
 
 def _migrate_preferred_groups_json(conn: sqlite3.Connection) -> None:
@@ -373,21 +417,29 @@ def migrate_json_configs(manga_root: str, conn: sqlite3.Connection) -> int:
         language = cfg.get("language", "en")
         preferred_group = cfg.get("translator") or None
         pj, pg = normalize_preferred_groups_storage(None, preferred_group)
-        since = float(cfg.get("since", 0))
+        # Legacy ``.mangadex.json`` files used ``since`` with skip-<= semantics.
+        # Convert to the new ``start_chapter`` (download chapter_num >= value):
+        # 0 stays 0, a positive cutoff becomes ``floor(value) + 1`` so the
+        # resulting download set is unchanged.
+        legacy_since = float(cfg.get("since", 0) or 0)
+        if legacy_since <= 0:
+            start_chapter = 0.0
+        else:
+            start_chapter = float(int(legacy_since) + 1)
 
         conn.execute("""
             INSERT INTO series (
                 title, path, language, preferred_group, preferred_groups_json,
-                since, created_at, updated_at
+                start_chapter, created_at, updated_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET
                 language              = excluded.language,
                 preferred_group       = excluded.preferred_group,
                 preferred_groups_json = excluded.preferred_groups_json,
-                since                 = excluded.since,
+                start_chapter         = excluded.start_chapter,
                 updated_at            = excluded.updated_at
-        """, (title, rel_path, language, pg, pj, since, now, now))
+        """, (title, rel_path, language, pg, pj, start_chapter, now, now))
 
         series_id = conn.execute(
             "SELECT id FROM series WHERE path = ?", (rel_path,)
@@ -446,7 +498,7 @@ def scan_disk_series(manga_root: str, conn: sqlite3.Connection) -> int:
             continue
         title = os.path.basename(root)
         conn.execute("""
-            INSERT INTO series (title, path, language, since, created_at, updated_at)
+            INSERT INTO series (title, path, language, start_chapter, created_at, updated_at)
             VALUES (?, ?, 'en', 0, ?, ?)
         """, (title, rel_path, now, now))
         added += 1
@@ -463,8 +515,8 @@ def get_all_series(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute("""
         SELECT
             s.id, s.title, s.path, s.language, s.preferred_group,
-            s.preferred_groups_json, s.since,
-            s.exclude_from_fix, s.merge_volumes_override,
+            s.preferred_groups_json, s.start_chapter,
+            s.exclude_from_fix, s.merge_volumes_override, s.sync_configured,
             ss.source  AS source_name,
             ss.source_id,
             sm.description, sm.tags, sm.authors, sm.artists,
@@ -500,7 +552,7 @@ def get_all_series(conn: sqlite3.Connection) -> list[dict]:
             "language":      d["language"],
             "translator": (d["preferred_groups"][0] if d["preferred_groups"] else None),
             "translators":   d["preferred_groups"],
-            "since":         d["since"],
+            "start_chapter": d["start_chapter"],
             "status":        d.get("status"),
             "total_volumes": d.get("total_volumes"),
             "cover_filename":d.get("cover_filename"),
@@ -540,7 +592,7 @@ def get_series_by_path(conn: sqlite3.Connection, path: str) -> dict | None:
         "language":      d["language"],
         "translator": (d["preferred_groups"][0] if d["preferred_groups"] else None),
         "translators":   d["preferred_groups"],
-        "since":         d["since"],
+        "start_chapter": d["start_chapter"],
         "status":        d.get("status"),
         "total_volumes": d.get("total_volumes"),
         "cover_filename":d.get("cover_filename"),
@@ -562,7 +614,7 @@ def insert_series(
     path: str,
     title: str,
     language: str,
-    since: float,
+    start_chapter: float,
     source: str | None = None,
     source_id: str | None = None,
     cover_filename: str | None = None,
@@ -570,26 +622,28 @@ def insert_series(
     merge_volumes_override: int | None = None,
     preferred_groups_json: str | None = None,
     preferred_group: str | None = None,
+    sync_configured: int = 1,
 ) -> int:
     now = _now()
     pj, pg = normalize_preferred_groups_storage(preferred_groups_json, preferred_group)
     conn.execute("""
         INSERT INTO series (
-            title, path, language, preferred_group, preferred_groups_json, since,
-            exclude_from_fix, merge_volumes_override,
+            title, path, language, preferred_group, preferred_groups_json, start_chapter,
+            exclude_from_fix, merge_volumes_override, sync_configured,
             created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(path) DO UPDATE SET
             title                 = excluded.title,
             language              = excluded.language,
             preferred_group       = excluded.preferred_group,
             preferred_groups_json = excluded.preferred_groups_json,
-            since                 = excluded.since,
+            start_chapter         = excluded.start_chapter,
+            sync_configured       = excluded.sync_configured,
             updated_at            = excluded.updated_at
     """, (
-        title, path, language, pg, pj, since,
-        exclude_from_fix, merge_volumes_override,
+        title, path, language, pg, pj, start_chapter,
+        exclude_from_fix, merge_volumes_override, int(bool(sync_configured)),
         now, now,
     ))
 
@@ -622,7 +676,7 @@ def update_series(
     new_path: str,
     title: str,
     language: str,
-    since: float,
+    start_chapter: float,
     source: str | None = None,
     source_id: str | None = None,
     cover_filename: str | None = None,
@@ -630,21 +684,38 @@ def update_series(
     merge_volumes_override: int | None = None,
     preferred_groups_json: str | None = None,
     preferred_group: str | None = None,
+    sync_configured: int | None = None,
 ) -> bool:
     now = _now()
     pj, pg = normalize_preferred_groups_storage(preferred_groups_json, preferred_group)
-    cur = conn.execute("""
-        UPDATE series
-        SET path=?, title=?, language=?, preferred_group=?, preferred_groups_json=?,
-            since=?,
-            exclude_from_fix=?, merge_volumes_override=?,
-            updated_at=?
-        WHERE path=?
-    """, (
-        new_path, title, language, pg, pj, since,
-        exclude_from_fix, merge_volumes_override,
-        now, old_path,
-    ))
+    if sync_configured is None:
+        cur = conn.execute("""
+            UPDATE series
+            SET path=?, title=?, language=?, preferred_group=?, preferred_groups_json=?,
+                start_chapter=?,
+                exclude_from_fix=?, merge_volumes_override=?,
+                updated_at=?
+            WHERE path=?
+        """, (
+            new_path, title, language, pg, pj, start_chapter,
+            exclude_from_fix, merge_volumes_override,
+            now, old_path,
+        ))
+    else:
+        cur = conn.execute("""
+            UPDATE series
+            SET path=?, title=?, language=?, preferred_group=?, preferred_groups_json=?,
+                start_chapter=?,
+                exclude_from_fix=?, merge_volumes_override=?,
+                sync_configured=?,
+                updated_at=?
+            WHERE path=?
+        """, (
+            new_path, title, language, pg, pj, start_chapter,
+            exclude_from_fix, merge_volumes_override,
+            int(bool(sync_configured)),
+            now, old_path,
+        ))
     if cur.rowcount == 0:
         return False
 
@@ -671,12 +742,52 @@ def update_series(
     return True
 
 
+def reset_chapter_source_metadata(
+    conn: sqlite3.Connection, series_id: int
+) -> int:
+    """Detach per-chapter source metadata from files already on disk.
+
+    Catalog-only rows (``path IS NULL``) keep their source info so future
+    downloads still work. For files we already have on disk, all per-chapter
+    fields populated from the remote feed (title, group, language,
+    source_chapter_id) are wiped and the row is moved to ``status='on_disk'``,
+    which makes ComicInfo fall back to series-level data only.
+
+    ``has_comicinfo`` is reset to 0 so the next ComicInfo pass rewrites the
+    embedded XML.
+    """
+    cur = conn.execute(
+        """
+        UPDATE chapters
+        SET status = 'on_disk',
+            source = NULL,
+            source_chapter_id = NULL,
+            title = NULL,
+            group_name = NULL,
+            language = NULL,
+            publish_date = NULL,
+            has_comicinfo = 0
+        WHERE series_id = ? AND path IS NOT NULL
+        """,
+        (series_id,),
+    )
+    conn.commit()
+    return cur.rowcount or 0
+
+
 def unlink_series(conn: sqlite3.Connection, path: str) -> bool:
-    """Remove source links; keep series row, chapters, volumes."""
+    """Remove source links and detach per-chapter source metadata.
+
+    Files on disk and the series row stay; merging the unlink with the
+    chapter reset means ComicInfo regenerated afterwards will not retain
+    feed-only fields (e.g. a Vietnamese scanlator's name on an English
+    archive that only had the link for cover purposes).
+    """
     row = conn.execute("SELECT id FROM series WHERE path=?", (path,)).fetchone()
     if not row:
         return False
     conn.execute("DELETE FROM series_sources WHERE series_id=?", (row["id"],))
+    reset_chapter_source_metadata(conn, row["id"])
     conn.commit()
     return True
 
@@ -905,13 +1016,19 @@ def get_chapters_for_volume(
 
 
 def get_chapters_to_download(
-    conn: sqlite3.Connection, series_id: int, since: float
+    conn: sqlite3.Connection, series_id: int, start_chapter: float
 ) -> list[dict]:
+    """Return catalog rows that sync should pull (``chapter_num >= start_chapter``).
+
+    A ``start_chapter`` of 0 selects every catalog row. The series row stores
+    this as ``start_chapter`` and the UI exposes it as
+    *Start from chapter ≥*.
+    """
     rows = conn.execute("""
         SELECT * FROM chapters
-        WHERE series_id=? AND chapter_num > ? AND status='known' AND path IS NULL
+        WHERE series_id=? AND chapter_num >= ? AND status='known' AND path IS NULL
         ORDER BY chapter_num
-    """, (series_id, since)).fetchall()
+    """, (series_id, start_chapter)).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -1038,23 +1155,47 @@ def scan_disk_files(
                 vol_id = upsert_volume(conn, series_id, vol_num)
 
             existing = conn.execute(
-                "SELECT id, path FROM chapters WHERE series_id=? AND chapter_num=?",
-                (series_id, ch_num)
+                "SELECT id, path, status FROM chapters"
+                " WHERE series_id=? AND chapter_num=?",
+                (series_id, ch_num),
             ).fetchone()
             if existing:
-                if existing["path"] != rel_path:
-                    conn.execute("""
+                # Only ``mark_chapter_downloaded`` (called right after a real
+                # ``mdx dl``) is allowed to mint a row as ``downloaded``. If we
+                # find a different file path here the file was placed/renamed
+                # outside the sync pipeline → treat it as on_disk and ignore
+                # any per-chapter source metadata for ComicInfo.
+                if existing["path"] == rel_path:
+                    if vol_id is not None:
+                        conn.execute(
+                            "UPDATE chapters SET volume_id=COALESCE(?, volume_id)"
+                            " WHERE id=?",
+                            (vol_id, existing["id"]),
+                        )
+                else:
+                    keep_downloaded = (
+                        existing["status"] == "downloaded"
+                        and existing["path"] is None
+                    )
+                    new_status = "downloaded" if keep_downloaded else "on_disk"
+                    conn.execute(
+                        """
                         UPDATE chapters
-                        SET path=?, file_size=?, status='downloaded',
+                        SET path=?, file_size=?, status=?,
                             volume_id=COALESCE(?, volume_id)
                         WHERE id=?
-                    """, (rel_path, size, vol_id, existing["id"]))
+                        """,
+                        (rel_path, size, new_status, vol_id, existing["id"]),
+                    )
             else:
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT INTO chapters
                         (series_id, volume_id, chapter_num, path, file_size, status)
-                    VALUES (?, ?, ?, ?, ?, 'downloaded')
-                """, (series_id, vol_id, ch_num, rel_path, size))
+                    VALUES (?, ?, ?, ?, ?, 'on_disk')
+                    """,
+                    (series_id, vol_id, ch_num, rel_path, size),
+                )
 
     # Null-out records for files that no longer exist
     if seen_paths:

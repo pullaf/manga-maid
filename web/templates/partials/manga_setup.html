@@ -27,7 +27,8 @@
   <!-- Language picker -->
   {% if lang_counts %}
   <div>
-    <label class="block text-xs font-medium mb-2" style="color:var(--text-muted)">Language</label>
+    <label class="block text-xs font-medium mb-1" style="color:var(--text-muted)">Series language</label>
+    <p class="text-xs mb-2" style="color:var(--text-dim)">Drives ComicInfo <code class="text-[11px]">LanguageISO</code> <em>and</em> the feed language sync uses to fetch new chapters.</p>
     <div class="flex flex-wrap gap-2">
       {% for lang, count in lang_counts.items() %}
       <button type="button"
@@ -49,9 +50,9 @@
       <span id="selected-group-label" class="text-xs font-medium" style="color:var(--accent-light)"></span>
     </div>
     <p class="text-xs mb-1.5" style="color:var(--text-dim)">Drag ⠿ to reorder (first = highest priority). Click a group to move it to the top.</p>
-    <div id="groups-loading" class="hidden text-xs py-1 flex items-center gap-1.5" style="color:var(--text-dim)">
-      <span class="inline-block w-1.5 h-1.5 rounded-full bg-violet-500 animate-pulse"></span>
-      Fetching groups…
+    <div id="groups-loading" class="hidden text-xs py-2 flex items-center gap-2" style="color:var(--text-muted)">
+      <span class="inline-spinner" aria-hidden="true"></span>
+      Fetching scanlation groups from MangaDex…
     </div>
     <div id="group-picker" class="max-h-48 overflow-y-auto space-y-1.5">
       {% include "partials/group_picker.html" %}
@@ -70,8 +71,8 @@
       </select>
     </div>
     <div>
-      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Skip chapters ≤</label>
-      <input type="number" name="since" value="0" min="0"
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Start from chapter ≥</label>
+      <input type="number" name="start_chapter" value="0" min="0" step="any" inputmode="decimal"
              class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
     </div>
   </div>

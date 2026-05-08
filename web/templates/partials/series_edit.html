@@ -36,9 +36,9 @@
         Refetch
       </button>
     </div>
-    <div id="groups-loading" class="hidden text-xs py-1.5 mt-1 flex items-center gap-1.5" style="color:var(--text-dim)">
-      <span class="inline-block w-1.5 h-1.5 rounded-full bg-violet-500 animate-pulse"></span>
-      Fetching groups…
+    <div id="groups-loading" class="hidden text-xs py-2 mt-1 flex items-center gap-2" style="color:var(--text-muted)">
+      <span class="inline-spinner" aria-hidden="true"></span>
+      Fetching scanlation groups from MangaDex…
     </div>
     <div id="group-picker" class="mt-2 max-h-40 overflow-y-auto space-y-1.5">
       {% if groups %}
@@ -47,7 +47,7 @@
     </div>
   </div>
 
-  <!-- Location + since -->
+  <!-- Location + start_chapter -->
   <div class="grid grid-cols-2 gap-3">
     <div>
       <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Location</label>
@@ -59,8 +59,8 @@
       </select>
     </div>
     <div>
-      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Skip chapters ≤</label>
-      <input type="number" name="since" value="{{ current_since }}" min="0"
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Start from chapter ≥</label>
+      <input type="number" name="start_chapter" value="{{ current_start }}" min="0" step="any" inputmode="decimal"
              class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
     </div>
   </div>

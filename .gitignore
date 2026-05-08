@@ -5,3 +5,4 @@ __pycache__/
 .manga-fix-log.json
 .sync.log
 CLAUDE.md
+.cursor/

@@ -1,0 +1,76 @@
+<form id="link-confirm-form" class="space-y-5" onsubmit="return false;">
+  <input type="hidden" name="manga_id" value="{{ manga_id }}">
+  <input type="hidden" name="cover_filename" value="{{ cover_filename }}">
+
+  <div class="flex gap-4 pb-4" style="border-bottom:1px solid var(--border)">
+    {% if cover_url %}
+    <img src="{{ cover_url }}" alt="" class="w-16 h-24 object-cover rounded-lg shrink-0 shadow-sm">
+    {% endif %}
+    <div class="min-w-0">
+      <h3 class="font-semibold leading-tight" style="color:var(--text);font-family:'Syne',sans-serif">{{ title }}</h3>
+      <div class="flex items-center gap-2 mt-1.5 flex-wrap">
+        <span class="text-xs px-2 py-0.5 rounded-full font-medium
+          {% if status == 'completed' %}bg-green-100 text-green-700
+          {% elif status == 'ongoing' %}bg-blue-100 text-blue-700
+          {% else %}bg-gray-100 text-gray-600{% endif %}">
+          {{ status }}
+        </span>
+        {% if year %}<span class="text-xs" style="color:var(--text-dim)">{{ year }}</span>{% endif %}
+      </div>
+      {% if available_langs %}
+      <p class="text-xs mt-2" style="color:var(--text-dim)">
+        On MangaDex: {{ available_langs | join(', ') | upper }}
+      </p>
+      {% endif %}
+    </div>
+  </div>
+
+  <p class="text-xs leading-relaxed" style="color:var(--text-muted)">
+    Link this title to get covers and metadata.
+  </p>
+
+  <div>
+    <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Series language</label>
+    <p class="text-xs mb-1.5" style="color:var(--text-dim)">
+      Sets ComicInfo <code class="text-[11px]">LanguageISO</code> and the feed language used when sync downloads new chapters. Don't pick whatever MangaDex returned first — pick what your files actually are.
+    </p>
+    <select name="language" class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+      {% for code, label in series_language_choices %}
+      <option value="{{ code }}" {% if code == default_lang %}selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div>
+    <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Location</label>
+    <select name="subfolder" class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+      {% if not subdirs %}<option value="">(root)</option>{% endif %}
+      {% for d in subdirs %}
+      <option value="{{ d }}" {% if loop.first %}selected{% endif %}>{{ d }}/</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Folder name</label>
+    <input type="text" name="title" required value="{{ title }}"
+           class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+  </div>
+
+  <div class="flex flex-col gap-2">
+    <button type="button"
+            onclick="window.linkMangaFromConfirm && window.linkMangaFromConfirm({ configureDownloads: false })"
+            class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold py-2.5 rounded-lg transition-colors"
+            style="font-family:'Syne',sans-serif">
+      Confirm and done
+    </button>
+    <button type="button"
+            onclick="window.linkMangaFromConfirm && window.linkMangaFromConfirm({ configureDownloads: true })"
+            class="w-full border text-sm font-medium py-2.5 rounded-lg transition-colors"
+            style="border-color:var(--border-mid);color:var(--text-muted)">
+      Confirm and configure downloads
+    </button>
+    <p class="text-xs text-center" style="color:var(--text-dim)">
+      Both options link the manga. Configuring downloads adds language, groups, and chapter cutoff.
+    </p>
+  </div>
+</form>
