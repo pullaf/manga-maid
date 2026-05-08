@@ -70,6 +70,15 @@
                class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
       </div>
     </div>
+    <div>
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">File permission mask</label>
+      <input type="text" name="file_permission_mask" value="{{ settings.file_permission_mask }}"
+             pattern="[0-7]{3,4}" maxlength="4" placeholder="664"
+             class="w-full border rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none">
+      <p class="text-xs mt-1.5" style="color:var(--text-dim)">
+        Applied after downloads, merges, and ComicInfo writes. Use octal masks like 664, 755, or 777.
+      </p>
+    </div>
     <div class="space-y-2">
       <label class="block text-xs font-medium" style="color:var(--text-muted)">Auto-sync schedule</label>
       <select id="sync-cron-preset" class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">

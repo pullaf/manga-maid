@@ -1,5 +1,6 @@
 import os
 import re
+from file_permissions import sanitize_file_permission_mask
 
 # Settings are stored in SQLite (``app_config`` table under ``DATA_DIR/db/``).
 # ``CONFIG_PATH`` env still selects a legacy ``settings.json`` for one-time import
@@ -18,6 +19,7 @@ DEFAULTS = {
     "auto_scan":       False,
     "kavita_url":      "",
     "kavita_api_key":  "",
+    "file_permission_mask": "664",
 }
 
 
@@ -65,6 +67,7 @@ def load_settings() -> dict:
     out.pop("merge_volume_naming", None)
     out["volume_naming"] = sanitize_volume_naming(out.get("volume_naming"))
     out["sync_cron"] = sanitize_sync_cron(out.get("sync_cron"))
+    out["file_permission_mask"] = sanitize_file_permission_mask(out.get("file_permission_mask"))
     return out
 
 
@@ -84,6 +87,7 @@ def save_settings(data: dict):
         merged.pop("merge_volume_naming", None)
         merged["volume_naming"] = sanitize_volume_naming(merged.get("volume_naming"))
         merged["sync_cron"] = sanitize_sync_cron(merged.get("sync_cron"))
+        merged["file_permission_mask"] = sanitize_file_permission_mask(merged.get("file_permission_mask"))
         write_stored_settings(conn, merged)
     finally:
         conn.close()
