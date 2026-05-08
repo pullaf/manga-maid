@@ -37,6 +37,10 @@ print(sanitize_sync_cron(load_settings().get("sync_cron")))
 PY
 )"
 echo "$CRON $RUNAS python3 /app/cron_enqueue_sync.py" > /tmp/crontab
+if [ "$PUID" != "0" ] || [ "$PGID" != "0" ]; then
+    chown "${PUID}:${PGID}" /tmp/crontab 2>/dev/null || true
+fi
+chmod 664 /tmp/crontab 2>/dev/null || true
 echo "manga-sync starting — schedule: $CRON | root: $MANGA_ROOT | data: $DATA_DIR | uid=${PUID} gid=${PGID}"
 
 $RUNAS uvicorn web.app:app --app-dir /app --host 0.0.0.0 --port 4649 --log-level warning &
