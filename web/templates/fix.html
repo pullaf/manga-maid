@@ -29,7 +29,7 @@
     </p>
   </div>
   {% if total %}
-  <button onclick="fixAll()"
+  <button id="fix-all-global-btn" type="button" onclick="fixAll()"
           class="bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
           style="font-family:'Syne',sans-serif">
     Fix All
@@ -59,8 +59,8 @@
       {% if sg.series_path %}
       <div class="flex gap-2" onclick="event.stopPropagation()">
         <button type="button"
-                onclick="fixAllInSeries(this, {{ sg.series_path|tojson }}, {{ sg.series_title|tojson }})"
-                class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
+                class="js-fix-all-in-series text-xs px-3 py-1.5 rounded-lg border transition-colors"
+                data-series-title="{{ sg.series_title|e }}"
                 style="border-color:rgba(139,92,246,.45);color:var(--accent-light)">
           Fix All In This Series
         </button>
@@ -149,29 +149,92 @@ function fixAll() {
   document.querySelectorAll('.issue-card form button, .dup-card form button').forEach(btn => btn.click());
 }
 
-async function fixAllInSeries(btn, seriesPath, seriesTitle) {
-  if (!seriesPath) return;
-  const ok = await window.appConfirm("Apply all fixes in '" + seriesTitle + "'?");
+function updateFixPageTotals() {
+  var n = document.querySelectorAll('#series-fix-list .issue-card, #series-fix-list .dup-card').length;
+  var el = document.getElementById('issue-count');
+  if (!el) return;
+  var g = document.getElementById('fix-all-global-btn');
+  if (n === 0) {
+    el.textContent = 'Library looks clean!';
+    if (g) g.classList.add('hidden');
+  } else {
+    el.textContent = n + ' issue' + (n !== 1 ? 's' : '') + ' found';
+    if (g) g.classList.remove('hidden');
+  }
+}
+
+async function fixAllInSeries(btn, seriesTitle, seriesCard) {
+  if (!seriesCard) return;
+  var ok = await window.appConfirm("Apply all fixes in '" + seriesTitle + "'? This runs one file at a time.");
   if (!ok) return;
-  const original = btn.textContent;
+  var forms = Array.prototype.slice.call(
+    seriesCard.querySelectorAll('.issue-card form[hx-post], .dup-card form[hx-post]')
+  );
+  if (!forms.length) return;
+
+  var original = btn.textContent;
   btn.disabled = true;
   btn.textContent = 'Fixing...';
+  seriesCard.open = false;
+
   try {
-    const body = new URLSearchParams();
-    body.set('series_path', seriesPath);
-    const resp = await fetch('/api/fix/series-apply-all', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
-    });
-    const data = await resp.json();
-    if (!resp.ok || !data.ok) throw new Error(data.error || 'Failed to apply fixes');
-    window.location.reload();
+    for (var i = 0; i < forms.length; i++) {
+      var form = forms[i];
+      var card = form.closest('.issue-card, .dup-card');
+      var url = form.getAttribute('hx-post');
+      if (!url || !card) throw new Error('Invalid fix form');
+
+      var resp = await fetch(url, {
+        method: 'POST',
+        body: new FormData(form),
+        credentials: 'same-origin',
+      });
+      if (!resp.ok) {
+        var msg = resp.statusText || 'Request failed';
+        try {
+          var ct = resp.headers.get('content-type') || '';
+          if (ct.indexOf('application/json') !== -1) {
+            var data = await resp.json();
+            var detail = data.detail;
+            if (Array.isArray(detail)) {
+              detail = detail.map(function(d) { return d.msg || d; }).join('; ');
+            }
+            msg = data.error || detail || msg;
+          } else {
+            var errBody = await resp.text();
+            if (errBody && errBody.length < 400) msg = errBody;
+          }
+        } catch (e) {}
+        throw new Error(msg);
+      }
+      card.remove();
+      btn.textContent = 'Fixing... (' + (i + 1) + '/' + forms.length + ')';
+      updateFixPageTotals();
+    }
+
+    var remaining = seriesCard.querySelectorAll('.issue-card, .dup-card').length;
+    if (remaining === 0) {
+      seriesCard.remove();
+    } else {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+    updateFixPageTotals();
   } catch (err) {
     btn.disabled = false;
     btn.textContent = original;
     alert(String(err));
   }
 }
+
+document.querySelectorAll('.js-fix-all-in-series').forEach(function(el) {
+  el.addEventListener('click', function(ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    var card = el.closest('.series-fix-card');
+    var t = el.getAttribute('data-series-title') || '';
+    fixAllInSeries(el, t, card);
+  });
+});
 </script>
 {% endblock %}
