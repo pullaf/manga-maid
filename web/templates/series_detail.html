@@ -164,10 +164,10 @@
         Link this series to MangaDex to show source progress (chapters/volumes parity).
       </div>
       {% endif %}
-      <div style="color:var(--text-muted)">Year: <span style="color:var(--text)">{{ series.year or "—" }}</span></div>
-      <div style="color:var(--text-muted)">Authors: <span style="color:var(--text)">{{ (series.authors or []) | join(", ") if series.authors else "—" }}</span></div>
-      <div style="color:var(--text-muted)">Artists: <span style="color:var(--text)">{{ (series.artists or []) | join(", ") if series.artists else "—" }}</span></div>
-      <div style="color:var(--text-muted)">Tags: <span style="color:var(--text)">{{ (series.tags or []) | join(", ") if series.tags else "—" }}</span></div>
+      <div style="color:var(--text-muted)">Year: <span style="color:var(--text)">{{ series.year or "-" }}</span></div>
+      <div style="color:var(--text-muted)">Authors: <span style="color:var(--text)">{{ (series.authors or []) | join(", ") if series.authors else "-" }}</span></div>
+      <div style="color:var(--text-muted)">Artists: <span style="color:var(--text)">{{ (series.artists or []) | join(", ") if series.artists else "-" }}</span></div>
+      <div style="color:var(--text-muted)">Tags: <span style="color:var(--text)">{{ (series.tags or []) | join(", ") if series.tags else "-" }}</span></div>
       <div style="color:var(--text-muted)">Synopsis:</div>
       <p class="text-xs leading-relaxed" style="color:var(--text-dim)">{{ series.description or "No description cached yet." }}</p>
     </div>

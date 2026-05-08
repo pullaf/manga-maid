@@ -21,7 +21,7 @@
     {% endif %}
   </div>
 
-  <!-- Fix log — renames -->
+  <!-- Fix log - renames -->
   <div class="rounded-xl border p-6" style="background:var(--surface);border-color:var(--border)">
     <h2 class="font-semibold text-sm mb-4" style="font-family:'Syne',sans-serif;color:var(--text)">Recent Renames</h2>
     {% if renames %}
@@ -30,7 +30,7 @@
       <div class="text-xs pb-2" style="border-bottom:1px solid var(--border)">
         <div style="color:var(--text-dim)">{{ r.timestamp }} · {{ r.reason }}</div>
         <div class="font-mono truncate mt-0.5" style="color:var(--text-muted)">{{ (r.old_path or '').split('/')[-1] }}</div>
-        <div class="font-mono truncate" style="color:var(--accent-light)">{% if r.new_path %}→ {{ r.new_path.split('/')[-1] }}{% else %}→ —{% endif %}</div>
+        <div class="font-mono truncate" style="color:var(--accent-light)">{% if r.new_path %}→ {{ r.new_path.split('/')[-1] }}{% else %}→ -{% endif %}</div>
       </div>
       {% endfor %}
     </div>
@@ -39,7 +39,7 @@
     {% endif %}
   </div>
 
-  <!-- Fix log — deletes -->
+  <!-- Fix log - deletes -->
   {% if deletes %}
   <div class="rounded-xl border p-6" style="background:var(--surface);border-color:var(--border)">
     <h2 class="font-semibold text-sm mb-4" style="font-family:'Syne',sans-serif;color:var(--text)">Recent Deletes</h2>

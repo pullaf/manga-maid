@@ -512,7 +512,7 @@ def _root_folders() -> list[str]:
 
 def _human_size(size: int | None) -> str:
     if not size:
-        return "—"
+        return "-"
     if size < 1024 * 1024:
         return f"{size / 1024:.1f} KB"
     return f"{size / (1024 * 1024):.1f} MB"
@@ -1010,7 +1010,7 @@ async def logs_page(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# API — search & manga info
+# API - search & manga info
 # ---------------------------------------------------------------------------
 
 @app.get("/api/search", response_class=HTMLResponse)
@@ -1098,7 +1098,7 @@ async def get_manga_groups(request: Request, manga_id: str, language: str = "en"
 
 
 # ---------------------------------------------------------------------------
-# API — cover proxy
+# API - cover proxy
 # ---------------------------------------------------------------------------
 
 @app.get("/api/proxy/cover/{manga_id}/{filename}")
@@ -1123,7 +1123,7 @@ async def proxy_cover(manga_id: str, filename: str):
 
 
 # ---------------------------------------------------------------------------
-# API — series CRUD
+# API - series CRUD
 # ---------------------------------------------------------------------------
 
 def _parse_merge_volumes_override(raw: str | None) -> int | None:
@@ -1273,7 +1273,7 @@ async def edit_series_form(request: Request, path: str):
 
 @app.put("/api/series/{path:path}")
 async def update_series(
-    path:           str,              # URL path parameter — the OLD series path
+    path:           str,              # URL path parameter - the OLD series path
     manga_id:       str   = Form(...),
     title:          str   = Form(...),
     subfolder:      str   = Form(""),
@@ -1322,7 +1322,7 @@ async def update_series(
 
 
 # ---------------------------------------------------------------------------
-# API — sync streams
+# API - sync streams
 # ---------------------------------------------------------------------------
 
 
@@ -1896,7 +1896,7 @@ async def update_volume_comicinfo(path: str, volume_id: int, body: ComicInfoUpda
 
 
 # ---------------------------------------------------------------------------
-# API — fix
+# API - fix
 # ---------------------------------------------------------------------------
 
 @app.post("/api/fix/apply", response_class=HTMLResponse)

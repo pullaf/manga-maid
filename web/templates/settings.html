@@ -96,6 +96,14 @@
         <input type="text" name="chapter_naming" value="{{ settings.chapter_naming }}"
                class="w-full border rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none">
       </div>
+      <div>
+        <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Volume file naming</label>
+        <input type="text" name="volume_naming" value="{{ settings.volume_naming }}"
+               class="w-full border rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none">
+        <p class="text-xs mt-1.5" style="color:var(--text-dim)">
+          Used for volume archives and volume-style mass-renames. Volume templates support %1-%4; chapter placeholders are removed automatically.
+        </p>
+      </div>
 
       <!-- Format codes reference -->
       <div class="rounded-lg px-3 py-2.5 grid grid-cols-3 gap-x-4 gap-y-1.5" style="background:var(--surface-alt);border:1px solid var(--border)">
@@ -109,7 +117,6 @@
     </div>
 
     <input type="hidden" name="merge_volumes" id="input_merge_volumes" value="false">
-    <input type="hidden" name="volume_naming" value="{{ settings.volume_naming }}">
   </div>
 
   <!-- Kavita -->
