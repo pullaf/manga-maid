@@ -56,6 +56,7 @@ _sync_running = False
 _cover_cache: dict[str, bytes] = {}
 _conn = None  # shared SQLite connection (WAL mode, safe for single-writer)
 _job_worker_task: asyncio.Task | None = None
+_reconcile_scheduler_task: asyncio.Task | None = None
 _job_worker_stop = asyncio.Event()
 _worker_current_job_id: int | None = None
 _worker_current_proc: asyncio.subprocess.Process | None = None
@@ -64,9 +65,11 @@ JOB_QUEUE_KEY = "default"
 JOB_TYPE_SYNC_ALL = "sync_all"
 JOB_TYPE_SYNC_SERIES = "sync_series"
 JOB_TYPE_REGEN_COMICINFO = "regenerate_comicinfo"
+JOB_TYPE_RECONCILE_DISK = "reconcile_disk"
 JOB_RETENTION_DAYS = 30
 JOB_STATUS_TERMINAL = {"completed", "failed", "cancelled"}
 RUNTIME_CRONTAB_PATH = os.environ.get("RUNTIME_CRONTAB_PATH", "/tmp/crontab")
+RECONCILE_INTERVAL_SECONDS = int(os.environ.get("RECONCILE_INTERVAL_SECONDS", "3600"))
 
 
 def _get_conn():
@@ -87,6 +90,55 @@ def _write_runtime_crontab(cron_expr: str) -> None:
         f.write(line + "\n")
 
 
+def _enqueue_reconcile_job(reason: str) -> int | None:
+    conn = _get_conn()
+    active = _db.get_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
+    for j in active:
+        if j.get("job_type") == JOB_TYPE_RECONCILE_DISK:
+            return None
+    return _db.enqueue_job(
+        conn,
+        job_type=JOB_TYPE_RECONCILE_DISK,
+        queue_key=JOB_QUEUE_KEY,
+        payload={"reason": reason},
+    )
+
+
+def _run_disk_reconcile(job_id: int, payload: dict | None = None) -> None:
+    conn = _get_conn()
+    payload = payload or {}
+    reason = str(payload.get("reason") or "manual").strip()
+    _db.append_job_log(conn, job_id, f"[reconcile] started (reason: {reason})")
+
+    added = _db.scan_disk_series(MANGA_ROOT, conn)
+    _db.append_job_log(conn, job_id, f"[reconcile] discovered {added} new series")
+
+    roots = [rf for rf in (load_settings().get("root_folders") or []) if rf is not None]
+    series_rows = _db.get_all_series(conn)
+    scanned = 0
+    for row in series_rows:
+        series_path = row.get("path") or ""
+        if roots:
+            if not any(series_path == rf or series_path.startswith(rf + "/") for rf in roots):
+                continue
+        series_dir = os.path.join(MANGA_ROOT, series_path)
+        _db.scan_disk_files(series_dir, row["id"], conn)
+        scanned += 1
+
+    _db.append_job_log(conn, job_id, f"[reconcile] scanned {scanned} tracked series")
+    _db.append_job_log(conn, job_id, "[reconcile] done")
+
+
+async def _reconcile_scheduler_loop() -> None:
+    # Non-blocking periodic enqueue; worker processes jobs in queue order.
+    while not _job_worker_stop.is_set():
+        await asyncio.sleep(RECONCILE_INTERVAL_SECONDS)
+        if _job_worker_stop.is_set():
+            break
+        with contextlib.suppress(Exception):
+            _enqueue_reconcile_job("periodic")
+
+
 @app.on_event("startup")
 async def _startup():
     loop = asyncio.get_event_loop()
@@ -95,14 +147,22 @@ async def _startup():
     cron_expr = sanitize_sync_cron(load_settings().get("sync_cron"))
     await loop.run_in_executor(None, _write_runtime_crontab, cron_expr)
     _job_worker_stop.clear()
-    global _job_worker_task
+    with contextlib.suppress(Exception):
+        _enqueue_reconcile_job("startup")
+    global _job_worker_task, _reconcile_scheduler_task
     _job_worker_task = asyncio.create_task(_jobs_worker_loop())
+    _reconcile_scheduler_task = asyncio.create_task(_reconcile_scheduler_loop())
 
 
 @app.on_event("shutdown")
 async def _shutdown():
     _job_worker_stop.set()
-    global _job_worker_task
+    global _job_worker_task, _reconcile_scheduler_task
+    if _reconcile_scheduler_task:
+        _reconcile_scheduler_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _reconcile_scheduler_task
+        _reconcile_scheduler_task = None
     if _job_worker_task:
         _job_worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -111,6 +171,8 @@ async def _shutdown():
 
 
 def _job_display_name(job: dict) -> str:
+    if job.get("job_type") == JOB_TYPE_RECONCILE_DISK:
+        return "Disk reconcile"
     if job.get("job_type") == JOB_TYPE_REGEN_COMICINFO:
         return f"Regenerate ComicInfo: {job.get('series_path_snapshot') or '(unknown)'}"
     if job.get("job_type") == JOB_TYPE_SYNC_SERIES:
@@ -139,6 +201,14 @@ async def _run_job(job: dict) -> None:
     global _worker_current_proc
     conn = _get_conn()
     job_id = job["id"]
+    if job.get("job_type") == JOB_TYPE_RECONCILE_DISK:
+        try:
+            _run_disk_reconcile(job_id, job.get("payload") or {})
+            _db.finish_job(conn, job_id, success=True, exit_code=0)
+        except Exception as e:
+            _db.append_job_log(conn, job_id, f"[reconcile] failed: {e}")
+            _db.finish_job(conn, job_id, success=False, exit_code=1, error_summary=str(e))
+        return
     argv = _job_payload_argv(job)
     if argv is None:
         _db.append_job_log(conn, job_id, "[job] unsupported or invalid payload")
@@ -819,16 +889,23 @@ async def series_details_page(request: Request, path: str):
         v["display_size"] = _human_size(v.get("file_size"))
 
     volume_ids_on_disk = {v["id"] for v in volumes}
-    covered_chapters = 0
+    covered_chapter_nums: set[float] = set()
     for ch in all_chapters:
+        ch_num = ch.get("chapter_num")
+        if ch_num is None:
+            continue
         if ch.get("path"):
-            covered_chapters += 1
+            covered_chapter_nums.add(float(ch_num))
             continue
         vol_id = ch.get("volume_id")
         if vol_id and vol_id in volume_ids_on_disk:
-            covered_chapters += 1
+            covered_chapter_nums.add(float(ch_num))
 
-    source_chapters = row.get("chapter_count") or 0
+    covered_chapters = len(covered_chapter_nums)
+    source_chapters = conn.execute(
+        "SELECT COUNT(DISTINCT chapter_num) AS n FROM chapters WHERE series_id=?",
+        (row["id"],),
+    ).fetchone()["n"] or 0
     source_volumes = row.get("config", {}).get("total_volumes") or row.get("volume_count") or 0
     # Count volume coverage from both actual merged volume archives and chapter
     # files that are assigned to a MangaDex volume bucket.
@@ -942,6 +1019,9 @@ async def save_settings_endpoint(
     })
     if sanitize_sync_cron(before.get("sync_cron")) != normalized_sync_cron:
         _write_runtime_crontab(normalized_sync_cron)
+    if list(before.get("root_folders") or []) != seen:
+        with contextlib.suppress(Exception):
+            _enqueue_reconcile_job("settings_root_folders_changed")
     return RedirectResponse("/settings", status_code=303)
 
 

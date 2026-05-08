@@ -5,6 +5,7 @@ services:
     environment:
       SYNC_CRON: "0 */6 * * *"   # every 6 hours — standard cron syntax
       DEFAULT_LANGUAGE: "en"
+      TZ: "Europe/Rome"
     ports:
       - "4649:4649"
     volumes:

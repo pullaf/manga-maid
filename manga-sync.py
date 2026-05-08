@@ -329,15 +329,14 @@ def _find_new_file(
 ) -> str | None:
     after    = _cbz_files_in(series_dir)
     new_files = after - before
+    if not new_files:
+        return None
     # Among new files, prefer one whose filename matches the chapter number
-    candidates = new_files or after
-    for f in sorted(candidates):
+    for f in sorted(new_files):
         m = CH_RE.search(f)
         if m and abs(float(m.group(1)) - chapter_num) < 0.01:
             return os.path.join(series_dir, f)
-    if new_files:
-        return os.path.join(series_dir, sorted(new_files)[0])
-    return None
+    return os.path.join(series_dir, sorted(new_files)[0])
 
 
 def _mdx_download(
@@ -402,7 +401,7 @@ def _apply_chapter_template(
     result = result.replace("%2", _safe(group))
     result = result.replace("%3", _safe(title))
     result = result.replace("%4", str(int(vol_num)) if vol_num is not None else "")
-    result = result.replace("%5", _fmt_chapter_for_range(chapter_num) if chapter_num is not None else "")
+    result = result.replace("%5", _fmt_chapter_token(chapter_num) if chapter_num is not None else "")
     result = result.replace("%6", _safe(chapter_title or ""))
     # Drop empty grouping wrappers left by missing placeholders like %2 or %6.
     result = re.sub(r"\(\s*\)", "", result)
@@ -416,6 +415,11 @@ def _apply_chapter_template(
 
 def _fmt_chapter_for_range(n) -> str:
     return str(math.floor(float(n)))
+
+
+def _fmt_chapter_token(n) -> str:
+    num = float(n)
+    return str(int(num)) if num.is_integer() else str(num)
 
 
 def _volume_cbz_comicinfo_xml(
@@ -981,7 +985,12 @@ def _sync_one_series(
                             os.rename(fpath, desired_path)
                             fpath = desired_path
                         else:
-                            _log(f"[{name}] ch.{ch_row['chapter_num']}: naming target exists, keeping downloader name")
+                            _log(f"[{name}] ch.{ch_row['chapter_num']}: naming target exists, keeping existing file")
+                            # Avoid duplicate archives when mdx emits a suffixed
+                            # filename but the normalized target already exists.
+                            with contextlib.suppress(OSError):
+                                os.remove(fpath)
+                            fpath = desired_path
                 rel = os.path.relpath(fpath, MANGA_ROOT)
                 mark_chapter_downloaded(conn, ch_row["id"], rel,
                                         os.path.getsize(fpath))
