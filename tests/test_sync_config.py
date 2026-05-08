@@ -1,6 +1,7 @@
 import json
 
 import db
+import file_permissions
 import sync_config
 
 
@@ -59,6 +60,14 @@ def test_second_save_preserves_first(tmp_path, monkeypatch):
 def test_default_naming_matches_mdx():
     assert sync_config.DEFAULTS["chapter_naming"] == "[%1 %2] %3 vol.%4 ch.%5"
     assert sync_config.DEFAULTS["volume_naming"] == "[%1 %2] %3 vol.%4"
+    assert sync_config.DEFAULTS["file_permission_mask"] == "664"
+
+
+def test_sanitize_file_permission_mask():
+    assert file_permissions.sanitize_file_permission_mask("775") == "775"
+    assert file_permissions.sanitize_file_permission_mask("0775") == "775"
+    assert file_permissions.sanitize_file_permission_mask("0o755") == "755"
+    assert file_permissions.sanitize_file_permission_mask("999") == "664"
 
 
 def test_sanitize_volume_naming_removes_chapter_placeholders():

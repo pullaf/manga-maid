@@ -109,6 +109,7 @@ from comicinfo import (                                # noqa: E402
     inject_comicinfo,
 )
 from comicinfo_defs import MANGA_VALUES, AGE_RATING_VALUES  # noqa: E402
+from file_permissions import sanitize_file_permission_mask   # noqa: E402
 
 app = FastAPI(title="Manga Maid")
 templates = Jinja2Templates(directory="/app/web/templates")
@@ -1094,6 +1095,7 @@ async def save_settings_endpoint(
     auto_covers:       str = Form("false"),
     kavita_url:        str = Form(""),
     kavita_api_key:    str = Form(""),
+    file_permission_mask: str = Form("664"),
 ):
     try:
         root_folders = json.loads(root_folders_json)
@@ -1120,6 +1122,7 @@ async def save_settings_endpoint(
         "auto_covers":    auto_covers == "true",
         "kavita_url":     kavita_url.strip(),
         "kavita_api_key": kavita_api_key.strip(),
+        "file_permission_mask": sanitize_file_permission_mask(file_permission_mask),
     })
     if sanitize_sync_cron(before.get("sync_cron")) != normalized_sync_cron:
         try:
@@ -2145,7 +2148,12 @@ async def update_chapter_comicinfo(path: str, chapter_id: int, body: ComicInfoUp
         fields["Series"] = row.get("name") or row.get("title") or ""
     _validate_comicinfo_fields(fields)
     xml = _comicinfo_fields_to_xml(fields)
-    ok = inject_comicinfo(abs_f, xml, overwrite=True)
+    ok = inject_comicinfo(
+        abs_f,
+        xml,
+        overwrite=True,
+        file_permission_mask=load_settings().get("file_permission_mask"),
+    )
     if not ok:
         raise HTTPException(500, "Could not write ComicInfo.xml")
     _db.mark_chapter_comicinfo(conn, int(r["id"]))
@@ -2207,7 +2215,12 @@ async def update_volume_comicinfo(path: str, volume_id: int, body: ComicInfoUpda
         fields["Series"] = row.get("name") or row.get("title") or ""
     _validate_comicinfo_fields(fields)
     xml = _comicinfo_fields_to_xml(fields)
-    ok = inject_comicinfo(abs_f, xml, overwrite=True)
+    ok = inject_comicinfo(
+        abs_f,
+        xml,
+        overwrite=True,
+        file_permission_mask=load_settings().get("file_permission_mask"),
+    )
     if not ok:
         raise HTTPException(500, "Could not write ComicInfo.xml")
     _db.mark_volume_comicinfo(conn, int(r["id"]))

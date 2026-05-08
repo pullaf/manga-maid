@@ -51,6 +51,7 @@ from comicinfo import (                                 # noqa: E402
 )
 from sync_config import load_settings, sanitize_volume_naming  # noqa: E402
 from kavita import KavitaClient                        # noqa: E402
+from file_permissions import apply_file_permission_mask # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -560,7 +561,7 @@ def normalize_volume_filenames_for_kavita(series_row: dict, conn) -> int:
     return n
 
 
-def refresh_volume_comicinfo_embeds(series_row: dict, conn) -> int:
+def refresh_volume_comicinfo_embeds(series_row: dict, conn, settings: dict | None = None) -> int:
     """Rewrite ComicInfo in volume CBZs (fixes Kavita showing Number == volume)."""
     series_id   = series_row["id"]
     series_path = series_row["path"]
@@ -573,6 +574,7 @@ def refresh_volume_comicinfo_embeds(series_row: dict, conn) -> int:
     series_title = (meta or {}).get("title") or os.path.basename(series_dir)
     label       = series_row.get("name", series_path)
 
+    file_permission_mask = (settings or {}).get("file_permission_mask")
     rows = conn.execute(
         "SELECT * FROM volumes WHERE series_id=? AND path IS NOT NULL",
         (series_id,),
@@ -609,7 +611,12 @@ def refresh_volume_comicinfo_embeds(series_row: dict, conn) -> int:
             series_web=series_web,
             page_count=count_pages(cbz_path),
         )
-        if inject_comicinfo(cbz_path, xml, overwrite=True):
+        if inject_comicinfo(
+            cbz_path,
+            xml,
+            overwrite=True,
+            file_permission_mask=file_permission_mask,
+        ):
             mark_volume_comicinfo(conn, vol["id"])
             done += 1
     _log(f"[{label}] refreshed ComicInfo in {done} volume file(s) (Kavita-friendly)")
@@ -706,7 +713,13 @@ def _merge_volume_batch(
              f"({len(ch_paths)} ch) → {out_name}"
              + (" [+cover]" if cover_bytes else ""))
 
-        if merge_chapters_into_volume(ch_paths, out_path, xml, cover_bytes):
+        if merge_chapters_into_volume(
+            ch_paths,
+            out_path,
+            xml,
+            cover_bytes,
+            file_permission_mask=settings.get("file_permission_mask"),
+        ):
             rel_out  = os.path.relpath(out_path, MANGA_ROOT)
             vol_id   = vol_row["id"]
             mark_volume_merged(conn, vol_id, rel_out, os.path.getsize(out_path))
@@ -791,6 +804,7 @@ def _ensure_comicinfo_all(
     series_web: str | None = None,
     series_label: str | None = None,
     force_overwrite: bool = False,
+    file_permission_mask: str | None = None,
 ):
     ch_rows, vol_rows = get_files_missing_comicinfo(conn, series_id)
     if not ch_rows and not vol_rows:
@@ -853,7 +867,12 @@ def _ensure_comicinfo_all(
             page_count=count_pages(cbz_path),
             web=ch_web,
         )
-        if inject_comicinfo(cbz_path, xml, overwrite=True):
+        if inject_comicinfo(
+            cbz_path,
+            xml,
+            overwrite=True,
+            file_permission_mask=file_permission_mask,
+        ):
             mark_chapter_comicinfo(conn, ch["id"])
             injected_ch += 1
             _log(f"[{label}] ComicInfo {idx}/{total_ch}: {os.path.basename(cbz_path)}")
@@ -887,7 +906,12 @@ def _ensure_comicinfo_all(
             series_web=series_web,
             page_count=count_pages(cbz_path),
         )
-        if inject_comicinfo(cbz_path, xml, overwrite=True):
+        if inject_comicinfo(
+            cbz_path,
+            xml,
+            overwrite=True,
+            file_permission_mask=file_permission_mask,
+        ):
             mark_volume_comicinfo(conn, vol["id"])
             injected_vol += 1
             _log(f"[{label}] ComicInfo vol {idx}/{total_vol}: {os.path.basename(cbz_path)}")
@@ -963,6 +987,7 @@ def _sync_one_series(
     source_name = series_row.get("source_name") or "mangadex"
     name        = series_row.get("name") or os.path.basename(series_path)
     series_web  = f"https://mangadex.org/title/{manga_id}" if manga_id else None
+    file_permission_mask = settings.get("file_permission_mask")
     _log(f"[{name}] checking for updates…")
 
     # Always reconcile disk state first
@@ -980,6 +1005,7 @@ def _sync_one_series(
         _ensure_comicinfo_all(
             series_id, series_dir, conn, meta, language,
             series_web=series_web, series_label=name,
+            file_permission_mask=file_permission_mask,
         )
         update_source_sync_time(conn, series_id, source_name)
         return False
@@ -997,7 +1023,8 @@ def _sync_one_series(
         _log(f"[{name}] up-to-date")
         _ensure_comicinfo_all(
             series_id, series_dir, conn, meta, language,
-            series_web=series_web, series_label=name
+            series_web=series_web, series_label=name,
+            file_permission_mask=file_permission_mask,
         )
         return False
 
@@ -1053,6 +1080,7 @@ def _sync_one_series(
                                 os.remove(fpath)
                             fpath = desired_path
                 rel = os.path.relpath(fpath, MANGA_ROOT)
+                apply_file_permission_mask(fpath, file_permission_mask)
                 mark_chapter_downloaded(conn, ch_row["id"], rel,
                                         os.path.getsize(fpath))
                 downloaded += 1
@@ -1082,7 +1110,8 @@ def _sync_one_series(
     # ComicInfo injection for all remaining files
     _ensure_comicinfo_all(
         series_id, series_dir, conn, meta, language,
-        series_web=series_web, series_label=name
+        series_web=series_web, series_label=name,
+        file_permission_mask=file_permission_mask,
     )
 
     # Kavita covers
@@ -1180,7 +1209,7 @@ def main(
             _log(f"[comicinfo-refresh] unknown series: {rel_path}")
             conn.close()
             return
-        refresh_volume_comicinfo_embeds(row, conn)
+        refresh_volume_comicinfo_embeds(row, conn, settings=settings)
         conn.close()
         return
 
@@ -1245,6 +1274,7 @@ def main(
             series_web=(f"https://mangadex.org/title/{row['source_id']}" if row.get("source_id") else None),
             series_label=row.get("name", row["path"]),
             force_overwrite=True,
+            file_permission_mask=settings.get("file_permission_mask"),
         )
         _log("[comicinfo-regenerate] done")
         conn.close()
@@ -1269,6 +1299,7 @@ def main(
                 series_row.get("language", "en"),
                 series_web=None,
                 series_label=series_name,
+                file_permission_mask=settings.get("file_permission_mask"),
             )
             continue
 
