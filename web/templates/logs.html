@@ -29,8 +29,8 @@
       {% for r in renames %}
       <div class="text-xs pb-2" style="border-bottom:1px solid var(--border)">
         <div style="color:var(--text-dim)">{{ r.timestamp }} · {{ r.reason }}</div>
-        <div class="font-mono truncate mt-0.5" style="color:var(--text-muted)">{{ r.old.split('/')[-1] }}</div>
-        <div class="font-mono truncate" style="color:var(--accent-light)">→ {{ r.new.split('/')[-1] }}</div>
+        <div class="font-mono truncate mt-0.5" style="color:var(--text-muted)">{{ (r.old_path or '').split('/')[-1] }}</div>
+        <div class="font-mono truncate" style="color:var(--accent-light)">{% if r.new_path %}→ {{ r.new_path.split('/')[-1] }}{% else %}→ —{% endif %}</div>
       </div>
       {% endfor %}
     </div>
@@ -47,7 +47,7 @@
       {% for d in deletes %}
       <div class="text-xs pb-2" style="border-bottom:1px solid var(--border)">
         <div style="color:var(--text-dim)">{{ d.timestamp }} · {{ d.reason }}</div>
-        <div class="font-mono truncate mt-0.5" style="color:var(--danger)">{{ d.path.split('/')[-1] }}</div>
+        <div class="font-mono truncate mt-0.5" style="color:var(--danger)">{{ (d.old_path or '').split('/')[-1] }}</div>
       </div>
       {% endfor %}
     </div>

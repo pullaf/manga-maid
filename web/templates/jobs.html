@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="mb-8">
+  <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Jobs</h1>
+  <p class="text-sm mt-1" style="color:var(--text-muted)">Running, queued, and recent sync jobs</p>
+</div>
+
+<div class="rounded-xl border p-3 mb-4 flex flex-wrap items-center gap-2.5"
+     style="background:var(--surface);border-color:var(--border)">
+  <input id="jobs-filter-input" type="text" placeholder="Filter by series/path/job type…"
+         class="flex-1 min-w-[220px] border rounded-lg px-3 py-2 text-sm focus:outline-none">
+  <button type="button" id="jobs-auto-scroll-toggle"
+          class="text-xs border rounded-lg px-3 py-2 transition-colors"
+          style="border-color:var(--border-mid);color:var(--text-muted)">Auto-scroll: on</button>
+</div>
+
+<div class="grid gap-4 lg:grid-cols-2">
+  <div class="rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
+    <h2 class="text-sm font-semibold mb-2" style="font-family:'Syne',sans-serif;color:var(--text)">Queue</h2>
+    <div id="jobs-list" class="space-y-2 max-h-[560px] overflow-y-auto"></div>
+  </div>
+  <div class="rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
+    <div class="flex items-center justify-between gap-2 mb-2">
+      <h2 class="text-sm font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">Console</h2>
+      <span id="job-console-status" class="text-xs" style="color:var(--text-dim)"></span>
+    </div>
+    <div id="job-console" class="font-mono text-xs rounded-lg p-3 max-h-[560px] overflow-y-auto"
+         style="background:#090910;border:1px solid var(--border);color:#c4c0dd;min-height:220px"></div>
+  </div>
+</div>
+
+<script>
+let selectedJobId = null;
+let jobStream = null;
+let latestSeq = 0;
+let jobsAutoScroll = true;
+let jobsFilter = '';
+
+function statusBadge(status) {
+  if (status === 'running') return '<span class="text-[11px] px-1.5 py-0.5 rounded" style="background:rgba(52,211,153,.14);color:#34d399">running</span>';
+  if (status === 'queued') return '<span class="text-[11px] px-1.5 py-0.5 rounded" style="background:rgba(251,191,36,.14);color:#fbbf24">queued</span>';
+  if (status === 'completed') return '<span class="text-[11px] px-1.5 py-0.5 rounded" style="background:rgba(96,165,250,.14);color:#93c5fd">completed</span>';
+  if (status === 'failed') return '<span class="text-[11px] px-1.5 py-0.5 rounded" style="background:rgba(248,113,113,.14);color:#f87171">failed</span>';
+  return '<span class="text-[11px] px-1.5 py-0.5 rounded" style="background:var(--surface-alt);color:var(--text-dim)">' + status + '</span>';
+}
+
+function renderSection(title, jobs) {
+  if (!jobs.length) return '';
+  let html = '<div class="text-xs font-semibold mt-3 mb-1" style="color:var(--text-dim)">' + title + '</div>';
+  jobs.forEach(j => {
+    const selected = selectedJobId === j.id;
+    var canCancel = (j.status === 'queued' || j.status === 'running');
+    html += '<div class="rounded-lg border px-2.5 py-2 transition-colors" ' +
+      'style="border-color:' + (selected ? 'rgba(139,92,246,.55)' : 'var(--border-mid)') + ';background:' + (selected ? 'rgba(139,92,246,.10)' : 'var(--surface-alt)') + '"' +
+      '>' +
+      '<div class="flex items-start gap-2">' +
+      '<button type="button" class="flex-1 text-left min-w-0" onclick="selectJob(' + j.id + ')">' +
+      '<div class="flex items-center justify-between gap-2">' +
+      '<span class="text-xs truncate" style="color:var(--text)">#' + j.id + ' · ' + (j.display_name || j.job_type) + '</span>' +
+      statusBadge(j.status) +
+      '</div>' +
+      '<div class="text-[11px] mt-1 flex items-center justify-between gap-2" style="color:var(--text-dim)">' +
+      '<span>created ' + (j.created_at || '-') + '</span>' +
+      '<span>' + (j.series_path_snapshot || j.job_type || '-') + '</span>' +
+      '</div>' +
+      '</button>' +
+      (canCancel ? '<button type="button" onclick="cancelJob(' + j.id + ')" class="text-[11px] px-2 py-1 rounded border shrink-0 mt-0.5" style="border-color:rgba(248,113,113,.35);color:#f87171;background:rgba(248,113,113,.08)">Cancel</button>' : '') +
+      '</div>' +
+      '</div>';
+  });
+  return html;
+}
+
+function _matchFilter(job) {
+  if (!jobsFilter) return true;
+  const f = jobsFilter.toLowerCase();
+  return [
+    String(job.display_name || ''),
+    String(job.job_type || ''),
+    String(job.series_path_snapshot || ''),
+    String(job.status || '')
+  ].join(' ').toLowerCase().includes(f);
+}
+
+async function refreshJobsList() {
+  const resp = await fetch('/api/jobs');
+  const data = await resp.json();
+  const running = (data.running || []).filter(_matchFilter);
+  const queued = (data.queued || []).filter(_matchFilter);
+  const recent = (data.recent || []).filter(_matchFilter);
+  const list = document.getElementById('jobs-list');
+  list.innerHTML =
+    renderSection('Running', running) +
+    renderSection('Queued', queued) +
+    renderSection('Recent', recent);
+  if (!list.innerHTML.trim()) {
+    list.innerHTML = '<div class="text-xs px-1 py-2" style="color:var(--text-dim)">No jobs match this filter.</div>';
+  }
+  if (!selectedJobId) {
+    const first = running[0] || queued[0] || recent[0];
+    if (first) selectJob(first.id);
+  }
+}
+
+async function cancelJob(jobId) {
+  const ok = await window.appConfirm('Cancel this job?');
+  if (!ok) return;
+  try {
+    const resp = await fetch('/api/jobs/' + jobId + '/cancel', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok) throw new Error(data.error || 'Cancel failed');
+    if (selectedJobId === jobId) {
+      appendConsoleLine('[ui] cancellation requested');
+    }
+    refreshJobsList();
+  } catch (e) {
+    appendConsoleLine('[ui] cancel error: ' + String(e));
+  }
+}
+
+function appendConsoleLine(text) {
+  const consoleEl = document.getElementById('job-console');
+  const line = document.createElement('div');
+  line.textContent = text;
+  consoleEl.appendChild(line);
+  if (jobsAutoScroll) consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
+function selectJob(jobId) {
+  selectedJobId = jobId;
+  latestSeq = 0;
+  if (jobStream) {
+    jobStream.close();
+    jobStream = null;
+  }
+  document.getElementById('job-console').textContent = '';
+  document.getElementById('job-console-status').textContent = 'Connecting…';
+  refreshJobsList();
+
+  jobStream = new EventSource('/api/jobs/' + jobId + '/stream?from_seq=0');
+  jobStream.onmessage = function(e) {
+    try {
+      const payload = JSON.parse(e.data);
+      if (payload.type === 'line') {
+        latestSeq = payload.seq || latestSeq;
+        appendConsoleLine(payload.line || '');
+        document.getElementById('job-console-status').textContent = 'Live';
+      } else if (payload.type === 'status') {
+        document.getElementById('job-console-status').textContent = payload.status || 'done';
+        if (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled' || payload.status === 'missing') {
+          jobStream.close();
+          jobStream = null;
+          refreshJobsList();
+        }
+      }
+    } catch (err) {
+      appendConsoleLine(String(e.data || ''));
+    }
+  };
+  jobStream.onerror = function() {
+    if (jobStream) jobStream.close();
+    jobStream = null;
+    document.getElementById('job-console-status').textContent = 'Disconnected';
+  };
+}
+
+setInterval(refreshJobsList, 2500);
+document.getElementById('jobs-filter-input').addEventListener('input', function(e) {
+  jobsFilter = (e.target.value || '').trim();
+  refreshJobsList();
+});
+document.getElementById('jobs-auto-scroll-toggle').addEventListener('click', function() {
+  jobsAutoScroll = !jobsAutoScroll;
+  this.textContent = 'Auto-scroll: ' + (jobsAutoScroll ? 'on' : 'off');
+});
+refreshJobsList();
+</script>
+{% endblock %}

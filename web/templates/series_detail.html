@@ -1,0 +1,745 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .action-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    padding: 8px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: color-mix(in srgb, var(--surface-alt) 78%, transparent);
+  }
+  .detail-act-btn {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: .01em;
+    padding: 6px 12px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: background .13s, color .13s, border-color .13s, transform .13s;
+    background: var(--surface-alt);
+    font-family: 'DM Sans', sans-serif;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .detail-act-btn:hover { background: var(--border-mid); transform: translateY(-1px); }
+  .detail-act-btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+  .detail-act-btn--accent {
+    color: #efe8ff;
+    background: linear-gradient(180deg, rgba(139,92,246,.92), rgba(124,58,237,.92));
+    border-color: rgba(167,139,250,.45);
+    box-shadow: 0 10px 22px rgba(124,58,237,.28);
+  }
+  .detail-act-btn--accent:hover { background: linear-gradient(180deg, #9a74fa, #874df0); }
+  .detail-act-btn--muted  { color: var(--text-muted); border-color: var(--border-mid); }
+  .detail-act-btn--danger { color: var(--danger); border-color: rgba(248,113,113,.35); }
+  .detail-act-btn--warn {
+    color: #f87171;
+    background: rgba(248,113,113,.08);
+    border: 1px solid rgba(248,113,113,.35);
+  }
+  .detail-act-btn--warn:hover { background: rgba(248,113,113,.14); }
+  .detail-action-log {
+    font-size: 11px;
+    font-family: ui-monospace, monospace;
+    line-height: 1.55;
+    color: var(--text-dim);
+    background: var(--surface-alt);
+    border-radius: 8px;
+    padding: 8px 10px;
+    max-height: 160px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    white-space: pre-wrap;
+  }
+  .file-del-btn {
+    flex-shrink: 0;
+    padding: 4px;
+    border-radius: 8px;
+    border: none;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+    line-height: 0;
+    transition: color .12s, background .12s;
+  }
+  .file-del-btn:hover { color: var(--danger); background: rgba(248,113,113,.12); }
+  .file-del-btn svg { display: block; }
+  .file-row-cb { accent-color: var(--accent); }
+</style>
+
+<div class="mb-6 flex items-start justify-between gap-3">
+  <div>
+    <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">{{ series.name }}</h1>
+  </div>
+  <a href="/"
+     class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
+     style="border-color:var(--border-mid);color:var(--text-muted)">← Back</a>
+</div>
+
+{% set _parts = series.path.split('/') %}
+{% set _sub = '/'.join(_parts[:-1]) %}
+
+<div style="margin-bottom:24px">
+  <div id="detail-actions" data-series-path="{{ series.path }}">
+    <div class="action-group">
+      {% if series.linked %}
+      <button type="button" class="detail-act-btn detail-act-btn--accent" onclick="detailSeriesSync(this)" data-path="{{ series.path }}">Sync now</button>
+      <button type="button" class="detail-act-btn detail-act-btn--muted" onclick="detailSeriesCovers(this)" data-path="{{ series.path }}">Push Kavita covers</button>
+      <button type="button" class="detail-act-btn detail-act-btn--muted" onclick="detailSeriesRegenerateComicInfo(this)" data-path="{{ series.path }}">Regenerate ComicInfo</button>
+      <a href="https://mangadex.org/title/{{ series.config.id }}" target="_blank" rel="noopener"
+         class="detail-act-btn detail-act-btn--muted" title="Open on MangaDex">Open MangaDex ↗</a>
+      {% else %}
+      <a href="/series?q={{ series.name | urlencode }}&folder={{ series.name | urlencode }}&sub={{ _sub | urlencode }}"
+         class="detail-act-btn detail-act-btn--accent">Link to MangaDex</a>
+      {% endif %}
+      <a href="/fix?series={{ series.path | urlencode }}" class="detail-act-btn detail-act-btn--muted">Fix filenames</a>
+      <button type="button" class="detail-act-btn detail-act-btn--muted"
+              hx-get="/api/series/{{ series.path }}/edit"
+              hx-target="#modal-body"
+              hx-swap="innerHTML">Edit settings</button>
+      <button type="button" id="btn-detail-remove-series" class="detail-act-btn detail-act-btn--danger ml-auto"
+              hx-delete="/api/series/{{ series.path }}"
+              hx-swap="none"
+              hx-confirm="Unlink '{{ series.name }}' from its source? Local files stay on disk.">Unlink from source</button>
+    </div>
+    <div id="detail-action-log" class="detail-action-log hidden mt-3"></div>
+  </div>
+</div>
+
+<div class="grid gap-4 lg:grid-cols-2">
+  <div class="rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
+    <h2 class="text-sm font-semibold mb-3" style="font-family:'Syne',sans-serif;color:var(--text)">Series Settings</h2>
+    <div class="space-y-2 text-sm">
+      <div style="color:var(--text-muted)">Language: <span style="color:var(--text)">{{ series.language or "en" }}</span></div>
+      <div style="color:var(--text-muted)">Group priority:
+        <span style="color:var(--text)">
+          {% if series.preferred_groups and series.preferred_groups|length > 0 %}
+            {{ series.preferred_groups | join(' → ') }}
+          {% else %}
+            any
+          {% endif %}
+        </span>
+      </div>
+      <div style="color:var(--text-muted)">Skip chapters ≤ <span style="color:var(--text)">{{ series.since or 0 }}</span></div>
+      <div style="color:var(--text-muted)">Exclude from Fix Files: <span style="color:var(--text)">{{ "Yes" if series.exclude_from_fix else "No" }}</span></div>
+    </div>
+  </div>
+
+  <div class="rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
+    <h2 class="text-sm font-semibold mb-3" style="font-family:'Syne',sans-serif;color:var(--text)">Metadata</h2>
+    <div class="space-y-2 text-sm">
+      <div style="color:var(--text-muted)">Path: <span style="color:var(--text)">{{ series.path }}</span></div>
+      <div style="color:var(--text-muted)">Linked: <span style="color:var(--text)">{{ "Yes" if series.linked else "No" }}</span></div>
+      {% if series.linked %}
+      <div style="color:var(--text-muted)">Status: <span style="color:var(--text)">{{ series.config.status or "unknown" }}</span></div>
+      <div class="pt-1 space-y-2">
+        <div class="rounded-lg px-2.5 py-2 border"
+             style="border-color:{{ 'rgba(52,211,153,.45)' if chapter_ok else 'rgba(251,191,36,.45)' }};background:{{ 'rgba(52,211,153,.08)' if chapter_ok else 'rgba(251,191,36,.08)' }}">
+          <div class="text-xs font-semibold" style="color:{{ '#34d399' if chapter_ok else '#fbbf24' }}">
+            Chapters{% if chapter_ok %} · Up to date{% else %} · Missing{% endif %}
+          </div>
+          <div class="text-xs mt-0.5" style="color:var(--text-muted)">
+            You have <span style="color:var(--text)">{{ have_chapters }}</span> / <span style="color:var(--text)">{{ source_chapters or "?" }}</span> from source
+          </div>
+        </div>
+        <div class="rounded-lg px-2.5 py-2 border"
+             style="border-color:{{ 'rgba(52,211,153,.45)' if volume_ok else 'rgba(251,191,36,.45)' }};background:{{ 'rgba(52,211,153,.08)' if volume_ok else 'rgba(251,191,36,.08)' }}">
+          <div class="text-xs font-semibold" style="color:{{ '#34d399' if volume_ok else '#fbbf24' }}">
+            Volumes{% if volume_ok %} · Up to date{% else %} · Missing{% endif %}
+          </div>
+          <div class="text-xs mt-0.5" style="color:var(--text-muted)">
+            You have <span style="color:var(--text)">{{ have_volumes }}</span> / <span style="color:var(--text)">{{ source_volumes or "?" }}</span> from source
+          </div>
+        </div>
+      </div>
+      {% else %}
+      <div class="rounded-lg px-2.5 py-2 border"
+           style="border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.08);color:var(--text-dim)">
+        Link this series to MangaDex to show source progress (chapters/volumes parity).
+      </div>
+      {% endif %}
+      <div style="color:var(--text-muted)">Year: <span style="color:var(--text)">{{ series.year or "—" }}</span></div>
+      <div style="color:var(--text-muted)">Authors: <span style="color:var(--text)">{{ (series.authors or []) | join(", ") if series.authors else "—" }}</span></div>
+      <div style="color:var(--text-muted)">Artists: <span style="color:var(--text)">{{ (series.artists or []) | join(", ") if series.artists else "—" }}</span></div>
+      <div style="color:var(--text-muted)">Tags: <span style="color:var(--text)">{{ (series.tags or []) | join(", ") if series.tags else "—" }}</span></div>
+      <div style="color:var(--text-muted)">Synopsis:</div>
+      <p class="text-xs leading-relaxed" style="color:var(--text-dim)">{{ series.description or "No description cached yet." }}</p>
+    </div>
+  </div>
+</div>
+
+<div class="mt-6 grid gap-4 lg:grid-cols-2">
+  <div class="rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
+    <h2 class="text-sm font-semibold mb-3" style="font-family:'Syne',sans-serif;color:var(--text)">Volume Files</h2>
+    {% if volumes %}
+    <div id="volume-files-panel">
+      <div class="flex flex-wrap items-center gap-2 mb-2 pb-2 w-full" style="border-bottom:1px solid var(--border)">
+        <label class="inline-flex items-center gap-1.5 text-xs cursor-pointer" style="color:var(--text-dim)">
+          <input type="checkbox" id="vol-select-all" class="file-row-cb rounded border" style="border-color:var(--border-mid)">
+          Select all
+        </label>
+        <button type="button" id="btn-bulk-delete-volumes" class="detail-act-btn detail-act-btn--danger text-xs ml-auto" disabled>
+          Delete selected…
+        </button>
+      </div>
+      <div class="space-y-0.5 text-xs font-mono max-h-96 overflow-y-auto">
+        {% for v in volumes %}
+        <div class="flex items-center gap-2 py-1.5 pr-1 rounded-lg hover:bg-opacity-50" style="color:var(--text-muted)">
+          <input type="checkbox" class="vol-file-cb file-row-cb rounded border shrink-0" style="border-color:var(--border-mid)"
+                 data-id="{{ v.id }}" data-name="{{ v.display_path|e }}">
+          <span class="truncate flex-1 min-w-0">{{ v.display_path }}</span>
+          <span class="shrink-0" style="color:var(--text-dim)">{{ v.display_size }}</span>
+          <button type="button" class="detail-act-btn detail-act-btn--muted text-[11px] px-2 py-1 comicinfo-open"
+                  data-kind="volume" data-id="{{ v.id }}" data-name="{{ v.display_path|e }}">ComicInfo</button>
+          <button type="button" class="file-del-btn vol-del-one" title="Delete from disk…"
+                  data-id="{{ v.id }}" data-name="{{ v.display_path|e }}" aria-label="Delete volume file">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+          </button>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% else %}
+    <p class="text-sm" style="color:var(--text-dim)">No merged volume files tracked yet.</p>
+    {% endif %}
+  </div>
+
+  <div class="rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
+    <h2 class="text-sm font-semibold mb-3" style="font-family:'Syne',sans-serif;color:var(--text)">Chapter Files</h2>
+    {% if chapters %}
+    <div id="chapter-files-panel">
+      <div class="flex flex-wrap items-center gap-2 mb-2 pb-2 w-full" style="border-bottom:1px solid var(--border)">
+        <label class="inline-flex items-center gap-1.5 text-xs cursor-pointer" style="color:var(--text-dim)">
+          <input type="checkbox" id="ch-select-all" class="file-row-cb rounded border" style="border-color:var(--border-mid)">
+          Select all
+        </label>
+        <button type="button" id="btn-bulk-delete-chapters" class="detail-act-btn detail-act-btn--danger text-xs ml-auto" disabled>
+          Delete selected…
+        </button>
+      </div>
+      <div class="space-y-0.5 text-xs font-mono max-h-96 overflow-y-auto">
+        {% for c in chapters %}
+        <div class="flex items-center gap-2 py-1.5 pr-1 rounded-lg hover:bg-opacity-50" style="color:var(--text-muted)">
+          <input type="checkbox" class="ch-file-cb file-row-cb rounded border shrink-0" style="border-color:var(--border-mid)"
+                 data-id="{{ c.id }}" data-name="{{ c.display_path|e }}">
+          <span class="truncate flex-1 min-w-0">{{ c.display_path }}</span>
+          <span class="shrink-0" style="color:var(--text-dim)">{{ c.display_size }}</span>
+          <button type="button" class="detail-act-btn detail-act-btn--muted text-[11px] px-2 py-1 comicinfo-open"
+                  data-kind="chapter" data-id="{{ c.id }}" data-name="{{ c.display_path|e }}">ComicInfo</button>
+          <button type="button" class="file-del-btn ch-del-one" title="Delete from disk…"
+                  data-id="{{ c.id }}" data-name="{{ c.display_path|e }}" aria-label="Delete chapter file">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+          </button>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% else %}
+    <p class="text-sm" style="color:var(--text-dim)">No chapter files tracked yet.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div id="delete-files-modal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4">
+  <div class="absolute inset-0" style="background:rgba(0,0,0,.65);backdrop-filter:blur(4px)" aria-hidden="true" onclick="closeDeleteFilesModal()"></div>
+  <div class="relative w-full max-w-md rounded-2xl border p-6 shadow-2xl"
+       style="background:var(--surface);border-color:var(--border-mid);box-shadow:0 24px 64px rgba(0,0,0,.6)"
+       role="dialog" aria-modal="true" aria-labelledby="delete-files-modal-title">
+    <h2 id="delete-files-modal-title" class="text-base font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">
+      Delete files from disk?
+    </h2>
+    <p class="text-sm mt-3 leading-relaxed" style="color:var(--text-muted)">
+      This removes the selected archives from your library folder. The database will be updated. This cannot be undone.
+    </p>
+    <div id="delete-files-list" class="text-xs mt-3 max-h-32 overflow-y-auto font-mono p-3 rounded-lg border leading-relaxed"
+         style="border-color:var(--border);background:var(--surface-alt);color:var(--text-dim)"></div>
+    <p id="delete-files-modal-status" class="text-xs mt-3 min-h-[1.25em] font-mono whitespace-pre-wrap" style="color:var(--text-dim)"></p>
+    <div class="flex justify-end gap-2 mt-5">
+      <button type="button" onclick="closeDeleteFilesModal()"
+              class="text-xs px-3 py-2 rounded-lg border transition-colors"
+              style="border-color:var(--border-mid);color:var(--text-muted)">
+        Cancel
+      </button>
+      <button type="button" id="btn-confirm-delete-files"
+              class="text-xs px-3 py-2 rounded-lg font-semibold transition-colors"
+              style="background:rgba(248,113,113,.15);border:1px solid rgba(248,113,113,.5);color:#f87171">
+        Yes, delete permanently
+      </button>
+    </div>
+  </div>
+</div>
+
+<div id="comicinfo-modal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4">
+  <div class="absolute inset-0" style="background:rgba(0,0,0,.65);backdrop-filter:blur(4px)" aria-hidden="true" onclick="closeComicInfoModal()"></div>
+  <div class="relative w-full max-w-2xl rounded-2xl border p-6 shadow-2xl max-h-[92vh] overflow-y-auto"
+       style="background:var(--surface);border-color:var(--border-mid);box-shadow:0 24px 64px rgba(0,0,0,.6)">
+    <h2 class="text-base font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">Edit ComicInfo</h2>
+    <p id="comicinfo-modal-file" class="text-xs mt-1" style="color:var(--text-dim)"></p>
+    <div class="grid grid-cols-2 gap-3 mt-4">
+      {% for f in ["Series","Number","Volume","Title","Summary","Writer","Penciller","Publisher","Genre","Count","Web","LanguageISO","Year","Manga","AgeRating","PageCount"] %}
+      <label class="{{ 'col-span-2' if f in ['Summary','Genre'] else '' }}">
+        <span class="block text-[11px] mb-1" style="color:var(--text-muted)">{{ f }}</span>
+        {% if f == "Summary" %}
+        <textarea data-ci-field="{{ f }}" rows="4" class="w-full border rounded-lg px-2.5 py-2 text-xs font-mono focus:outline-none"></textarea>
+        {% elif f == "Manga" %}
+        <select data-ci-field="{{ f }}" class="w-full border rounded-lg px-2.5 py-2 text-xs font-mono focus:outline-none">
+          <option value="">(unset)</option>
+          {% for opt in comicinfo_manga_values %}
+          <option value="{{ opt }}">{{ opt }}</option>
+          {% endfor %}
+        </select>
+        {% elif f == "AgeRating" %}
+        <select data-ci-field="{{ f }}" class="w-full border rounded-lg px-2.5 py-2 text-xs font-mono focus:outline-none">
+          <option value="">(unset)</option>
+          {% for opt in comicinfo_age_rating_values %}
+          <option value="{{ opt }}">{{ opt }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        <input type="text" data-ci-field="{{ f }}" class="w-full border rounded-lg px-2.5 py-2 text-xs font-mono focus:outline-none">
+        {% endif %}
+      </label>
+      {% endfor %}
+    </div>
+    <p id="comicinfo-modal-status" class="text-xs mt-3 min-h-[1.25em] font-mono whitespace-pre-wrap" style="color:var(--text-dim)"></p>
+    <div class="flex justify-end gap-2 mt-5">
+      <button type="button" onclick="closeComicInfoModal()"
+              class="text-xs px-3 py-2 rounded-lg border transition-colors"
+              style="border-color:var(--border-mid);color:var(--text-muted)">
+        Cancel
+      </button>
+      <button type="button" id="btn-save-comicinfo"
+              class="text-xs px-3 py-2 rounded-lg font-semibold transition-colors"
+              style="background:linear-gradient(180deg, rgba(139,92,246,.92), rgba(124,58,237,.92));border:1px solid rgba(167,139,250,.5);color:#f3eeff">
+        Save ComicInfo
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+function seriesDetailApiUrl(path, suffix) {
+  return '/api/series/' + path.split('/').map(encodeURIComponent).join('/') + suffix;
+}
+
+function detailSeriesSync(btn) {
+  var path = btn.dataset.path;
+  var log = document.getElementById('detail-action-log');
+  btn.disabled = true;
+  btn.textContent = '…';
+  log.innerHTML = '';
+  log.classList.remove('hidden');
+  fetch('/api/jobs/sync-series/' + path.split('/').map(encodeURIComponent).join('/'), { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.ok || !data.job) throw new Error(data.error || 'Could not enqueue');
+      bindSeriesJobStream(data.job.id, path, btn);
+    })
+    .catch(function(e) {
+      log.textContent = String(e);
+      btn.disabled = false;
+      btn.textContent = 'Sync now';
+    });
+}
+
+function bindSeriesJobStream(jobId, path, btn) {
+  var log = document.getElementById('detail-action-log');
+  var es = new EventSource('/api/jobs/' + jobId + '/stream?from_seq=0');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Running';
+  }
+  log.classList.remove('hidden');
+  es.onmessage = function(e) {
+    var payload = null;
+    try { payload = JSON.parse(e.data); } catch (err) {}
+    if (!payload) return;
+    if (payload.type === 'line') {
+      var line = document.createElement('div');
+      line.textContent = payload.line || '';
+      log.appendChild(line);
+      log.scrollTop = log.scrollHeight;
+      return;
+    }
+    if (payload.type === 'status') {
+      if (payload.status === 'queued' && btn) btn.textContent = 'Queued';
+      if (payload.status === 'running' && btn) btn.textContent = 'Running';
+      if (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled' || payload.status === 'missing') {
+        es.close();
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Sync now';
+        }
+      }
+    }
+  };
+  es.onerror = function() {
+    es.close();
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Sync now';
+    }
+  };
+}
+
+async function detailSeriesCovers(btn) {
+  var path = btn.dataset.path;
+  var log = document.getElementById('detail-action-log');
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    var resp = await fetch(seriesDetailApiUrl(path, '/covers'), { method: 'POST' });
+    var data = await resp.json();
+    log.textContent = data.output || data.error || (data.ok ? 'Done' : 'Failed');
+    log.classList.remove('hidden');
+    btn.textContent = data.ok ? '✓' : '✗';
+    setTimeout(function() { btn.textContent = 'Kavita covers'; btn.disabled = false; }, 2500);
+  } catch (e) {
+    log.textContent = String(e);
+    log.classList.remove('hidden');
+    btn.textContent = '✗';
+    setTimeout(function() { btn.textContent = 'Kavita covers'; btn.disabled = false; }, 2000);
+  }
+}
+
+async function detailSeriesRegenerateComicInfo(btn) {
+  var path = btn.dataset.path;
+  var log = document.getElementById('detail-action-log');
+  var ok = await window.appConfirm('Regenerate ComicInfo for every chapter/volume file in this series? This will overwrite manual ComicInfo edits.');
+  if (!ok) return;
+  btn.disabled = true;
+  btn.textContent = '…';
+  log.textContent = '';
+  log.classList.remove('hidden');
+  try {
+    var resp = await fetch('/api/jobs/regenerate-comicinfo/' + path.split('/').map(encodeURIComponent).join('/'), { method: 'POST' });
+    var data = await resp.json();
+    if (!resp.ok || !data.ok || !data.job) throw new Error(data.error || 'Could not enqueue');
+    var es = new EventSource('/api/jobs/' + data.job.id + '/stream?from_seq=0');
+    es.onmessage = function(e) {
+      var payload = null;
+      try { payload = JSON.parse(e.data); } catch (err) {}
+      if (!payload) return;
+      if (payload.type === 'line') {
+        var line = document.createElement('div');
+        line.textContent = payload.line || '';
+        log.appendChild(line);
+        log.scrollTop = log.scrollHeight;
+        return;
+      }
+      if (payload.type === 'status') {
+        if (payload.status === 'queued') btn.textContent = 'Queued';
+        if (payload.status === 'running') btn.textContent = 'Running';
+        if (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled' || payload.status === 'missing') {
+          es.close();
+          btn.textContent = payload.status === 'completed' ? '✓' : '✗';
+          setTimeout(function() { btn.textContent = 'Regenerate ComicInfo'; btn.disabled = false; }, 1800);
+        }
+      }
+    };
+    es.onerror = function() {
+      es.close();
+      btn.textContent = '✗';
+      setTimeout(function() { btn.textContent = 'Regenerate ComicInfo'; btn.disabled = false; }, 2200);
+    };
+  } catch (e) {
+    log.textContent = String(e);
+    btn.textContent = '✗';
+    setTimeout(function() { btn.textContent = 'Regenerate ComicInfo'; btn.disabled = false; }, 2200);
+  }
+}
+
+(function() {
+  var rm = document.getElementById('btn-detail-remove-series');
+  if (rm) {
+    rm.addEventListener('htmx:afterRequest', function(e) {
+      if (e.detail.successful) window.location.href = '/';
+    });
+  }
+})();
+
+(function() {
+  var detail = document.getElementById('detail-actions');
+  if (!detail) return;
+  var path = detail.dataset.seriesPath;
+  var syncBtn = detail.querySelector('button[onclick="detailSeriesSync(this)"]');
+  fetch('/api/jobs/series/' + path.split('/').map(encodeURIComponent).join('/') + '/active')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data || !data.job) return;
+      if (syncBtn) {
+        syncBtn.disabled = true;
+        syncBtn.textContent = data.job.status === 'running' ? 'Running' : 'Queued';
+      }
+      bindSeriesJobStream(data.job.id, path, syncBtn);
+    })
+    .catch(function() {});
+})();
+
+(function() {
+  var detail = document.getElementById('detail-actions');
+  if (!detail) return;
+  var seriesPath = detail.dataset.seriesPath;
+  var modal = document.getElementById('delete-files-modal');
+  var listEl = document.getElementById('delete-files-list');
+  var statusEl = document.getElementById('delete-files-modal-status');
+  var confirmBtn = document.getElementById('btn-confirm-delete-files');
+  var deleteState = { volumeIds: [], chapterIds: [], names: [] };
+
+  function deleteFilesApiUrl() {
+    return '/api/series/' + seriesPath.split('/').map(encodeURIComponent).join('/') + '/delete-files';
+  }
+
+  window.closeDeleteFilesModal = function() {
+    if (modal) modal.classList.add('hidden');
+    if (statusEl) statusEl.textContent = '';
+    if (confirmBtn) confirmBtn.disabled = false;
+  };
+
+  window.openDeleteFilesModal = function(volumeIds, chapterIds, names) {
+    deleteState = {
+      volumeIds: volumeIds.slice(),
+      chapterIds: chapterIds.slice(),
+      names: names.slice()
+    };
+    if (listEl) listEl.textContent = names.length ? names.join('\n') : '(none)';
+    if (statusEl) statusEl.textContent = '';
+    if (modal) modal.classList.remove('hidden');
+    if (confirmBtn) confirmBtn.focus();
+  };
+
+  function updateVolBulk() {
+    var btn = document.getElementById('btn-bulk-delete-volumes');
+    if (!btn) return;
+    var n = document.querySelectorAll('#volume-files-panel .vol-file-cb:checked').length;
+    btn.disabled = n === 0;
+  }
+  function updateChBulk() {
+    var btn = document.getElementById('btn-bulk-delete-chapters');
+    if (!btn) return;
+    var n = document.querySelectorAll('#chapter-files-panel .ch-file-cb:checked').length;
+    btn.disabled = n === 0;
+  }
+
+  var volPanel = document.getElementById('volume-files-panel');
+  if (volPanel) {
+    volPanel.addEventListener('click', function(e) {
+      var t = e.target.closest('.vol-del-one');
+      if (!t) return;
+      openDeleteFilesModal([parseInt(t.dataset.id, 10)], [], [t.dataset.name]);
+    });
+    volPanel.addEventListener('change', function(e) {
+      if (e.target.id === 'vol-select-all') {
+        var on = e.target.checked;
+        volPanel.querySelectorAll('.vol-file-cb').forEach(function(cb) { cb.checked = on; });
+      }
+      updateVolBulk();
+    });
+  }
+  document.getElementById('btn-bulk-delete-volumes')?.addEventListener('click', function() {
+    var ids = [];
+    var names = [];
+    document.querySelectorAll('#volume-files-panel .vol-file-cb:checked').forEach(function(cb) {
+      ids.push(parseInt(cb.dataset.id, 10));
+      names.push(cb.dataset.name);
+    });
+    if (ids.length) openDeleteFilesModal(ids, [], names);
+  });
+
+  var chPanel = document.getElementById('chapter-files-panel');
+  if (chPanel) {
+    chPanel.addEventListener('click', function(e) {
+      var t = e.target.closest('.ch-del-one');
+      if (!t) return;
+      openDeleteFilesModal([], [parseInt(t.dataset.id, 10)], [t.dataset.name]);
+    });
+    chPanel.addEventListener('change', function(e) {
+      if (e.target.id === 'ch-select-all') {
+        var on = e.target.checked;
+        chPanel.querySelectorAll('.ch-file-cb').forEach(function(cb) { cb.checked = on; });
+      }
+      updateChBulk();
+    });
+  }
+  document.getElementById('btn-bulk-delete-chapters')?.addEventListener('click', function() {
+    var ids = [];
+    var names = [];
+    document.querySelectorAll('#chapter-files-panel .ch-file-cb:checked').forEach(function(cb) {
+      ids.push(parseInt(cb.dataset.id, 10));
+      names.push(cb.dataset.name);
+    });
+    if (ids.length) openDeleteFilesModal([], ids, names);
+  });
+
+  if (confirmBtn) {
+    confirmBtn.addEventListener('click', function() {
+      confirmBtn.disabled = true;
+      if (statusEl) statusEl.textContent = 'Working…';
+      fetch(deleteFilesApiUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          volume_ids: deleteState.volumeIds,
+          chapter_ids: deleteState.chapterIds
+        })
+      })
+        .then(function(r) { return r.json().then(function(data) { return { r: r, data: data }; }); })
+        .then(function(res) {
+          if (!res.r.ok) {
+            var msg = (res.data && (res.data.detail || res.data.error)) || 'Request failed';
+            if (typeof msg !== 'string') msg = JSON.stringify(msg);
+            if (statusEl) statusEl.textContent = msg;
+            confirmBtn.disabled = false;
+            return;
+          }
+          var del = res.data.deleted || [];
+          var err = res.data.errors || [];
+          if (del.length) {
+            if (err.length && statusEl) {
+              statusEl.textContent = 'Removed ' + del.length + ' file(s). Notes:\n' + err.join('\n');
+            }
+            setTimeout(function() { window.location.reload(); }, err.length ? 1400 : 400);
+            return;
+          }
+          if (statusEl) statusEl.textContent = err.length ? err.join('\n') : 'Nothing deleted.';
+          confirmBtn.disabled = false;
+        })
+        .catch(function(e) {
+          if (statusEl) statusEl.textContent = String(e);
+          confirmBtn.disabled = false;
+        });
+    });
+  }
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape') return;
+    if (!modal || modal.classList.contains('hidden')) return;
+    closeDeleteFilesModal();
+    e.stopPropagation();
+  }, true);
+})();
+
+(function() {
+  var detail = document.getElementById('detail-actions');
+  if (!detail) return;
+  var seriesPath = detail.dataset.seriesPath;
+  var modal = document.getElementById('comicinfo-modal');
+  var saveBtn = document.getElementById('btn-save-comicinfo');
+  var statusEl = document.getElementById('comicinfo-modal-status');
+  var fileEl = document.getElementById('comicinfo-modal-file');
+  var state = { kind: '', id: 0, name: '' };
+
+  function fieldsFromForm() {
+    var out = {};
+    document.querySelectorAll('[data-ci-field]').forEach(function(el) {
+      var k = el.dataset.ciField;
+      var v = (el.value || '').trim();
+      if (v) out[k] = v;
+    });
+    return out;
+  }
+
+  function fillForm(fields) {
+    document.querySelectorAll('[data-ci-field]').forEach(function(el) {
+      var k = el.dataset.ciField;
+      el.value = (fields && fields[k]) ? fields[k] : '';
+    });
+  }
+
+  function ciApiUrl(kind, id) {
+    var base = '/api/comicinfo/series/' + seriesPath.split('/').map(encodeURIComponent).join('/');
+    return base + '/' + (kind === 'volume' ? 'volumes' : 'chapters') + '/' + id;
+  }
+
+  function readableApiError(payload, fallback) {
+    if (!payload) return fallback || 'Request failed';
+    if (typeof payload.error === 'string' && payload.error) return payload.error;
+    if (typeof payload.detail === 'string' && payload.detail) return payload.detail;
+    if (Array.isArray(payload.detail)) {
+      return payload.detail.map(function(it) {
+        if (!it) return '';
+        var loc = Array.isArray(it.loc) ? it.loc.join('.') : '';
+        var msg = it.msg || '';
+        return loc ? (loc + ': ' + msg) : msg;
+      }).filter(Boolean).join('\n') || (fallback || 'Validation error');
+    }
+    if (payload.detail && typeof payload.detail === 'object') {
+      try { return JSON.stringify(payload.detail); } catch (e) {}
+    }
+    return fallback || 'Request failed';
+  }
+
+  window.closeComicInfoModal = function() {
+    if (modal) modal.classList.add('hidden');
+    if (statusEl) statusEl.textContent = '';
+    if (saveBtn) saveBtn.disabled = false;
+  };
+
+  function openComicInfoModal(kind, id, name) {
+    state = { kind: kind, id: id, name: name || '' };
+    if (fileEl) fileEl.textContent = (kind === 'volume' ? 'Volume: ' : 'Chapter: ') + state.name;
+    if (statusEl) statusEl.textContent = 'Loading…';
+    fillForm({});
+    modal.classList.remove('hidden');
+    fetch(ciApiUrl(kind, id))
+      .then(function(r) { return r.json().then(function(d){ return { r:r, d:d }; }); })
+      .then(function(res) {
+        if (!res.r.ok || !res.d.ok) {
+          statusEl.textContent = readableApiError(res.d, 'Request failed (HTTP ' + res.r.status + ')');
+          return;
+        }
+        fillForm(res.d.fields || {});
+        statusEl.textContent = '';
+      })
+      .catch(function(e) {
+        statusEl.textContent = String(e);
+      });
+  }
+
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.comicinfo-open');
+    if (!btn) return;
+    openComicInfoModal(btn.dataset.kind, parseInt(btn.dataset.id, 10), btn.dataset.name || '');
+  });
+
+  if (saveBtn) {
+    saveBtn.addEventListener('click', function() {
+      saveBtn.disabled = true;
+      statusEl.textContent = 'Saving…';
+      fetch(ciApiUrl(state.kind, state.id), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields: fieldsFromForm() })
+      })
+        .then(function(r) { return r.json().then(function(d){ return { r:r, d:d }; }); })
+        .then(function(res) {
+          if (!res.r.ok || !res.d.ok) {
+            statusEl.textContent = readableApiError(res.d, 'Request failed (HTTP ' + res.r.status + ')');
+            saveBtn.disabled = false;
+            return;
+          }
+          statusEl.textContent = 'Saved ComicInfo successfully.';
+          setTimeout(function() { closeComicInfoModal(); }, 450);
+        })
+        .catch(function(e) {
+          statusEl.textContent = String(e);
+          saveBtn.disabled = false;
+        });
+    });
+  }
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape') return;
+    if (!modal || modal.classList.contains('hidden')) return;
+    closeComicInfoModal();
+    e.stopPropagation();
+  }, true);
+})();
+</script>
+{% endblock %}

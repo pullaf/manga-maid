@@ -1,12 +1,13 @@
 services:
   manga-sync:
-    image: ghcr.io/pullaf/mangadex-kavita-sync:latest
+    build: .
+    image: mangadex-kavita-sync:local
     environment:
       SYNC_CRON: "0 */6 * * *"   # every 6 hours — standard cron syntax
       DEFAULT_LANGUAGE: "en"
     ports:
       - "4649:4649"
     volumes:
-      - /path/to/your/manga:/manga
-      - /path/to/logs:/logs      # optional — omit if you don't need persistent logs
+      - /mnt/storage/media/books/manga:/manga
+      - /home/fabri/.local/share/manga-sync-data:/data
     restart: unless-stopped

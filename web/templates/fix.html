@@ -16,65 +16,94 @@
   {% endif %}
 </div>
 
-<!-- Rename issues -->
-{% if issues %}
-<h2 class="font-semibold text-sm mb-3" style="color:var(--text-muted);font-family:'Syne',sans-serif">Filename Issues</h2>
-<div class="space-y-2 mb-8" id="issues-list">
-  {% for fpath, issue_name, new_name in issues %}
-  <div class="issue-card rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
-    <div class="flex items-start justify-between gap-4">
-      <div class="min-w-0 flex-1 text-xs font-mono space-y-1">
-        <div class="truncate" style="color:var(--text-dim)">{{ fpath | replace(fpath.rsplit('/', 1)[0] ~ '/', '') if '/' in fpath else fpath }}</div>
-        <div class="truncate" style="color:var(--accent-light)">→ {{ new_name }}</div>
-        <div style="color:var(--text-dim)">{{ issue_name }}</div>
-      </div>
-      <div class="flex gap-2 shrink-0">
-        <form hx-post="/api/fix/apply" hx-target="closest .issue-card" hx-swap="outerHTML">
-          <input type="hidden" name="old_path" value="{{ fpath }}">
-          <input type="hidden" name="new_name" value="{{ new_name }}">
-          <input type="hidden" name="issue_name" value="{{ issue_name }}">
-          <button class="bg-violet-600 hover:bg-violet-700 text-white text-xs px-3 py-1.5 rounded-lg transition-colors">Fix</button>
-        </form>
-        <button onclick="this.closest('.issue-card').remove()"
-                class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
-                style="border-color:var(--border-mid);color:var(--text-muted)">Skip</button>
-      </div>
-    </div>
-  </div>
-  {% endfor %}
+{% if series_filter %}
+<div class="mb-4 text-xs rounded-lg border px-3 py-2"
+     style="background:var(--surface);border-color:var(--border);color:var(--text-dim)">
+  Showing Fix Files for <span style="color:var(--text-muted)">{{ series_filter }}</span>
+  · <a href="/fix" style="color:var(--accent-light)">show all series</a>
 </div>
 {% endif %}
 
-<!-- Duplicate groups -->
-{% if dup_groups %}
-<h2 class="font-semibold text-sm mb-3" style="color:var(--text-muted);font-family:'Syne',sans-serif">Duplicate Files</h2>
-<p class="text-xs mb-3" style="color:var(--danger)">⚠ Deletions are permanent.</p>
-<div class="space-y-2" id="dups-list">
-  {% for g in dup_groups %}
-  <div class="dup-card rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
-    <div class="flex items-start justify-between gap-4">
-      <div class="min-w-0 flex-1 text-xs font-mono space-y-1">
-        <div style="color:var(--success)">Keep: {{ g.keep_name }}
-          {% if g.needs_rename %}<span style="color:var(--text-dim)">(renamed from {{ g.keep_path | replace(g.keep_path.rsplit('/', 1)[0] ~ '/', '') if '/' in g.keep_path else g.keep_path }})</span>{% endif %}
+{% if series_groups %}
+<div class="space-y-4" id="series-fix-list">
+  {% for sg in series_groups %}
+  <details class="series-fix-card rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)" open>
+    <summary class="flex items-start justify-between gap-3 mb-3 cursor-pointer list-none">
+      <div class="min-w-0">
+        <h2 class="font-semibold text-sm truncate" style="font-family:'Syne',sans-serif;color:var(--text)">{{ sg.series_title }}</h2>
+        <p class="text-xs mt-0.5" style="color:var(--text-dim)">
+          {{ (sg.issues | length) + (sg.dup_groups | length) }} issue{{ 's' if ((sg.issues | length) + (sg.dup_groups | length)) != 1 else '' }} · click to collapse
+        </p>
+      </div>
+      {% if sg.series_path %}
+      <form hx-post="/api/fix/series-skip" hx-target="closest .series-fix-card" hx-swap="outerHTML"
+            hx-confirm="Ignore '{{ sg.series_title }}' in Fix Files from now on?"
+            onclick="event.stopPropagation()">
+        <input type="hidden" name="series_path" value="{{ sg.series_path }}">
+        <button class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
+                style="border-color:rgba(251,191,36,.45);color:#fbbf24">
+          Ignore This Series
+        </button>
+      </form>
+      {% endif %}
+    </summary>
+
+    <div class="space-y-2 pt-1">
+      {% for item in sg.issues %}
+      {% set issue_label = {
+        "settings_chapter_naming": "Rename to match your chapter filename setting",
+        "settings_volume_naming": "Rename to match your volume filename setting"
+      }.get(item.issue_name, item.issue_name) %}
+      <div class="issue-card rounded-lg border p-3" style="background:var(--surface-alt);border-color:var(--border)">
+        <div class="flex items-start justify-between gap-4">
+          <div class="min-w-0 flex-1 text-xs font-mono space-y-1">
+            <div class="truncate" style="color:var(--text-dim)">{{ item.display_name }}</div>
+            <div class="truncate" style="color:var(--accent-light)">→ {{ item.new_name }}</div>
+            <div style="color:var(--text-dim)">{{ issue_label }}</div>
+          </div>
+          <div class="flex gap-2 shrink-0">
+            <form hx-post="/api/fix/apply" hx-target="closest .issue-card" hx-swap="outerHTML">
+              <input type="hidden" name="old_path" value="{{ item.fpath }}">
+              <input type="hidden" name="new_name" value="{{ item.new_name }}">
+              <input type="hidden" name="issue_name" value="{{ item.issue_name }}">
+              <button class="bg-violet-600 hover:bg-violet-700 text-white text-xs px-3 py-1.5 rounded-lg transition-colors">Fix</button>
+            </form>
+            <button onclick="this.closest('.issue-card').remove()"
+                    class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
+                    style="border-color:var(--border-mid);color:var(--text-muted)">Skip</button>
+          </div>
         </div>
-        {% for p in g.delete_paths %}
-        <div style="color:var(--danger)">Delete: {{ p | replace(p.rsplit('/', 1)[0] ~ '/', '') if '/' in p else p }}</div>
-        {% endfor %}
       </div>
-      <div class="flex gap-2 shrink-0">
-        <form hx-post="/api/fix/apply-dup" hx-target="closest .dup-card" hx-swap="outerHTML">
-          <input type="hidden" name="keep_path" value="{{ g.keep_path }}">
-          <input type="hidden" name="keep_name" value="{{ g.keep_name }}">
-          <input type="hidden" name="delete_paths" value="{{ g.delete_paths | join('|') }}">
-          <input type="hidden" name="needs_rename" value="{{ 'true' if g.needs_rename else '' }}">
-          <button class="bg-red-600 hover:bg-red-700 text-white text-xs px-3 py-1.5 rounded-lg transition-colors">Apply</button>
-        </form>
-        <button onclick="this.closest('.dup-card').remove()"
-                class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
-                style="border-color:var(--border-mid);color:var(--text-muted)">Skip</button>
+      {% endfor %}
+
+      {% for g in sg.dup_groups %}
+      <div class="dup-card rounded-lg border p-3" style="background:var(--surface-alt);border-color:var(--border)">
+        <div class="flex items-start justify-between gap-4">
+          <div class="min-w-0 flex-1 text-xs font-mono space-y-1">
+            <div style="color:var(--success)">Keep: {{ g.keep_name }}
+              {% if g.needs_rename %}<span style="color:var(--text-dim)">(renamed from {{ g.keep_display }})</span>{% endif %}
+            </div>
+            {% for p in g.delete_display %}
+            <div style="color:var(--danger)">Delete: {{ p }}</div>
+            {% endfor %}
+          </div>
+          <div class="flex gap-2 shrink-0">
+            <form hx-post="/api/fix/apply-dup" hx-target="closest .dup-card" hx-swap="outerHTML">
+              <input type="hidden" name="keep_path" value="{{ g.keep_path }}">
+              <input type="hidden" name="keep_name" value="{{ g.keep_name }}">
+              <input type="hidden" name="delete_paths" value="{{ g.delete_paths | join('|') }}">
+              <input type="hidden" name="needs_rename" value="{{ 'true' if g.needs_rename else '' }}">
+              <button class="bg-red-600 hover:bg-red-700 text-white text-xs px-3 py-1.5 rounded-lg transition-colors">Apply</button>
+            </form>
+            <button onclick="this.closest('.dup-card').remove()"
+                    class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
+                    style="border-color:var(--border-mid);color:var(--text-muted)">Skip</button>
+          </div>
+        </div>
       </div>
+      {% endfor %}
     </div>
-  </div>
+  </details>
   {% endfor %}
 </div>
 {% endif %}
@@ -88,8 +117,7 @@
 
 <script>
 function fixAll() {
-  document.querySelectorAll('.issue-card form button').forEach(btn => btn.click());
-  document.querySelectorAll('.dup-card form button').forEach(btn => btn.click());
+  document.querySelectorAll('.issue-card form button, .dup-card form button').forEach(btn => btn.click());
 }
 </script>
 {% endblock %}

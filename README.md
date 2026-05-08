@@ -1,6 +1,6 @@
 # mangadex-kavita-sync
 
-A containerised toolset that keeps a [Kavita](https://www.kavitareader.com/) manga library in sync with [MangaDex](https://mangadex.org/). Runs on a configurable schedule alongside your existing stack — no cron jobs, no manual downloads, no SSH.
+A containerised toolset that keeps a [Kavita](https://www.kavitareader.com/) manga library in sync with [MangaDex](https://mangadex.org/). Runs on a configurable schedule alongside your existing stack — no manual downloads, no SSH.
 
 Includes a **web UI** (port `4649`) for managing series, triggering syncs, browsing logs, and configuring Kavita integration.
 
@@ -9,7 +9,7 @@ Includes a **web UI** (port `4649`) for managing series, triggering syncs, brows
 ## Features
 
 **manga-sync** — automatic chapter downloader
-- Polls the MangaDex API for new chapters on a cron schedule
+- Polls the MangaDex API for new chapters on a schedule configured in the web UI
 - Filters by translator/scanlation group per series
 - Downloads chapters as CBZ (or ZIP/CBR) via the [`mdx`](https://github.com/arimatakao/mdx) CLI
 - Supports volume mode — one file per volume instead of per chapter
@@ -31,9 +31,10 @@ Includes a **web UI** (port `4649`) for managing series, triggering syncs, brows
 - Dashboard showing all tracked series with edit/remove controls
 - Add Series: search MangaDex by title or paste a URL, pick language and scanlation group
 - Sync page with live streaming output
+- Jobs page with durable queued/running/completed jobs and per-job logs
 - Fix Files page for interactive filename repair
 - Logs page showing sync history and rename/delete audit trail
-- Settings page for download format, file naming, Kavita integration
+- Settings page for download format, file naming, sync schedule presets/custom cron, Kavita integration
 
 ---
 
@@ -56,7 +57,6 @@ services:
     environment:
       PUID: 1000             # run as your user — match your host UID
       PGID: 1000             # match your host GID
-      SYNC_CRON: "0 */6 * * *"
       MANGA_ROOT: "/manga"
     volumes:
       - /path/to/your/manga:/manga
@@ -64,7 +64,7 @@ services:
     restart: unless-stopped
 ```
 
-Then open `http://your-host:4649` and use the web UI to add series.
+Then open `http://your-host:4649`, add series, and configure the sync schedule in **Settings**.
 
 ### 3. (Optional) Add series manually
 
@@ -93,12 +93,14 @@ Place a `.mangadex.json` inside each series directory:
 | Mount | Purpose |
 |---|---|
 | `/manga` | Your manga library root. The sync tool recursively finds `.mangadex.json` configs at any depth. |
-| `/data` | Persistent config and logs. Contains `/data/config/settings.json` and `/data/logs/sync.log`. |
+| `/data` | Persistent config, SQLite catalog, and logs. Web/sync settings live in the DB (`app_config`); a legacy `settings.json` is imported once on upgrade. |
 
 ```
 /data/
+  db/
+    manga-sync.db   ← series/chapters/volumes + app_config (web UI settings blob)
   config/
-    settings.json   ← web UI settings (download format, Kavita URL/key, etc.)
+    settings.json.migrated   ← optional; left after one-time import from older builds
   logs/
     sync.log        ← rolling sync log, trimmed to 5000 lines
 ```
@@ -112,10 +114,36 @@ Place a `.mangadex.json` inside each series directory:
 | `PUID` | `0` (root) | UID to run as. Set to your host user's UID so downloaded files are owned correctly. |
 | `PGID` | `0` (root) | GID to run as. |
 | `MANGA_ROOT` | `/manga` | Path inside the container where your library is mounted. |
-| `SYNC_CRON` | `0 */6 * * *` | Cron expression controlling sync frequency. |
 | `DATA_DIR` | `/data` | Base path for config and logs. |
-| `CONFIG_PATH` | `$DATA_DIR/config/settings.json` | Override config file location. |
+| `CONFIG_PATH` | `$DATA_DIR/config/settings.json` | Legacy JSON path used only to import settings into SQLite on first run (if the DB row is still empty). |
 | `SYNC_LOG` | `$DATA_DIR/logs/sync.log` | Override log file location. |
+
+> Sync schedule is now persisted in app settings (SQLite) and edited from the web UI.
+> The container reads that value on boot and live-reloads cron when you change it in Settings.
+
+## Sync schedule
+
+Set this in **Settings → Auto-sync schedule**:
+
+- **Presets:** Hourly, Every 6 hours, Every 12 hours, Daily, Weekly
+- **Custom:** manual 5-field cron expression (`minute hour day month weekday`)
+
+Examples:
+- `0 * * * *` hourly
+- `0 */6 * * *` every 6 hours
+- `0 3 * * *` daily at 03:00
+
+## Background jobs and queue
+
+Sync operations run as durable background jobs:
+
+- Single FIFO queue (one active job at a time)
+- Jobs survive page navigation/reload
+- Live logs stream while running, with replay from persisted history
+- History retention for recent completed jobs
+- Cancel queued/running jobs from the UI
+
+This includes scheduled syncs, which are enqueued by cron into the same queue.
 
 ### Finding your PUID/PGID
 
@@ -166,9 +194,11 @@ Default volume pattern: `[%1 %2] %3 vol.%4`
 
 ---
 
-## Volume mode
+## Chapter-first workflow
 
-Enable **Volume mode** in Settings to download one merged file per volume instead of individual chapter files. Uses `mdx`'s `-v` flag. Good for completed series where you want a single archive per volume.
+The current UI is tuned for chapter-based storage. Downloads are saved as chapter files, with volume numbers added to filenames when source metadata is available.
+
+Advanced volume merge/compaction paths still exist internally, but they are intentionally hidden in the frontend while the chapter-first workflow is the default.
 
 ---
 
