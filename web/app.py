@@ -48,7 +48,7 @@ from comicinfo import (                                # noqa: E402
 )
 from comicinfo_defs import MANGA_VALUES, AGE_RATING_VALUES  # noqa: E402
 
-app = FastAPI(title="mangadex-kavita-sync")
+app = FastAPI(title="Manga Maid")
 templates = Jinja2Templates(directory="/app/web/templates")
 templates.env.filters["urlencode"] = quote_plus
 
