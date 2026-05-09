@@ -21,6 +21,8 @@ DEFAULTS = {
     "kavita_url":      "",
     "kavita_api_key":  "",
     "file_permission_mask": "664",
+    "webhook_url":     "",
+    "webhook_platform": "generic",  # generic | discord | ntfy
 }
 
 

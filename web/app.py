@@ -1079,6 +1079,8 @@ async def save_settings_endpoint(
     kavita_url:        str = Form(""),
     kavita_api_key:    str = Form(""),
     file_permission_mask: str = Form("664"),
+    webhook_url:       str = Form(""),
+    webhook_platform:  str = Form("generic"),
 ):
     try:
         root_folders = json.loads(root_folders_json)
@@ -1093,6 +1095,7 @@ async def save_settings_endpoint(
             seen.append(clean)
     before = load_settings()
     normalized_sync_cron = sanitize_sync_cron(sync_cron)
+    platform = webhook_platform if webhook_platform in ("discord", "ntfy", "generic") else "generic"
     save_settings({
         "root_folders":   seen,
         "file_format":    file_format,
@@ -1106,6 +1109,8 @@ async def save_settings_endpoint(
         "kavita_url":     kavita_url.strip(),
         "kavita_api_key": kavita_api_key.strip(),
         "file_permission_mask": sanitize_file_permission_mask(file_permission_mask),
+        "webhook_url":    webhook_url.strip(),
+        "webhook_platform": platform,
     })
     if sanitize_sync_cron(before.get("sync_cron")) != normalized_sync_cron:
         try:
@@ -1116,6 +1121,21 @@ async def save_settings_endpoint(
         with contextlib.suppress(Exception):
             _enqueue_reconcile_job("settings_root_folders_changed")
     return RedirectResponse("/settings", status_code=303)
+
+
+@app.get("/api/settings/webhook-preview")
+async def webhook_preview():
+    _FALLBACKS = [
+        "My Manga Title", "Yotsuba&!", "Chainsaw Man", "Spy×Family",
+    ]
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT title FROM series WHERE title IS NOT NULL ORDER BY RANDOM() LIMIT 1"
+    ).fetchone()
+    title = row["title"] if row else _FALLBACKS[0]
+    import random as _random
+    count = _random.randint(1, 3)
+    return JSONResponse({"title": title, "count": count})
 
 
 @app.post("/api/settings/test-kavita")
@@ -1454,6 +1474,77 @@ async def series_cover(path: str):
         _db.upsert_series_metadata(conn, series_row["id"], "mangadex",
                                    cover_filename=cover_filename)
     return JSONResponse({"url": _cover_url(manga_id, cover_filename)})
+
+
+@app.get("/api/series/{path:path}/chapter-gaps")
+async def series_chapter_gaps(path: str):
+    conn = _get_conn()
+    row = _db.get_series_by_path(conn, path)
+    if not row:
+        raise HTTPException(404, "Series not found")
+
+    source = _db.get_primary_source(conn, row["id"])
+    if not source or source.get("source") != "mangadex":
+        return JSONResponse({"mode": "no_source"})
+
+    manga_id = source["source_id"]
+    language = (row.get("language") or "en").strip()
+
+    all_chapters = _db.get_chapters(conn, row["id"])
+    volume_ids_on_disk = {
+        v["id"] for v in _db.get_volumes(conn, row["id"]) if v.get("path")
+    }
+
+    if not all_chapters and volume_ids_on_disk:
+        return JSONResponse({"mode": "no_tracking"})
+
+    covered: set[float] = set()
+    db_nums: set[float] = set()
+    for ch in all_chapters:
+        raw = ch.get("chapter_num")
+        if raw is None:
+            continue
+        num = float(raw)
+        db_nums.add(num)
+        if ch.get("path"):
+            covered.add(num)
+        elif ch.get("volume_id") in volume_ids_on_disk:
+            covered.add(num)
+
+    loop = asyncio.get_event_loop()
+    try:
+        agg = await loop.run_in_executor(
+            None,
+            lambda: _mdex_get(f"/manga/{manga_id}/aggregate", {"translatedLanguage[]": language}),
+        )
+    except Exception as e:
+        return JSONResponse({"mode": "error", "error": str(e)})
+
+    mdex_chapters: dict[float, str] = {}
+    for vol_key, vol_data in (agg.get("volumes") or {}).items():
+        for ch_key in (vol_data.get("chapters") or {}):
+            try:
+                ch_num = float(ch_key)
+            except (ValueError, TypeError):
+                continue
+            mdex_chapters[ch_num] = vol_key
+
+    chips = []
+    for ch_num in sorted(mdex_chapters):
+        if ch_num in covered:
+            status = "ok"
+        else:
+            status = "gap"
+        chips.append({"num": ch_num, "vol": mdex_chapters[ch_num], "status": status})
+
+    n_gaps = sum(1 for c in chips if c["status"] != "ok")
+    return JSONResponse({
+        "mode": "ok",
+        "chips": chips,
+        "total": len(chips),
+        "covered": len(chips) - n_gaps,
+        "gaps": n_gaps,
+    })
 
 
 @app.delete("/api/series/{path:path}", response_class=HTMLResponse)
