@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """manga-sync — download new chapters, merge volumes, inject ComicInfo.xml."""
 
+import contextlib
 import importlib.util
+import json
 import math
 import os
 import re
@@ -52,6 +54,7 @@ from comicinfo import (                                 # noqa: E402
 from sync_config import load_settings, sanitize_volume_naming  # noqa: E402
 from kavita import KavitaClient                        # noqa: E402
 from file_permissions import apply_file_permission_mask # noqa: E402
+from naming import apply_naming_template, floor_int_str # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +90,7 @@ def _api_get(path: str, params: dict) -> dict:
     url = f"{MDEX_BASE}{path}?" + parse.urlencode(params, doseq=True)
     try:
         with request.urlopen(url, timeout=30) as resp:
-            return __import__("json").loads(resp.read())
+            return json.loads(resp.read())
     except urlerror.HTTPError as e:
         raise RuntimeError(f"HTTP {e.code} for {url}") from e
 
@@ -395,66 +398,6 @@ def _mdx_download(
 # Volume merging
 # ---------------------------------------------------------------------------
 
-def _apply_template(template: str, lang: str, group: str, title: str, vol_num,
-                    ch_range: str = "") -> str:
-    def _safe(s):
-        return re.sub(r'[<>:"/\\|?*]', "_", str(s or ""))
-
-    result = template
-    result = result.replace("%1", _safe(lang))
-    result = result.replace("%2", _safe(group))
-    result = result.replace("%3", _safe(title))
-    result = result.replace("%4", str(int(vol_num)) if vol_num is not None else "")
-    result = result.replace("%5", ch_range).replace("%6", "")
-    # Drop empty grouping wrappers left by missing placeholders like %2.
-    result = re.sub(r"\(\s*\)", "", result)
-    result = re.sub(r"\[\s*\]", "", result)
-    result = re.sub(r"\{\s*\}", "", result)
-    result = re.sub(r"\s+([)\]}])", r"\1", result)
-    result = re.sub(r"([(\[{])\s+", r"\1", result)
-    result = re.sub(r"\s{2,}", " ", result).strip()
-    return result
-
-
-def _apply_chapter_template(
-    template: str,
-    *,
-    lang: str,
-    group: str,
-    title: str,
-    vol_num,
-    chapter_num,
-    chapter_title: str | None,
-) -> str:
-    def _safe(s):
-        return re.sub(r'[<>:"/\\|?*]', "_", str(s or ""))
-
-    result = template or ""
-    result = result.replace("%1", _safe(lang))
-    result = result.replace("%2", _safe(group))
-    result = result.replace("%3", _safe(title))
-    result = result.replace("%4", str(int(vol_num)) if vol_num is not None else "")
-    result = result.replace("%5", _fmt_chapter_token(chapter_num) if chapter_num is not None else "")
-    result = result.replace("%6", _safe(chapter_title or ""))
-    # Drop empty grouping wrappers left by missing placeholders like %2 or %6.
-    result = re.sub(r"\(\s*\)", "", result)
-    result = re.sub(r"\[\s*\]", "", result)
-    result = re.sub(r"\{\s*\}", "", result)
-    result = re.sub(r"\s+([)\]}])", r"\1", result)
-    result = re.sub(r"([(\[{])\s+", r"\1", result)
-    result = re.sub(r"\s{2,}", " ", result).strip()
-    return result
-
-
-def _fmt_chapter_for_range(n) -> str:
-    return str(math.floor(float(n)))
-
-
-def _fmt_chapter_token(n) -> str:
-    num = float(n)
-    return str(int(num)) if num.is_integer() else str(num)
-
-
 def _volume_cbz_comicinfo_xml(
     *,
     series_title: str,
@@ -478,9 +421,9 @@ def _volume_cbz_comicinfo_xml(
     desc = (meta or {}).get("description")
     if chapter_lo is not None and chapter_hi is not None:
         ch_range = (
-            _fmt_chapter_for_range(chapter_lo)
+            floor_int_str(chapter_lo)
             if chapter_lo == chapter_hi
-            else f"{_fmt_chapter_for_range(chapter_lo)}-{_fmt_chapter_for_range(chapter_hi)}"
+            else f"{floor_int_str(chapter_lo)}-{floor_int_str(chapter_hi)}"
         )
         prefix = f"This volume contains chapters {ch_range}."
         desc = f"{prefix}\n\n{desc}" if desc else prefix
@@ -669,8 +612,9 @@ def _merge_volume_batch(
         group_name = ch_rows[0].get("group_name") or preferred_group or ""
         # Never pass chapter span into the filename template (Kavita); span is
         # only in ComicInfo summary.
-        base_name  = _apply_template(volume_naming, language or "en",
-                                     group_name, series_title, vol_num, "")
+        base_name  = apply_naming_template(volume_naming, language=language or "en",
+                                          group=group_name, title=series_title,
+                                          volume_num=vol_num)
         out_name   = base_name if base_name.endswith(f".{file_format}") \
                      else f"{base_name}.{file_format}"
         out_path   = os.path.join(series_dir, out_name)
@@ -932,10 +876,6 @@ def _run_fix_pass(series_dir: str):
 def _kavita_set_covers(client: KavitaClient, series_dir: str, manga_id: str):
     series_name = os.path.basename(series_dir)
     try:
-        from manga_sync_helpers import fetch_volume_covers  # type: ignore
-    except ImportError:
-        pass
-    try:
         data = _api_get("/cover", {
             "manga[]": manga_id, "limit": 100, "order[volume]": "asc",
         })
@@ -1056,14 +996,14 @@ def _sync_one_series(
                     ).fetchone()
                     if vr:
                         vol_num = vr["volume_num"]
-                desired_stem = _apply_chapter_template(
+                desired_stem = apply_naming_template(
                     ch_naming,
-                    lang=language,
+                    language=language,
                     group=ch_row.get("group_name") or "",
                     title=name,
-                    vol_num=vol_num,
+                    volume_num=vol_num,
                     chapter_num=ch_row["chapter_num"],
-                    chapter_title=ch_row.get("title"),
+                    chapter_title=ch_row.get("title") or "",
                 )
                 if desired_stem:
                     ext = os.path.splitext(fpath)[1]

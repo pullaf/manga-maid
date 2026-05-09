@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from file_permissions import sanitize_file_permission_mask
 
 # Settings are stored in SQLite (``app_config`` table under ``DATA_DIR/db/``).
@@ -53,7 +54,17 @@ def sanitize_sync_cron(expr: str | None) -> str:
     return " ".join(parts)
 
 
+_settings_cache: dict | None = None
+_settings_cache_at: float = 0.0
+_SETTINGS_CACHE_TTL = 5.0
+
+
 def load_settings() -> dict:
+    global _settings_cache, _settings_cache_at
+    now = time.monotonic()
+    if _settings_cache is not None and (now - _settings_cache_at) < _SETTINGS_CACHE_TTL:
+        return _settings_cache
+
     from db import init_db, read_stored_settings
 
     conn = init_db()
@@ -68,10 +79,14 @@ def load_settings() -> dict:
     out["volume_naming"] = sanitize_volume_naming(out.get("volume_naming"))
     out["sync_cron"] = sanitize_sync_cron(out.get("sync_cron"))
     out["file_permission_mask"] = sanitize_file_permission_mask(out.get("file_permission_mask"))
+    _settings_cache = out
+    _settings_cache_at = now
     return out
 
 
 def save_settings(data: dict):
+    global _settings_cache_at
+    _settings_cache_at = 0.0  # invalidate cache
     data = dict(data)
     data.pop("volume_mode", None)
     data.pop("merge_volume_naming", None)
