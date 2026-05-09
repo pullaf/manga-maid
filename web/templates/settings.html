@@ -182,6 +182,59 @@
     </div>
   </div>
 
+  <!-- Notifications -->
+  <div class="rounded-xl border p-6 space-y-5" style="background:var(--surface);border-color:var(--border)">
+    <div>
+      <h2 class="font-semibold text-sm" style="font-family:'Syne',sans-serif;color:var(--text)">Notifications</h2>
+      <p class="text-xs mt-1" style="color:var(--text-dim)">Fires once per sync run, only when new chapters were actually downloaded.</p>
+    </div>
+
+    <!-- Platform picker -->
+    <input type="hidden" name="webhook_platform" id="webhook-platform-value" value="{{ settings.webhook_platform }}">
+    <div class="grid grid-cols-3 gap-2" id="webhook-platform-picker">
+      {% set platforms = [
+        ("discord", "Discord",  "Webhook URL from Server Settings → Integrations"),
+        ("ntfy",    "ntfy",     "Self-hosted or ntfy.sh topic URL"),
+        ("generic", "Webhook",  "Any endpoint that accepts a POST request"),
+      ] %}
+      {% for val, label, hint in platforms %}
+      <div id="wpp-{{ val }}"
+           class="wpp-card flex flex-col gap-1 rounded-xl border p-3 cursor-pointer transition-all select-none"
+           data-value="{{ val }}"
+           style="border-color:var(--border);background:var(--surface-alt)"
+           onclick="wppSelect('{{ val }}')">
+        <span class="text-xs font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">{{ label }}</span>
+        <span class="text-[11px] leading-snug" style="color:var(--text-dim)">{{ hint }}</span>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- URL field -->
+    <div id="webhook-url-wrap">
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)" id="webhook-url-label">URL</label>
+      <input type="url" name="webhook_url" id="webhook-url-input"
+             value="{{ settings.webhook_url }}"
+             class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none"
+             placeholder="https://…">
+      <p class="text-xs mt-1.5" id="webhook-url-hint" style="color:var(--text-dim)"></p>
+    </div>
+
+    <!-- Payload preview -->
+    <div>
+      <div class="flex items-center justify-between mb-1.5">
+        <span class="text-xs font-medium" style="color:var(--text-muted)">Preview</span>
+        <button type="button" id="btn-webhook-resample"
+                class="text-[11px] px-2 py-0.5 rounded border transition-colors"
+                style="border-color:var(--border-mid);color:var(--text-dim);background:transparent">
+          Resample
+        </button>
+      </div>
+      <pre id="webhook-preview-block"
+           class="text-xs rounded-lg p-3 overflow-x-auto leading-relaxed"
+           style="background:var(--surface-alt);border:1px solid var(--border);color:var(--text-dim);font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-all">…</pre>
+    </div>
+  </div>
+
   <button type="submit"
           class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold py-2.5 rounded-lg transition-colors"
           style="font-family:'Syne',sans-serif">
@@ -302,6 +355,74 @@ function toggleSwitch(btn) {
   const name = btn.dataset.name || btn.nextElementSibling.name;
   document.getElementById('input_' + name).value = on;
 }
+
+/* ── Webhook platform picker ──────────────── */
+const _wppMeta = {
+  discord: {
+    label: 'Webhook URL',
+    placeholder: 'https://discord.com/api/webhooks/…',
+    hint: 'Paste the webhook URL from Discord → Server Settings → Integrations → Webhooks.',
+  },
+  ntfy: {
+    label: 'Topic URL',
+    placeholder: 'https://ntfy.sh/your-topic',
+    hint: 'Point to your topic directly. The message is sent as plain text.',
+  },
+  generic: {
+    label: 'Endpoint URL',
+    placeholder: 'https://your-server/webhook',
+    hint: 'Sends a POST with JSON body <code style="font-family:monospace;color:var(--text-muted)">{"content":"…"}</code>. Compatible with most webhook receivers.',
+  },
+};
+
+function wppSelect(val) {
+  document.getElementById('webhook-platform-value').value = val;
+  document.querySelectorAll('.wpp-card').forEach(card => {
+    const active = card.dataset.value === val;
+    card.style.borderColor = active ? 'var(--accent)' : 'var(--border)';
+    card.style.background  = active ? 'color-mix(in srgb, var(--accent) 10%, var(--surface-alt))' : 'var(--surface-alt)';
+  });
+  const meta = _wppMeta[val] || _wppMeta.generic;
+  document.getElementById('webhook-url-label').textContent = meta.label;
+  document.getElementById('webhook-url-input').placeholder = meta.placeholder;
+  document.getElementById('webhook-url-hint').innerHTML    = meta.hint;
+  webhookPreviewRender();
+}
+
+/* ── Webhook payload preview ──────────────── */
+let _previewTitle = null;
+let _previewCount = 1;
+
+function _selectedPlatform() {
+  return document.getElementById('webhook-platform-value').value || 'generic';
+}
+
+function webhookPreviewRender() {
+  const block = document.getElementById('webhook-preview-block');
+  if (!block || !_previewTitle) return;
+  const ch = _previewCount === 1 ? 'chapter' : 'chapters';
+  const text = `New chapters downloaded:\n• ${_previewTitle} — ${_previewCount} new ${ch}`;
+  const platform = _selectedPlatform();
+  if (platform === 'ntfy') {
+    block.textContent = text;
+  } else {
+    block.textContent = JSON.stringify({ content: text }, null, 2);
+  }
+}
+
+async function webhookPreviewFetch() {
+  try {
+    const data = await fetch('/api/settings/webhook-preview').then(r => r.json());
+    _previewTitle = data.title;
+    _previewCount = data.count;
+    webhookPreviewRender();
+  } catch (_) {}
+}
+
+document.getElementById('btn-webhook-resample').addEventListener('click', webhookPreviewFetch);
+
+wppSelect({{ settings.webhook_platform | tojson }});
+webhookPreviewFetch();
 
 async function testKavita() {
   const result = document.getElementById('test-result');

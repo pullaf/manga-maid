@@ -948,7 +948,19 @@ def _sync_one_series(
             file_permission_mask=file_permission_mask,
         )
         update_source_sync_time(conn, series_id, source_name)
-        return False
+        return 0
+
+    # Completed/cancelled series: no new chapters ever; skip feed polling.
+    series_status = (meta.get("status") or "").lower()
+    if series_status in ("completed", "cancelled"):
+        _log(f"[{name}] series is {series_status} — skipping feed")
+        _ensure_comicinfo_all(
+            series_id, series_dir, conn, meta, language,
+            series_web=series_web, series_label=name,
+            file_permission_mask=file_permission_mask,
+        )
+        update_source_sync_time(conn, series_id, source_name)
+        return 0
 
     # Sync chapter feed → DB
     try:
@@ -1059,12 +1071,34 @@ def _sync_one_series(
 
     update_source_sync_time(conn, series_id, source_name)
     _log(f"[{name}] done — {downloaded}/{len(to_download)} downloaded")
-    return downloaded > 0
+    return downloaded
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+def _send_webhook(url: str, platform: str, items: list[tuple[str, int]]):
+    lines = [
+        f"• {name} — {count} new chapter{'s' if count != 1 else ''}"
+        for name, count in items
+    ]
+    text = "New chapters downloaded:\n" + "\n".join(lines)
+    try:
+        if platform == "ntfy":
+            body = text.encode()
+            req = request.Request(url, data=body, method="POST")
+            req.add_header("Content-Type", "text/plain")
+        else:  # discord, generic, or anything else
+            body = json.dumps({"content": text}).encode()
+            req = request.Request(url, data=body, method="POST")
+            req.add_header("Content-Type", "application/json")
+        with request.urlopen(req, timeout=10):
+            pass
+        _log("[webhook] notification sent")
+    except Exception as e:
+        _log(f"[webhook] failed: {e}")
+
 
 def main(
     series_filter: str = None,
@@ -1228,6 +1262,7 @@ def main(
 
     any_downloaded = False
     processed = 0
+    downloads: list[tuple[str, int]] = []
 
     for series_row in series_list:
         processed += 1
@@ -1250,8 +1285,11 @@ def main(
             continue
 
         try:
-            if _sync_one_series(series_row, conn, settings, kavita_client):
+            count = _sync_one_series(series_row, conn, settings, kavita_client)
+            if count:
                 any_downloaded = True
+                name = series_row.get("name") or os.path.basename(series_row["path"])
+                downloads.append((name, count))
         except Exception as e:
             _log(f"[{series_row.get('name', series_row['path'])}] error: {e}")
 
@@ -1261,6 +1299,11 @@ def main(
             _log("[kavita] library scan triggered")
         except Exception as e:
             _log(f"[kavita] scan failed: {e}")
+
+    if downloads:
+        wurl = settings.get("webhook_url", "").strip()
+        if wurl:
+            _send_webhook(wurl, settings.get("webhook_platform", "generic"), downloads)
 
     _log(f"[sync] completed — processed {processed} series")
     conn.close()

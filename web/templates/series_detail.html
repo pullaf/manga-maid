@@ -71,6 +71,19 @@
   .file-del-btn:hover { color: var(--danger); background: rgba(248,113,113,.12); }
   .file-del-btn svg { display: block; }
   .file-row-cb { accent-color: var(--accent); }
+  .gap-chip {
+    display: inline-flex;
+    align-items: center;
+    font-size: 10px;
+    font-family: ui-monospace, monospace;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 5px;
+    line-height: 1.5;
+    border: 1px solid rgba(248,113,113,.3);
+    background: rgba(248,113,113,.1);
+    color: #f87171;
+  }
 </style>
 
 <div class="mb-6 flex items-start justify-between gap-3">
@@ -161,6 +174,12 @@
             </span>
           </div>
           <div style="color:var(--text-muted)">Start from chapter ≥ <span style="color:var(--text)">{{ series.start_chapter or 0 }}</span></div>
+          {% if series.config.status in ("completed", "cancelled") %}
+          <div class="rounded-lg px-2.5 py-2 border text-xs mt-1"
+               style="border-color:rgba(52,211,153,.3);background:rgba(52,211,153,.06);color:var(--text-dim)">
+            Auto-sync paused — series is {{ series.config.status }}
+          </div>
+          {% endif %}
         </div>
       {% endif %}
     </div>
@@ -174,8 +193,16 @@
       <div class="pt-1 space-y-2">
         <div class="rounded-lg px-2.5 py-2 border"
              style="border-color:{{ 'rgba(52,211,153,.45)' if chapter_ok else 'rgba(251,191,36,.45)' }};background:{{ 'rgba(52,211,153,.08)' if chapter_ok else 'rgba(251,191,36,.08)' }}">
-          <div class="text-xs font-semibold" style="color:{{ '#34d399' if chapter_ok else '#fbbf24' }}">
-            Chapters{% if chapter_ok %} · Up to date{% else %} · Missing{% endif %}
+          <div class="flex items-center justify-between gap-2">
+            <div class="text-xs font-semibold" style="color:{{ '#34d399' if chapter_ok else '#fbbf24' }}">
+              Chapters{% if chapter_ok %} · Up to date{% else %} · Missing{% endif %}
+            </div>
+            {% if not chapter_ok %}
+            <button type="button"
+                    class="text-xs px-2 py-0.5 rounded border transition-colors shrink-0"
+                    style="border-color:rgba(251,191,36,.4);color:#fbbf24;background:transparent"
+                    onclick="openGapModal()">Which ones?</button>
+            {% endif %}
           </div>
           <div class="text-xs mt-0.5" style="color:var(--text-muted)">
             You have <span style="color:var(--text)">{{ have_chapters }}</span> / <span style="color:var(--text)">{{ source_chapters or "?" }}</span> from source
@@ -276,6 +303,22 @@
     {% else %}
     <p class="text-sm" style="color:var(--text-dim)">No chapter files tracked yet.</p>
     {% endif %}
+  </div>
+</div>
+
+<div id="gap-modal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4">
+  <div class="absolute inset-0" style="background:rgba(0,0,0,.65);backdrop-filter:blur(4px)" aria-hidden="true" onclick="closeGapModal()"></div>
+  <div class="relative w-full max-w-lg rounded-2xl border p-6 shadow-2xl max-h-[80vh] flex flex-col"
+       style="background:var(--surface);border-color:var(--border-mid);box-shadow:0 24px 64px rgba(0,0,0,.6)">
+    <div class="flex items-center justify-between mb-4 shrink-0">
+      <h2 class="text-base font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">Missing chapters</h2>
+      <button type="button" onclick="closeGapModal()"
+              class="text-xs px-2.5 py-1 rounded-lg border transition-colors"
+              style="border-color:var(--border-mid);color:var(--text-muted)">Close</button>
+    </div>
+    <div id="gap-modal-body" class="overflow-y-auto min-h-[60px]">
+      <p style="color:var(--text-dim);font-size:13px">Checking MangaDex…</p>
+    </div>
   </div>
 </div>
 
@@ -851,5 +894,52 @@ async function detailSeriesRegenerateComicInfo(btn) {
     e.stopPropagation();
   }, true);
 })();
+
+window.closeGapModal = function() {
+  document.getElementById('gap-modal').classList.add('hidden');
+};
+
+window.openGapModal = async function() {
+  var modal = document.getElementById('gap-modal');
+  var body = document.getElementById('gap-modal-body');
+  modal.classList.remove('hidden');
+  body.innerHTML = '<p style="color:var(--text-dim);font-size:13px">Checking MangaDex…</p>';
+
+  var path = document.getElementById('detail-actions').dataset.seriesPath;
+  try {
+    var resp = await fetch(seriesDetailApiUrl(path, '/chapter-gaps'));
+    var data = await resp.json();
+    if (data.mode === 'no_tracking') {
+      body.innerHTML = '<p style="color:var(--text-dim);font-size:13px">Volumes were imported directly — individual chapters aren\'t tracked for this series.</p>';
+    } else if (data.mode === 'error') {
+      body.innerHTML = '<p style="color:var(--text-dim);font-size:13px">Couldn\'t reach MangaDex.</p>';
+    } else if (data.gaps === 0) {
+      body.innerHTML = '<p style="color:#34d399;font-size:13px;font-weight:600">All ' + data.total + ' chapters accounted for.</p>';
+    } else {
+      var html = '<p class="mb-3" style="font-size:13px;color:var(--text-muted)">'
+        + '<span style="color:#f87171;font-weight:600">' + data.gaps + ' missing</span>'
+        + ' out of ' + data.total + ' on MangaDex</p>'
+        + '<div class="flex flex-wrap gap-1">';
+      data.chips.forEach(function(c) {
+        if (c.status === 'ok') return;
+        var disp = (c.num % 1 === 0) ? String(Math.round(c.num)) : String(c.num);
+        var tip = 'Ch. ' + disp + (c.vol && c.vol !== 'none' ? ' · Vol. ' + c.vol : '');
+        html += '<span class="gap-chip" title="' + tip + '">' + disp + '</span>';
+      });
+      html += '</div>';
+      body.innerHTML = html;
+    }
+  } catch (e) {
+    body.innerHTML = '<p style="color:var(--text-dim);font-size:13px">Something went wrong.</p>';
+  }
+};
+
+document.addEventListener('keydown', function(e) {
+  if (e.key !== 'Escape') return;
+  var modal = document.getElementById('gap-modal');
+  if (!modal || modal.classList.contains('hidden')) return;
+  closeGapModal();
+  e.stopPropagation();
+}, true);
 </script>
 {% endblock %}
