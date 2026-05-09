@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 MANGA_ROOT = os.environ.get("MANGA_ROOT", "/manga")
+_MANGA_ROOT_REAL = os.path.realpath(MANGA_ROOT)
 DATA_DIR   = os.environ.get("DATA_DIR",   "/data")
 SYNC_LOG   = os.environ.get("SYNC_LOG",   "/data/logs/sync.log")
 MDEX_BASE  = "https://api.mangadex.org"
@@ -90,11 +91,11 @@ _WEB_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_WEB_DIR)
 MANGA_SYNC_SCRIPT = os.path.join(_REPO_ROOT, "manga-sync.py")
 
-_spec = importlib.util.spec_from_file_location("manga_fix", "/app/manga-fix.py")
+_spec = importlib.util.spec_from_file_location("manga_fix", os.path.join(_REPO_ROOT, "manga-fix.py"))
 _fix  = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_fix)
 
-sys.path.insert(0, "/app")
+sys.path.insert(0, _REPO_ROOT)
 from sync_config import (  # noqa: E402
     load_settings,
     save_settings,
@@ -110,13 +111,47 @@ from comicinfo import (                                # noqa: E402
 )
 from comicinfo_defs import MANGA_VALUES, AGE_RATING_VALUES  # noqa: E402
 from file_permissions import sanitize_file_permission_mask   # noqa: E402
+from naming import apply_naming_template, format_num, floor_int_str  # noqa: E402
 
-app = FastAPI(title="Manga Maid")
-templates = Jinja2Templates(directory="/app/web/templates")
+
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _get_conn)
+    cron_expr = sanitize_sync_cron(load_settings().get("sync_cron"))
+    try:
+        await loop.run_in_executor(None, _write_runtime_crontab, cron_expr)
+    except Exception as e:
+        print(f"[startup] warning: could not write runtime crontab '{RUNTIME_CRONTAB_PATH}': {e}")
+    _job_worker_stop.clear()
+    with contextlib.suppress(Exception):
+        _enqueue_reconcile_job("startup")
+    global _job_worker_task, _reconcile_scheduler_task
+    _job_worker_task = asyncio.create_task(_jobs_worker_loop())
+    _reconcile_scheduler_task = asyncio.create_task(_reconcile_scheduler_loop())
+
+    yield
+
+    _job_worker_stop.set()
+    if _reconcile_scheduler_task:
+        _reconcile_scheduler_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _reconcile_scheduler_task
+        _reconcile_scheduler_task = None
+    if _job_worker_task:
+        _job_worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _job_worker_task
+        _job_worker_task = None
+
+
+app = FastAPI(title="Manga Maid", lifespan=_lifespan)
+templates = Jinja2Templates(directory=os.path.join(_WEB_DIR, "templates"))
 templates.env.filters["urlencode"] = quote_plus
 
 _sync_running = False
 _cover_cache: dict[str, bytes] = {}
+_COVER_CACHE_MAX = 500
 _conn = None  # shared SQLite connection (WAL mode, safe for single-writer)
 _job_worker_task: asyncio.Task | None = None
 _reconcile_scheduler_task: asyncio.Task | None = None
@@ -210,42 +245,6 @@ async def _reconcile_scheduler_loop() -> None:
             _enqueue_reconcile_job("periodic")
 
 
-@app.on_event("startup")
-async def _startup():
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _get_conn)
-    # Keep runtime scheduler synced with persisted settings on boot.
-    cron_expr = sanitize_sync_cron(load_settings().get("sync_cron"))
-    try:
-        await loop.run_in_executor(None, _write_runtime_crontab, cron_expr)
-    except Exception as e:
-        # Do not fail app startup if crontab rewrite is not writable
-        # (e.g. non-root app user with root-owned crontab file).
-        print(f"[startup] warning: could not write runtime crontab '{RUNTIME_CRONTAB_PATH}': {e}")
-    _job_worker_stop.clear()
-    with contextlib.suppress(Exception):
-        _enqueue_reconcile_job("startup")
-    global _job_worker_task, _reconcile_scheduler_task
-    _job_worker_task = asyncio.create_task(_jobs_worker_loop())
-    _reconcile_scheduler_task = asyncio.create_task(_reconcile_scheduler_loop())
-
-
-@app.on_event("shutdown")
-async def _shutdown():
-    _job_worker_stop.set()
-    global _job_worker_task, _reconcile_scheduler_task
-    if _reconcile_scheduler_task:
-        _reconcile_scheduler_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await _reconcile_scheduler_task
-        _reconcile_scheduler_task = None
-    if _job_worker_task:
-        _job_worker_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await _job_worker_task
-        _job_worker_task = None
-
-
 def _job_display_name(job: dict) -> str:
     if job.get("job_type") == JOB_TYPE_RECONCILE_DISK:
         return "Disk reconcile"
@@ -293,8 +292,8 @@ async def _run_job(job: dict) -> None:
     _db.append_job_log(conn, job_id, f"[job] started: {_job_display_name(job)}")
     try:
         proc = await asyncio.create_subprocess_exec(
-            "python3",
-            "/app/manga-sync.py",
+            sys.executable,
+            MANGA_SYNC_SCRIPT,
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
@@ -347,11 +346,6 @@ async def _jobs_worker_loop():
     _db.cleanup_old_jobs(conn, keep_days=JOB_RETENTION_DAYS)
     while not _job_worker_stop.is_set():
         try:
-            if _worker_current_job_id is None:
-                recovered = _db.requeue_running_jobs(conn, queue_key=JOB_QUEUE_KEY)
-                for jid in recovered:
-                    with contextlib.suppress(Exception):
-                        _db.append_job_log(conn, jid, "[job] recovered by worker; re-queued")
             job = _db.claim_next_queued_job(conn, queue_key=JOB_QUEUE_KEY)
             if not job:
                 await asyncio.sleep(0.4)
@@ -377,64 +371,8 @@ def _cover_url(manga_id: str, filename: str) -> str:
     return f"/api/proxy/cover/{manga_id}/{filename}"
 
 
-def _safe_filename_token(value) -> str:
-    return re.sub(r'[<>:"/\\|?*]', "_", str(value or ""))
 
 
-def _format_num(value) -> str:
-    if value is None:
-        return ""
-    try:
-        num = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-    return str(int(num)) if num.is_integer() else str(num)
-
-
-def _floor_int_str(value) -> str:
-    try:
-        return str(math.floor(float(value)))
-    except (TypeError, ValueError):
-        return _format_num(value)
-
-
-def _apply_naming_template(
-    template: str,
-    *,
-    language: str = "",
-    group: str = "",
-    title: str = "",
-    volume_num=None,
-    chapter_num=None,
-    chapter_title: str = "",
-    chapter_range: str = "",
-) -> str:
-    result = template or ""
-    if volume_num is None:
-        # Drop common "vol.%4" snippets when volume is unknown.
-        result = re.sub(r"\bvol(?:ume)?\.?\s*%4\b", "", result, flags=re.IGNORECASE)
-        result = re.sub(r"\bvol(?:ume)?\.?\s*$", "", result, flags=re.IGNORECASE)
-    if chapter_num is None and not chapter_range:
-        # When no chapter span is known for a volume, drop common "ch.%5" snippets
-        # so we don't generate names like "... ch.".
-        result = re.sub(r"\bch\.?\s*%5\b", "", result, flags=re.IGNORECASE)
-    result = result.replace("%1", _safe_filename_token(language))
-    result = result.replace("%2", _safe_filename_token(group))
-    result = result.replace("%3", _safe_filename_token(title))
-    result = result.replace("%4", _format_num(volume_num))
-    result = result.replace("%5", chapter_range or _format_num(chapter_num))
-    result = result.replace("%6", _safe_filename_token(chapter_title))
-    # Drop empty grouping wrappers left by missing placeholders like %2.
-    result = re.sub(r"\(\s*\)", "", result)
-    result = re.sub(r"\[\s*\]", "", result)
-    result = re.sub(r"\{\s*\}", "", result)
-    result = re.sub(r"\bch\.?\s*$", "", result, flags=re.IGNORECASE)
-    result = re.sub(r"\bvol(?:ume)?\.?\s*$", "", result, flags=re.IGNORECASE)
-    result = result.replace("..", ".")
-    result = re.sub(r"\s+([)\]}])", r"\1", result)
-    result = re.sub(r"([(\[{])\s+", r"\1", result)
-    result = re.sub(r"\s{2,}", " ", result)
-    return result.strip()
 
 
 def _mdex_tankobon_volume_count_from_aggregate(agg) -> int:
@@ -540,7 +478,7 @@ def _scan_settings_naming_issues(series_path: str | None = None) -> list[tuple[s
         # named with series-level info only — no per-chapter title/group
         # leaking into the proposed filename.
         is_on_disk = row["chapter_status"] == "on_disk"
-        new_stem = _apply_naming_template(
+        new_stem = apply_naming_template(
             chapter_tpl,
             language=row["series_language"] or "en",
             group="" if is_on_disk else (row["group_name"] or row["preferred_group"] or ""),
@@ -550,7 +488,7 @@ def _scan_settings_naming_issues(series_path: str | None = None) -> list[tuple[s
             chapter_title="" if is_on_disk else (row["chapter_title"] or ""),
         )
         # Guard against dangerous suggestions that drop chapter identity.
-        ch_token = _format_num(row["chapter_num"])
+        ch_token = format_num(row["chapter_num"])
         if ch_token and ch_token not in new_stem:
             continue
         if not new_stem or new_stem == stem:
@@ -588,10 +526,10 @@ def _scan_settings_naming_issues(series_path: str | None = None) -> list[tuple[s
         ch_range = ""
         if min_max:
             start, end = min_max
-            s_start = _floor_int_str(start)
-            s_end = _floor_int_str(end)
+            s_start = floor_int_str(start)
+            s_end = floor_int_str(end)
             ch_range = s_start if s_start == s_end else f"{s_start}-{s_end}"
-        new_stem = _apply_naming_template(
+        new_stem = apply_naming_template(
             volume_tpl,
             language=row["series_language"] or "en",
             group=row["preferred_group"] or "",
@@ -846,6 +784,13 @@ def _require_root_folders() -> None:
             400,
             "Configure at least one root folder in Settings before running this action.",
         )
+
+
+def _require_under_manga_root(path: str) -> None:
+    """Raise 400 if resolved path escapes MANGA_ROOT (guards against .. traversal)."""
+    target = os.path.realpath(path)
+    if target != _MANGA_ROOT_REAL and not target.startswith(_MANGA_ROOT_REAL + os.sep):
+        raise HTTPException(400, "Invalid path: must be under the manga root")
 
 
 class DeleteSeriesFilesBody(BaseModel):
@@ -1391,6 +1336,8 @@ async def proxy_cover(manga_id: str, filename: str):
             )
         except Exception:
             raise HTTPException(404)
+        if len(_cover_cache) >= _COVER_CACHE_MAX:
+            _cover_cache.pop(next(iter(_cover_cache)))
         _cover_cache[cache_key] = data
     return Response(_cover_cache[cache_key], media_type="image/jpeg",
                     headers={"Cache-Control": "public, max-age=86400"})
@@ -1429,6 +1376,7 @@ async def add_series(
     _require_root_folders()
     parts      = [p for p in [subfolder.strip("/"), title] if p]
     series_dir = os.path.join(MANGA_ROOT, *parts)
+    _require_under_manga_root(series_dir)
     os.makedirs(series_dir, exist_ok=True)
     rel_path   = os.path.relpath(series_dir, MANGA_ROOT)
 
@@ -1632,6 +1580,7 @@ async def update_series(
     old_dir    = os.path.join(MANGA_ROOT, path)
     parts      = [p for p in [subfolder.strip("/"), title] if p]
     new_dir    = os.path.join(MANGA_ROOT, *parts)
+    _require_under_manga_root(new_dir)
     new_rel    = os.path.relpath(new_dir, MANGA_ROOT)
 
     if os.path.abspath(old_dir) != os.path.abspath(new_dir):
@@ -1930,7 +1879,7 @@ async def series_covers(path: str):
         return JSONResponse({"ok": False, "error": "Kavita not configured in settings"})
     try:
         proc = await asyncio.create_subprocess_exec(
-            "python3", "/app/manga-sync.py",
+            sys.executable, MANGA_SYNC_SCRIPT,
             "--series", os.path.join(MANGA_ROOT, path),
             "--covers-only",
             stdout=asyncio.subprocess.PIPE,
@@ -2184,9 +2133,9 @@ async def get_chapter_comicinfo(path: str, chapter_id: int):
     if not fields.get("Manga"):
         fields["Manga"] = "YesAndRightToLeft"
     if not fields.get("Number") and r["chapter_num"] is not None:
-        fields["Number"] = _format_num(r["chapter_num"])
+        fields["Number"] = format_num(r["chapter_num"])
     if not fields.get("Volume") and r["volume_num"] is not None:
-        fields["Volume"] = _format_num(r["volume_num"])
+        fields["Volume"] = format_num(r["volume_num"])
     if not fields.get("Title") and r["title"]:
         fields["Title"] = str(r["title"]).strip()
     return JSONResponse({
@@ -2254,7 +2203,7 @@ async def get_volume_comicinfo(path: str, volume_id: int):
     if not fields.get("Manga"):
         fields["Manga"] = "YesAndRightToLeft"
     if not fields.get("Volume") and r["volume_num"] is not None:
-        fields["Volume"] = _format_num(r["volume_num"])
+        fields["Volume"] = format_num(r["volume_num"])
     if not fields.get("Title") and r["title"]:
         fields["Title"] = r["title"]
     return JSONResponse({
@@ -2311,6 +2260,7 @@ async def apply_fix(
     issue_name: str = Form(...),
 ):
     _require_root_folders()
+    _require_under_manga_root(old_path)
     log_path = os.path.join(MANGA_ROOT, _fix.LOG_FILENAME)
     log_data = _fix.load_log(log_path)
     try:
