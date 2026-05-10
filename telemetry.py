@@ -12,8 +12,7 @@ from urllib import request as urlrequest
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
 APP_VERSION = os.environ.get("APP_VERSION", "unknown")
 
-# Set this to your deployed Cloudflare Worker URL after running `wrangler deploy`.
-_ENDPOINT = os.environ.get("TELEMETRY_ENDPOINT", "")
+_ENDPOINT = os.environ.get("TELEMETRY_ENDPOINT", "https://manga-sync-telemetry.themdk.workers.dev/ping")
 
 _ID_PATH = os.path.join(DATA_DIR, "instance_id")
 
