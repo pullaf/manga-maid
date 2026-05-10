@@ -5,78 +5,58 @@ import manga_sync
 
 
 # ---------------------------------------------------------------------------
-# volumes_on_disk / chapters_on_disk
+# _mdx_download
 # ---------------------------------------------------------------------------
 
-def test_volumes_on_disk(tmp_path):
-    (tmp_path / "Title vol.1.cbz").touch()
-    (tmp_path / "Title vol.2.cbz").touch()
-    (tmp_path / "Title vol.10.zip").touch()
-    (tmp_path / "not-manga.txt").touch()
-    assert manga_sync.volumes_on_disk(str(tmp_path)) == {1, 2, 10}
+def _mock_run(returncode=0):
+    m = MagicMock()
+    m.returncode = returncode
+    m.stderr = ""
+    m.stdout = ""
+    return m
 
 
-def test_volumes_on_disk_empty(tmp_path):
-    assert manga_sync.volumes_on_disk(str(tmp_path)) == set()
+def _ch_row(source_chapter_id="abc123", chapter_num=7.0):
+    return {"source_chapter_id": source_chapter_id, "chapter_num": chapter_num}
 
 
-def test_volumes_on_disk_ignores_chapters(tmp_path):
-    (tmp_path / "Title ch.5.cbz").touch()
-    assert manga_sync.volumes_on_disk(str(tmp_path)) == set()
+def test_mdx_download_uses_chapter_url():
+    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run()) as mock_run:
+        manga_sync._mdx_download(_ch_row("abc123"), "/out", "cbz", "[%1 %2] %3 ch.%5")
+    cmd = mock_run.call_args[0][0]
+    assert "-s" in cmd
+    assert "https://mangadex.org/chapter/abc123" in cmd
 
 
-def test_chapters_on_disk(tmp_path):
-    (tmp_path / "Title ch.1.cbz").touch()
-    (tmp_path / "Title ch.2.5.cbz").touch()
-    (tmp_path / "Title vol.1 ch.3.cbz").touch()
-    (tmp_path / "ignore.txt").touch()
-    assert manga_sync.chapters_on_disk(str(tmp_path)) == {1.0, 2.5, 3.0}
+def test_mdx_download_passes_format():
+    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run()) as mock_run:
+        manga_sync._mdx_download(_ch_row(), "/out", "zip", "%3 ch.%5")
+    cmd = mock_run.call_args[0][0]
+    assert "-e" in cmd and cmd[cmd.index("-e") + 1] == "zip"
 
 
-def test_chapters_on_disk_empty(tmp_path):
-    assert manga_sync.chapters_on_disk(str(tmp_path)) == set()
+def test_mdx_download_passes_naming_template():
+    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run()) as mock_run:
+        manga_sync._mdx_download(_ch_row(), "/out", "cbz", "%3 ch.%5")
+    cmd = mock_run.call_args[0][0]
+    assert "--file-name" in cmd and cmd[cmd.index("--file-name") + 1] == "%3 ch.%5"
 
 
-# ---------------------------------------------------------------------------
-# fetch_new_volumes
-# ---------------------------------------------------------------------------
-
-def test_fetch_new_volumes_basic():
-    mock_agg = {
-        "volumes": {
-            "1": {"chapters": {"1": {}, "2": {}}},
-            "2": {"chapters": {"3": {}}},
-            "3": {"chapters": {"4": {}}},
-        }
-    }
-    config = {"id": "test-id", "language": "en"}
-    with patch.object(manga_sync, "_api_get", return_value=mock_agg):
-        result = manga_sync.fetch_new_volumes(config, after_vol=1)
-    assert result == [2, 3]
+def test_mdx_download_passes_output_dir():
+    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run()) as mock_run:
+        manga_sync._mdx_download(_ch_row(), "/some/dir", "cbz", "%3")
+    cmd = mock_run.call_args[0][0]
+    assert "-o" in cmd and cmd[cmd.index("-o") + 1] == "/some/dir"
 
 
-def test_fetch_new_volumes_excludes_none_key():
-    mock_agg = {"volumes": {"none": {"chapters": {"99": {}}}}}
-    config = {"id": "test-id", "language": "en"}
-    with patch.object(manga_sync, "_api_get", return_value=mock_agg):
-        result = manga_sync.fetch_new_volumes(config, after_vol=0)
-    assert result == []
+def test_mdx_download_returns_false_on_error():
+    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run(returncode=1)):
+        assert manga_sync._mdx_download(_ch_row(), "/out", "cbz", "%3") is False
 
 
-def test_fetch_new_volumes_empty_when_up_to_date():
-    mock_agg = {"volumes": {"1": {}, "2": {}, "3": {}}}
-    config = {"id": "test-id", "language": "en"}
-    with patch.object(manga_sync, "_api_get", return_value=mock_agg):
-        result = manga_sync.fetch_new_volumes(config, after_vol=5)
-    assert result == []
-
-
-def test_fetch_new_volumes_deduplicates():
-    mock_agg = {"volumes": {"2": {}, "2": {}}}  # noqa: F601 (intentional dup key)
-    config = {"id": "test-id", "language": "en"}
-    with patch.object(manga_sync, "_api_get", return_value=mock_agg):
-        result = manga_sync.fetch_new_volumes(config, after_vol=0)
-    assert len(result) == len(set(result))
+def test_mdx_download_returns_true_on_success():
+    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run(returncode=0)):
+        assert manga_sync._mdx_download(_ch_row(), "/out", "cbz", "%3") is True
 
 
 # ---------------------------------------------------------------------------
@@ -123,98 +103,19 @@ def test_fetch_volume_covers_skips_missing_filename():
 
 
 # ---------------------------------------------------------------------------
-# mdx_download_chapter — checks flags passed to mdx
+# _series_preferred_groups
 # ---------------------------------------------------------------------------
 
-def _mock_run(returncode=0):
-    m = MagicMock()
-    m.returncode = returncode
-    m.stderr = ""
-    m.stdout = ""
-    return m
+def test_preferred_groups_returns_list_from_row():
+    row = {"preferred_groups": ["GroupA", "GroupB"], "preferred_groups_json": None, "preferred_group": None}
+    assert manga_sync._series_preferred_groups(row) == ["GroupA", "GroupB"]
 
 
-def test_mdx_chapter_uses_chapter_flag():
-    ch = MagicMock(ch_str="7")
-    config = {"id": "mid", "language": "en"}
-    settings = {"file_format": "cbz", "chapter_naming": "[%1 %2] %3 vol.%4 ch.%5"}
-    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run()) as mock_run:
-        manga_sync.mdx_download_chapter(ch, config, "/out", settings)
-    cmd = mock_run.call_args[0][0]
-    assert "-c" in cmd
-    assert "7" in cmd
-    assert "-v" not in cmd
-
-
-def test_mdx_chapter_applies_format_and_extension():
-    ch = MagicMock(ch_str="1")
-    config = {"id": "mid", "language": "en"}
-    settings = {"file_format": "zip", "chapter_naming": "%3 ch.%5"}
-    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run()) as mock_run:
-        manga_sync.mdx_download_chapter(ch, config, "/out", settings)
-    cmd = mock_run.call_args[0][0]
-    assert "-e" in cmd and cmd[cmd.index("-e") + 1] == "zip"
-    assert "--file-name" in cmd and cmd[cmd.index("--file-name") + 1] == "%3 ch.%5"
-
-
-def test_mdx_chapter_passes_translator():
-    ch = MagicMock(ch_str="1")
-    config = {"id": "mid", "language": "en", "translator": "TestGroup"}
-    settings = {"file_format": "cbz", "chapter_naming": "%3 ch.%5"}
-    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run()) as mock_run:
-        manga_sync.mdx_download_chapter(ch, config, "/out", settings)
-    cmd = mock_run.call_args[0][0]
-    assert "-t" in cmd and cmd[cmd.index("-t") + 1] == "TestGroup"
-
-
-def test_mdx_chapter_no_translator_when_absent():
-    ch = MagicMock(ch_str="1")
-    config = {"id": "mid", "language": "en"}
-    settings = {"file_format": "cbz", "chapter_naming": "%3 ch.%5"}
-    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run()) as mock_run:
-        manga_sync.mdx_download_chapter(ch, config, "/out", settings)
-    cmd = mock_run.call_args[0][0]
-    assert "-t" not in cmd
-
-
-def test_mdx_chapter_returns_false_on_error():
-    ch = MagicMock(ch_str="1")
-    config = {"id": "mid", "language": "en"}
-    settings = {"file_format": "cbz", "chapter_naming": "%3 ch.%5"}
-    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run(returncode=1)):
-        result = manga_sync.mdx_download_chapter(ch, config, "/out", settings)
-    assert result is False
-
-
-# ---------------------------------------------------------------------------
-# mdx_download_volume — checks -v flag and volume naming
-# ---------------------------------------------------------------------------
-
-def test_mdx_volume_uses_volume_flag():
-    config = {"id": "mid", "language": "en"}
-    settings = {"file_format": "cbz", "volume_naming": "[%1 %2] %3 vol.%4"}
-    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run()) as mock_run:
-        manga_sync.mdx_download_volume(3, config, "/out", settings)
-    cmd = mock_run.call_args[0][0]
-    assert "-v" in cmd and cmd[cmd.index("-v") + 1] == "3"
-    assert "-c" not in cmd
-
-
-def test_mdx_volume_applies_volume_naming():
-    config = {"id": "mid", "language": "en"}
-    settings = {"file_format": "cbz", "volume_naming": "%3 vol.%4"}
-    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run()) as mock_run:
-        manga_sync.mdx_download_volume(1, config, "/out", settings)
-    cmd = mock_run.call_args[0][0]
-    assert "--file-name" in cmd and cmd[cmd.index("--file-name") + 1] == "%3 vol.%4"
-
-
-def test_mdx_volume_returns_false_on_error():
-    config = {"id": "mid", "language": "en"}
-    settings = {"file_format": "cbz", "volume_naming": "%3 vol.%4"}
-    with patch.object(manga_sync.subprocess, "run", return_value=_mock_run(returncode=1)):
-        result = manga_sync.mdx_download_volume(1, config, "/out", settings)
-    assert result is False
+def test_preferred_groups_empty_when_none():
+    row = {"preferred_groups": None, "preferred_groups_json": None, "preferred_group": None}
+    result = manga_sync._series_preferred_groups(row)
+    assert isinstance(result, list)
+    assert result == []
 
 
 # ---------------------------------------------------------------------------
@@ -246,25 +147,3 @@ def test_rotate_log_noop_when_small(tmp_path, monkeypatch):
 def test_rotate_log_handles_missing_file(tmp_path, monkeypatch):
     monkeypatch.setattr(manga_sync, "SYNC_LOG", str(tmp_path / "nonexistent.log"))
     manga_sync._rotate_log()  # should not raise
-
-
-# ---------------------------------------------------------------------------
-# _translator_match
-# ---------------------------------------------------------------------------
-
-def test_translator_match_no_filter():
-    assert manga_sync._translator_match({}, None) is True
-    assert manga_sync._translator_match({}, "") is True
-
-
-def test_translator_match_case_insensitive():
-    data = {"relationships": [{"type": "scanlation_group",
-                               "attributes": {"name": "Mankitsu Scans"}}]}
-    assert manga_sync._translator_match(data, "mankitsu") is True
-    assert manga_sync._translator_match(data, "MANKITSU") is True
-
-
-def test_translator_match_no_match():
-    data = {"relationships": [{"type": "scanlation_group",
-                               "attributes": {"name": "Other Group"}}]}
-    assert manga_sync._translator_match(data, "Mankitsu") is False

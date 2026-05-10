@@ -9,6 +9,8 @@ def _isolated_data_dir(tmp_path, monkeypatch):
     root = tmp_path / "data"
     root.mkdir()
     monkeypatch.setattr(db, "DATA_DIR", str(root))
+    monkeypatch.setattr(sync_config, "_settings_cache", None)
+    monkeypatch.setattr(sync_config, "_settings_cache_at", 0.0)
     monkeypatch.delenv("CONFIG_PATH", raising=False)
 
 
