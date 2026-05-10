@@ -1,5 +1,26 @@
 {% extends "base.html" %}
 {% block content %}
+{% if no_root_folders %}
+<div class="mb-8">
+  <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Fix Files</h1>
+  <p class="text-sm mt-1" style="color:var(--text-muted)">Filename cleanup runs only after you configure library roots.</p>
+</div>
+<div class="max-w-lg">
+  <div class="rounded-xl border p-10 text-center"
+       style="background:var(--surface);border-color:rgba(251,191,36,.3)">
+    <div class="mb-4 text-4xl opacity-30">📁</div>
+    <p class="font-semibold text-sm" style="color:#fbbf24;font-family:'Syne',sans-serif">Root folder required</p>
+    <p class="text-xs mt-2 mb-6" style="color:var(--text-muted)">
+      Add at least one root folder in Settings, then return here to fix names.
+    </p>
+    <a href="/settings"
+       class="inline-block text-xs font-semibold px-5 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition-colors"
+       style="font-family:'Syne',sans-serif">
+      Open Settings →
+    </a>
+  </div>
+</div>
+{% else %}
 <div class="mb-8 flex items-center justify-between">
   <div>
     <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Fix Files</h1>
@@ -8,7 +29,7 @@
     </p>
   </div>
   {% if total %}
-  <button onclick="fixAll()"
+  <button id="fix-all-global-btn" type="button" onclick="fixAll()"
           class="bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
           style="font-family:'Syne',sans-serif">
     Fix All
@@ -36,15 +57,22 @@
         </p>
       </div>
       {% if sg.series_path %}
-      <form hx-post="/api/fix/series-skip" hx-target="closest .series-fix-card" hx-swap="outerHTML"
-            hx-confirm="Ignore '{{ sg.series_title }}' in Fix Files from now on?"
-            onclick="event.stopPropagation()">
-        <input type="hidden" name="series_path" value="{{ sg.series_path }}">
-        <button class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
-                style="border-color:rgba(251,191,36,.45);color:#fbbf24">
-          Ignore This Series
+      <div class="flex gap-2" onclick="event.stopPropagation()">
+        <button type="button"
+                class="js-fix-all-in-series text-xs px-3 py-1.5 rounded-lg border transition-colors"
+                data-series-title="{{ sg.series_title|e }}"
+                style="border-color:rgba(139,92,246,.45);color:var(--accent-light)">
+          Fix All In This Series
         </button>
-      </form>
+        <form hx-post="/api/fix/series-skip" hx-target="closest .series-fix-card" hx-swap="outerHTML"
+              hx-confirm="Ignore '{{ sg.series_title }}' in Fix Files from now on?">
+          <input type="hidden" name="series_path" value="{{ sg.series_path }}">
+          <button class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
+                  style="border-color:rgba(251,191,36,.45);color:#fbbf24">
+            Ignore This Series
+          </button>
+        </form>
+      </div>
       {% endif %}
     </summary>
 
@@ -114,10 +142,99 @@
   <p class="text-base" style="color:var(--text-muted)">Library looks clean!</p>
 </div>
 {% endif %}
+{% endif %}
 
 <script>
 function fixAll() {
   document.querySelectorAll('.issue-card form button, .dup-card form button').forEach(btn => btn.click());
 }
+
+function updateFixPageTotals() {
+  var n = document.querySelectorAll('#series-fix-list .issue-card, #series-fix-list .dup-card').length;
+  var el = document.getElementById('issue-count');
+  if (!el) return;
+  var g = document.getElementById('fix-all-global-btn');
+  if (n === 0) {
+    el.textContent = 'Library looks clean!';
+    if (g) g.classList.add('hidden');
+  } else {
+    el.textContent = n + ' issue' + (n !== 1 ? 's' : '') + ' found';
+    if (g) g.classList.remove('hidden');
+  }
+}
+
+async function fixAllInSeries(btn, seriesTitle, seriesCard) {
+  if (!seriesCard) return;
+  var ok = await window.appConfirm("Apply all fixes in '" + seriesTitle + "'? This runs one file at a time.");
+  if (!ok) return;
+  var forms = Array.prototype.slice.call(
+    seriesCard.querySelectorAll('.issue-card form[hx-post], .dup-card form[hx-post]')
+  );
+  if (!forms.length) return;
+
+  var original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Fixing...';
+  seriesCard.open = false;
+
+  try {
+    for (var i = 0; i < forms.length; i++) {
+      var form = forms[i];
+      var card = form.closest('.issue-card, .dup-card');
+      var url = form.getAttribute('hx-post');
+      if (!url || !card) throw new Error('Invalid fix form');
+
+      var resp = await fetch(url, {
+        method: 'POST',
+        body: new FormData(form),
+        credentials: 'same-origin',
+      });
+      if (!resp.ok) {
+        var msg = resp.statusText || 'Request failed';
+        try {
+          var ct = resp.headers.get('content-type') || '';
+          if (ct.indexOf('application/json') !== -1) {
+            var data = await resp.json();
+            var detail = data.detail;
+            if (Array.isArray(detail)) {
+              detail = detail.map(function(d) { return d.msg || d; }).join('; ');
+            }
+            msg = data.error || detail || msg;
+          } else {
+            var errBody = await resp.text();
+            if (errBody && errBody.length < 400) msg = errBody;
+          }
+        } catch (e) {}
+        throw new Error(msg);
+      }
+      card.remove();
+      btn.textContent = 'Fixing... (' + (i + 1) + '/' + forms.length + ')';
+      updateFixPageTotals();
+    }
+
+    var remaining = seriesCard.querySelectorAll('.issue-card, .dup-card').length;
+    if (remaining === 0) {
+      seriesCard.remove();
+    } else {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+    updateFixPageTotals();
+  } catch (err) {
+    btn.disabled = false;
+    btn.textContent = original;
+    alert(String(err));
+  }
+}
+
+document.querySelectorAll('.js-fix-all-in-series').forEach(function(el) {
+  el.addEventListener('click', function(ev) {
+    ev.preventDefault();
+    ev.stopPropagation();
+    var card = el.closest('.series-fix-card');
+    var t = el.getAttribute('data-series-title') || '';
+    fixAllInSeries(el, t, card);
+  });
+});
 </script>
 {% endblock %}

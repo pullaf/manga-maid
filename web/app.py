@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 MANGA_ROOT = os.environ.get("MANGA_ROOT", "/manga")
+_MANGA_ROOT_REAL = os.path.realpath(MANGA_ROOT)
 DATA_DIR   = os.environ.get("DATA_DIR",   "/data")
 SYNC_LOG   = os.environ.get("SYNC_LOG",   "/data/logs/sync.log")
 MDEX_BASE  = "https://api.mangadex.org"
@@ -90,11 +91,11 @@ _WEB_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_WEB_DIR)
 MANGA_SYNC_SCRIPT = os.path.join(_REPO_ROOT, "manga-sync.py")
 
-_spec = importlib.util.spec_from_file_location("manga_fix", "/app/manga-fix.py")
+_spec = importlib.util.spec_from_file_location("manga_fix", os.path.join(_REPO_ROOT, "manga-fix.py"))
 _fix  = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_fix)
 
-sys.path.insert(0, "/app")
+sys.path.insert(0, _REPO_ROOT)
 from sync_config import (  # noqa: E402
     load_settings,
     save_settings,
@@ -109,13 +110,51 @@ from comicinfo import (                                # noqa: E402
     inject_comicinfo,
 )
 from comicinfo_defs import MANGA_VALUES, AGE_RATING_VALUES  # noqa: E402
+from file_permissions import sanitize_file_permission_mask   # noqa: E402
+from naming import apply_naming_template, format_num, floor_int_str  # noqa: E402
 
-app = FastAPI(title="Manga Maid")
-templates = Jinja2Templates(directory="/app/web/templates")
+
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI):
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _get_conn)
+    cron_expr = sanitize_sync_cron(load_settings().get("sync_cron"))
+    try:
+        await loop.run_in_executor(None, _write_runtime_crontab, cron_expr)
+    except Exception as e:
+        print(f"[startup] warning: could not write runtime crontab '{RUNTIME_CRONTAB_PATH}': {e}")
+    _job_worker_stop.clear()
+    with contextlib.suppress(Exception):
+        _enqueue_reconcile_job("startup")
+    import telemetry
+    asyncio.create_task(loop.run_in_executor(None, telemetry.collect_and_send))
+    global _job_worker_task, _reconcile_scheduler_task
+    _job_worker_task = asyncio.create_task(_jobs_worker_loop())
+    _reconcile_scheduler_task = asyncio.create_task(_reconcile_scheduler_loop())
+
+    yield
+
+    _job_worker_stop.set()
+    if _reconcile_scheduler_task:
+        _reconcile_scheduler_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _reconcile_scheduler_task
+        _reconcile_scheduler_task = None
+    if _job_worker_task:
+        _job_worker_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await _job_worker_task
+        _job_worker_task = None
+
+
+app = FastAPI(title="Manga Maid", lifespan=_lifespan)
+templates = Jinja2Templates(directory=os.path.join(_WEB_DIR, "templates"))
 templates.env.filters["urlencode"] = quote_plus
+templates.env.globals["APP_VERSION"] = os.environ.get("APP_VERSION", "dev")
 
 _sync_running = False
 _cover_cache: dict[str, bytes] = {}
+_COVER_CACHE_MAX = 500
 _conn = None  # shared SQLite connection (WAL mode, safe for single-writer)
 _job_worker_task: asyncio.Task | None = None
 _reconcile_scheduler_task: asyncio.Task | None = None
@@ -139,7 +178,8 @@ def _get_conn():
     if _conn is None:
         _conn = _db.init_db(DATA_DIR)
         _db.migrate_json_configs(MANGA_ROOT, _conn)
-        _db.scan_disk_series(MANGA_ROOT, _conn)
+        roots = [rf for rf in (load_settings().get("root_folders") or []) if rf is not None]
+        _db.scan_disk_series(MANGA_ROOT, _conn, allowed_roots=roots)
     return _conn
 
 
@@ -153,6 +193,9 @@ def _write_runtime_crontab(cron_expr: str) -> None:
 
 
 def _enqueue_reconcile_job(reason: str) -> int | None:
+    roots = [rf for rf in (load_settings().get("root_folders") or []) if rf is not None]
+    if not roots:
+        return None
     conn = _get_conn()
     active = _db.get_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
     for j in active:
@@ -172,10 +215,14 @@ def _run_disk_reconcile(job_id: int, payload: dict | None = None) -> None:
     reason = str(payload.get("reason") or "manual").strip()
     _db.append_job_log(conn, job_id, f"[reconcile] started (reason: {reason})")
 
-    added = _db.scan_disk_series(MANGA_ROOT, conn)
-    _db.append_job_log(conn, job_id, f"[reconcile] discovered {added} new series")
-
     roots = [rf for rf in (load_settings().get("root_folders") or []) if rf is not None]
+    if not roots:
+        _db.append_job_log(conn, job_id, "[reconcile] skipped — no root folders configured")
+        _db.append_job_log(conn, job_id, "[reconcile] done")
+        return
+
+    added = _db.scan_disk_series(MANGA_ROOT, conn, allowed_roots=roots)
+    _db.append_job_log(conn, job_id, f"[reconcile] discovered {added} new series")
     series_rows = _db.get_all_series(conn)
     scanned = 0
     for row in series_rows:
@@ -201,42 +248,6 @@ async def _reconcile_scheduler_loop() -> None:
             _enqueue_reconcile_job("periodic")
 
 
-@app.on_event("startup")
-async def _startup():
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _get_conn)
-    # Keep runtime scheduler synced with persisted settings on boot.
-    cron_expr = sanitize_sync_cron(load_settings().get("sync_cron"))
-    try:
-        await loop.run_in_executor(None, _write_runtime_crontab, cron_expr)
-    except Exception as e:
-        # Do not fail app startup if crontab rewrite is not writable
-        # (e.g. non-root app user with root-owned crontab file).
-        print(f"[startup] warning: could not write runtime crontab '{RUNTIME_CRONTAB_PATH}': {e}")
-    _job_worker_stop.clear()
-    with contextlib.suppress(Exception):
-        _enqueue_reconcile_job("startup")
-    global _job_worker_task, _reconcile_scheduler_task
-    _job_worker_task = asyncio.create_task(_jobs_worker_loop())
-    _reconcile_scheduler_task = asyncio.create_task(_reconcile_scheduler_loop())
-
-
-@app.on_event("shutdown")
-async def _shutdown():
-    _job_worker_stop.set()
-    global _job_worker_task, _reconcile_scheduler_task
-    if _reconcile_scheduler_task:
-        _reconcile_scheduler_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await _reconcile_scheduler_task
-        _reconcile_scheduler_task = None
-    if _job_worker_task:
-        _job_worker_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await _job_worker_task
-        _job_worker_task = None
-
-
 def _job_display_name(job: dict) -> str:
     if job.get("job_type") == JOB_TYPE_RECONCILE_DISK:
         return "Disk reconcile"
@@ -250,6 +261,8 @@ def _job_display_name(job: dict) -> str:
 def _job_payload_argv(job: dict) -> list[str] | None:
     payload = job.get("payload") or {}
     if job.get("job_type") == JOB_TYPE_SYNC_ALL:
+        if payload.get("reason") == "scheduled":
+            return ["--notify"]
         return []
     if job.get("job_type") == JOB_TYPE_SYNC_SERIES:
         series_path = payload.get("series_path") or job.get("series_path_snapshot")
@@ -284,8 +297,8 @@ async def _run_job(job: dict) -> None:
     _db.append_job_log(conn, job_id, f"[job] started: {_job_display_name(job)}")
     try:
         proc = await asyncio.create_subprocess_exec(
-            "python3",
-            "/app/manga-sync.py",
+            sys.executable,
+            MANGA_SYNC_SCRIPT,
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
@@ -338,11 +351,6 @@ async def _jobs_worker_loop():
     _db.cleanup_old_jobs(conn, keep_days=JOB_RETENTION_DAYS)
     while not _job_worker_stop.is_set():
         try:
-            if _worker_current_job_id is None:
-                recovered = _db.requeue_running_jobs(conn, queue_key=JOB_QUEUE_KEY)
-                for jid in recovered:
-                    with contextlib.suppress(Exception):
-                        _db.append_job_log(conn, jid, "[job] recovered by worker; re-queued")
             job = _db.claim_next_queued_job(conn, queue_key=JOB_QUEUE_KEY)
             if not job:
                 await asyncio.sleep(0.4)
@@ -368,64 +376,8 @@ def _cover_url(manga_id: str, filename: str) -> str:
     return f"/api/proxy/cover/{manga_id}/{filename}"
 
 
-def _safe_filename_token(value) -> str:
-    return re.sub(r'[<>:"/\\|?*]', "_", str(value or ""))
 
 
-def _format_num(value) -> str:
-    if value is None:
-        return ""
-    try:
-        num = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-    return str(int(num)) if num.is_integer() else str(num)
-
-
-def _floor_int_str(value) -> str:
-    try:
-        return str(math.floor(float(value)))
-    except (TypeError, ValueError):
-        return _format_num(value)
-
-
-def _apply_naming_template(
-    template: str,
-    *,
-    language: str = "",
-    group: str = "",
-    title: str = "",
-    volume_num=None,
-    chapter_num=None,
-    chapter_title: str = "",
-    chapter_range: str = "",
-) -> str:
-    result = template or ""
-    if volume_num is None:
-        # Drop common "vol.%4" snippets when volume is unknown.
-        result = re.sub(r"\bvol(?:ume)?\.?\s*%4\b", "", result, flags=re.IGNORECASE)
-        result = re.sub(r"\bvol(?:ume)?\.?\s*$", "", result, flags=re.IGNORECASE)
-    if chapter_num is None and not chapter_range:
-        # When no chapter span is known for a volume, drop common "ch.%5" snippets
-        # so we don't generate names like "... ch.".
-        result = re.sub(r"\bch\.?\s*%5\b", "", result, flags=re.IGNORECASE)
-    result = result.replace("%1", _safe_filename_token(language))
-    result = result.replace("%2", _safe_filename_token(group))
-    result = result.replace("%3", _safe_filename_token(title))
-    result = result.replace("%4", _format_num(volume_num))
-    result = result.replace("%5", chapter_range or _format_num(chapter_num))
-    result = result.replace("%6", _safe_filename_token(chapter_title))
-    # Drop empty grouping wrappers left by missing placeholders like %2.
-    result = re.sub(r"\(\s*\)", "", result)
-    result = re.sub(r"\[\s*\]", "", result)
-    result = re.sub(r"\{\s*\}", "", result)
-    result = re.sub(r"\bch\.?\s*$", "", result, flags=re.IGNORECASE)
-    result = re.sub(r"\bvol(?:ume)?\.?\s*$", "", result, flags=re.IGNORECASE)
-    result = result.replace("..", ".")
-    result = re.sub(r"\s+([)\]}])", r"\1", result)
-    result = re.sub(r"([(\[{])\s+", r"\1", result)
-    result = re.sub(r"\s{2,}", " ", result)
-    return result.strip()
 
 
 def _mdex_tankobon_volume_count_from_aggregate(agg) -> int:
@@ -476,13 +428,17 @@ def _resolve_total_volumes(attr: dict | None, manga_id: str) -> int:
     return _mdex_tankobon_volume_count_from_aggregate(agg)
 
 
-def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
+def _scan_settings_naming_issues(series_path: str | None = None) -> list[tuple[str, str, str]]:
     settings = load_settings()
     chapter_tpl = settings.get("chapter_naming", "%3 ch.%5")
     volume_tpl = settings.get("volume_naming", "%3 vol.%4")
     conn = _get_conn()
+    series_scope = (series_path or "").strip()
     findings: list[tuple[str, str, str]] = []
-    for series in _db.get_all_series(conn):
+    series_rows = _db.get_all_series(conn)
+    if series_scope:
+        series_rows = [s for s in series_rows if (s.get("path") or "") == series_scope]
+    for series in series_rows:
         _db.scan_disk_files(os.path.join(MANGA_ROOT, series["path"]), series["id"], conn)
 
     volume_ranges = {
@@ -495,7 +451,7 @@ def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
         """).fetchall()
     }
 
-    chapter_rows = conn.execute("""
+    chapter_sql = """
         SELECT
             c.path,
             c.chapter_num,
@@ -511,7 +467,12 @@ def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
         LEFT JOIN volumes v ON v.id = c.volume_id
         WHERE c.path IS NOT NULL
           AND COALESCE(s.exclude_from_fix, 0) = 0
-    """).fetchall()
+    """
+    chapter_params: list[str] = []
+    if series_scope:
+        chapter_sql += "\n          AND s.path = ?"
+        chapter_params.append(series_scope)
+    chapter_rows = conn.execute(chapter_sql, chapter_params).fetchall()
 
     for row in chapter_rows:
         old_path = os.path.join(MANGA_ROOT, row["path"])
@@ -522,7 +483,7 @@ def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
         # named with series-level info only — no per-chapter title/group
         # leaking into the proposed filename.
         is_on_disk = row["chapter_status"] == "on_disk"
-        new_stem = _apply_naming_template(
+        new_stem = apply_naming_template(
             chapter_tpl,
             language=row["series_language"] or "en",
             group="" if is_on_disk else (row["group_name"] or row["preferred_group"] or ""),
@@ -532,7 +493,7 @@ def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
             chapter_title="" if is_on_disk else (row["chapter_title"] or ""),
         )
         # Guard against dangerous suggestions that drop chapter identity.
-        ch_token = _format_num(row["chapter_num"])
+        ch_token = format_num(row["chapter_num"])
         if ch_token and ch_token not in new_stem:
             continue
         if not new_stem or new_stem == stem:
@@ -542,7 +503,7 @@ def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
         if target != old_path and not os.path.exists(target):
             findings.append((old_path, "settings_chapter_naming", new_name))
 
-    volume_rows = conn.execute("""
+    volume_sql = """
         SELECT
             v.id,
             v.path,
@@ -554,7 +515,12 @@ def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
         JOIN series s ON s.id = v.series_id
         WHERE v.path IS NOT NULL
           AND COALESCE(s.exclude_from_fix, 0) = 0
-    """).fetchall()
+    """
+    volume_params: list[str] = []
+    if series_scope:
+        volume_sql += "\n          AND s.path = ?"
+        volume_params.append(series_scope)
+    volume_rows = conn.execute(volume_sql, volume_params).fetchall()
 
     for row in volume_rows:
         old_path = os.path.join(MANGA_ROOT, row["path"])
@@ -565,10 +531,10 @@ def _scan_settings_naming_issues() -> list[tuple[str, str, str]]:
         ch_range = ""
         if min_max:
             start, end = min_max
-            s_start = _floor_int_str(start)
-            s_end = _floor_int_str(end)
+            s_start = floor_int_str(start)
+            s_end = floor_int_str(end)
             ch_range = s_start if s_start == s_end else f"{s_start}-{s_end}"
-        new_stem = _apply_naming_template(
+        new_stem = apply_naming_template(
             volume_tpl,
             language=row["series_language"] or "en",
             group=row["preferred_group"] or "",
@@ -696,7 +662,16 @@ def _human_size(size: int | None) -> str:
 
 def get_all_series() -> list[dict]:
     conn = _get_conn()
-    return _db.get_all_series(conn)
+    rows = _db.get_all_series(conn)
+    roots = _root_folders()
+    if not roots:
+        return rows
+    out: list[dict] = []
+    for row in rows:
+        p = (row.get("path") or "").replace("\\", "/").strip()
+        if any(p == rf or p.startswith(rf + "/") for rf in roots):
+            out.append(row)
+    return out
 
 
 def get_subdirs() -> list[str]:
@@ -806,6 +781,21 @@ async def _fetch_groups(manga_id: str, language: str) -> dict:
 
 def _no_rf() -> bool:
     return not _root_folders()
+
+
+def _require_root_folders() -> None:
+    if _no_rf():
+        raise HTTPException(
+            400,
+            "Configure at least one root folder in Settings before running this action.",
+        )
+
+
+def _require_under_manga_root(path: str) -> None:
+    """Raise 400 if resolved path escapes MANGA_ROOT (guards against .. traversal)."""
+    target = os.path.realpath(path)
+    if target != _MANGA_ROOT_REAL and not target.startswith(_MANGA_ROOT_REAL + os.sep):
+        raise HTTPException(400, "Invalid path: must be under the manga root")
 
 
 class DeleteSeriesFilesBody(BaseModel):
@@ -1050,8 +1040,7 @@ async def series_details_page(request: Request, path: str):
 
 @app.get("/sync", response_class=HTMLResponse)
 async def sync_page(request: Request):
-    return templates.TemplateResponse(request=request, name="sync.html",
-        context={"active": "sync", "no_root_folders": _no_rf()})
+    return RedirectResponse("/jobs", status_code=307)
 
 
 @app.get("/jobs", response_class=HTMLResponse)
@@ -1094,6 +1083,9 @@ async def save_settings_endpoint(
     auto_covers:       str = Form("false"),
     kavita_url:        str = Form(""),
     kavita_api_key:    str = Form(""),
+    file_permission_mask: str = Form("664"),
+    webhook_url:       str = Form(""),
+    webhook_platform:  str = Form("generic"),
 ):
     try:
         root_folders = json.loads(root_folders_json)
@@ -1108,6 +1100,7 @@ async def save_settings_endpoint(
             seen.append(clean)
     before = load_settings()
     normalized_sync_cron = sanitize_sync_cron(sync_cron)
+    platform = webhook_platform if webhook_platform in ("discord", "ntfy", "generic") else "generic"
     save_settings({
         "root_folders":   seen,
         "file_format":    file_format,
@@ -1120,6 +1113,9 @@ async def save_settings_endpoint(
         "auto_covers":    auto_covers == "true",
         "kavita_url":     kavita_url.strip(),
         "kavita_api_key": kavita_api_key.strip(),
+        "file_permission_mask": sanitize_file_permission_mask(file_permission_mask),
+        "webhook_url":    webhook_url.strip(),
+        "webhook_platform": platform,
     })
     if sanitize_sync_cron(before.get("sync_cron")) != normalized_sync_cron:
         try:
@@ -1130,6 +1126,57 @@ async def save_settings_endpoint(
         with contextlib.suppress(Exception):
             _enqueue_reconcile_job("settings_root_folders_changed")
     return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/api/settings/test-webhook")
+async def test_webhook(request: Request):
+    body = await request.json()
+    url      = (body.get("webhook_url") or "").strip()
+    platform = body.get("webhook_platform") or "generic"
+    title    = body.get("title") or "My Manga Title"
+    count    = int(body.get("count") or 1)
+    if not url:
+        return JSONResponse({"ok": False, "error": "No webhook URL configured"})
+    ch = "chapter" if count == 1 else "chapters"
+    text = f"New chapters downloaded:\n• {title} — {count} new {ch}"
+    try:
+        from urllib import request as _urllib_request
+        import json as _json
+        if platform == "ntfy":
+            body_bytes = text.encode()
+            req = _urllib_request.Request(url, data=body_bytes, method="POST")
+            req.add_header("Content-Type", "text/plain")
+        else:
+            body_bytes = _json.dumps({"content": text}).encode()
+            req = _urllib_request.Request(url, data=body_bytes, method="POST")
+            req.add_header("Content-Type", "application/json")
+        req.add_header("User-Agent", "manga-sync/1.0")
+        with _urllib_request.urlopen(req, timeout=10):
+            pass
+        return JSONResponse({"ok": True, "error": None})
+    except Exception as e:
+        from urllib.error import HTTPError
+        if isinstance(e, HTTPError):
+            body = e.read(512).decode(errors="replace").strip()
+            msg = f"HTTP {e.code}: {body or e.reason}"
+        else:
+            msg = str(e)
+        return JSONResponse({"ok": False, "error": msg})
+
+
+@app.get("/api/settings/webhook-preview")
+async def webhook_preview():
+    _FALLBACKS = [
+        "My Manga Title", "Yotsuba&!", "Chainsaw Man", "Spy×Family",
+    ]
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT title FROM series WHERE title IS NOT NULL ORDER BY RANDOM() LIMIT 1"
+    ).fetchone()
+    title = row["title"] if row else _FALLBACKS[0]
+    import random as _random
+    count = _random.randint(1, 3)
+    return JSONResponse({"title": title, "count": count})
 
 
 @app.post("/api/settings/test-kavita")
@@ -1350,6 +1397,8 @@ async def proxy_cover(manga_id: str, filename: str):
             )
         except Exception:
             raise HTTPException(404)
+        if len(_cover_cache) >= _COVER_CACHE_MAX:
+            _cover_cache.pop(next(iter(_cover_cache)))
         _cover_cache[cache_key] = data
     return Response(_cover_cache[cache_key], media_type="image/jpeg",
                     headers={"Cache-Control": "public, max-age=86400"})
@@ -1385,8 +1434,10 @@ async def add_series(
     exclude_from_fix: str = Form("false"),
     merge_volumes_override: str = Form(""),
 ):
+    _require_root_folders()
     parts      = [p for p in [subfolder.strip("/"), title] if p]
     series_dir = os.path.join(MANGA_ROOT, *parts)
+    _require_under_manga_root(series_dir)
     os.makedirs(series_dir, exist_ok=True)
     rel_path   = os.path.relpath(series_dir, MANGA_ROOT)
 
@@ -1466,8 +1517,80 @@ async def series_cover(path: str):
     return JSONResponse({"url": _cover_url(manga_id, cover_filename)})
 
 
+@app.get("/api/series/{path:path}/chapter-gaps")
+async def series_chapter_gaps(path: str):
+    conn = _get_conn()
+    row = _db.get_series_by_path(conn, path)
+    if not row:
+        raise HTTPException(404, "Series not found")
+
+    source = _db.get_primary_source(conn, row["id"])
+    if not source or source.get("source") != "mangadex":
+        return JSONResponse({"mode": "no_source"})
+
+    manga_id = source["source_id"]
+    language = (row.get("language") or "en").strip()
+
+    all_chapters = _db.get_chapters(conn, row["id"])
+    volume_ids_on_disk = {
+        v["id"] for v in _db.get_volumes(conn, row["id"]) if v.get("path")
+    }
+
+    if not all_chapters and volume_ids_on_disk:
+        return JSONResponse({"mode": "no_tracking"})
+
+    covered: set[float] = set()
+    db_nums: set[float] = set()
+    for ch in all_chapters:
+        raw = ch.get("chapter_num")
+        if raw is None:
+            continue
+        num = float(raw)
+        db_nums.add(num)
+        if ch.get("path"):
+            covered.add(num)
+        elif ch.get("volume_id") in volume_ids_on_disk:
+            covered.add(num)
+
+    loop = asyncio.get_event_loop()
+    try:
+        agg = await loop.run_in_executor(
+            None,
+            lambda: _mdex_get(f"/manga/{manga_id}/aggregate", {"translatedLanguage[]": language}),
+        )
+    except Exception as e:
+        return JSONResponse({"mode": "error", "error": str(e)})
+
+    mdex_chapters: dict[float, str] = {}
+    for vol_key, vol_data in (agg.get("volumes") or {}).items():
+        for ch_key in (vol_data.get("chapters") or {}):
+            try:
+                ch_num = float(ch_key)
+            except (ValueError, TypeError):
+                continue
+            mdex_chapters[ch_num] = vol_key
+
+    chips = []
+    for ch_num in sorted(mdex_chapters):
+        if ch_num in covered:
+            status = "ok"
+        else:
+            status = "gap"
+        chips.append({"num": ch_num, "vol": mdex_chapters[ch_num], "status": status})
+
+    n_gaps = sum(1 for c in chips if c["status"] != "ok")
+    return JSONResponse({
+        "mode": "ok",
+        "chips": chips,
+        "total": len(chips),
+        "covered": len(chips) - n_gaps,
+        "gaps": n_gaps,
+    })
+
+
 @app.delete("/api/series/{path:path}", response_class=HTMLResponse)
 async def delete_series(path: str):
+    _require_root_folders()
     conn = _get_conn()
     if not _db.get_series_by_path(conn, path):
         raise HTTPException(404, "Series not found")
@@ -1584,10 +1707,12 @@ async def update_series(
     merge_volumes_override: str = Form(""),
     mark_sync_configured: str = Form(""),
 ):
+    _require_root_folders()
     # path here is the URL route parameter (old path)
     old_dir    = os.path.join(MANGA_ROOT, path)
     parts      = [p for p in [subfolder.strip("/"), title] if p]
     new_dir    = os.path.join(MANGA_ROOT, *parts)
+    _require_under_manga_root(new_dir)
     new_rel    = os.path.relpath(new_dir, MANGA_ROOT)
 
     if os.path.abspath(old_dir) != os.path.abspath(new_dir):
@@ -1630,6 +1755,7 @@ async def update_series(
 
 @app.post("/api/jobs/sync-all")
 async def enqueue_sync_all():
+    _require_root_folders()
     conn = _get_conn()
     active = _db.get_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
     for j in active:
@@ -1644,8 +1770,26 @@ async def enqueue_sync_all():
     return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id)), "deduped": False})
 
 
+@app.post("/api/jobs/reconcile-disk")
+async def enqueue_reconcile_disk():
+    _require_root_folders()
+    conn = _get_conn()
+    active = _db.get_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
+    for j in active:
+        if j.get("job_type") == JOB_TYPE_RECONCILE_DISK:
+            return JSONResponse({"ok": True, "job": _serialize_job(j), "deduped": True})
+    job_id = _db.enqueue_job(
+        conn,
+        job_type=JOB_TYPE_RECONCILE_DISK,
+        queue_key=JOB_QUEUE_KEY,
+        payload={"reason": "manual"},
+    )
+    return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id)), "deduped": False})
+
+
 @app.post("/api/jobs/sync-series/{path:path}")
 async def enqueue_sync_series(path: str):
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, path)
     if not row:
@@ -1666,6 +1810,7 @@ async def enqueue_sync_series(path: str):
 
 @app.post("/api/jobs/regenerate-comicinfo/{path:path}")
 async def enqueue_regenerate_comicinfo(path: str):
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, path)
     if not row:
@@ -1750,6 +1895,7 @@ async def stream_job(job_id: int, from_seq: int = 0):
 
     async def generate():
         nonlocal from_seq
+        last_status_sent = None
         while True:
             lines = _db.get_job_logs_since(conn, job_id, from_seq=from_seq, limit=200)
             for ln in lines:
@@ -1766,14 +1912,17 @@ async def stream_job(job_id: int, from_seq: int = 0):
                 payload = {"type": "status", "status": "missing"}
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
                 break
-            if job["status"] in JOB_STATUS_TERMINAL:
+            cur_status = job.get("status")
+            if cur_status != last_status_sent:
                 payload = {
                     "type": "status",
-                    "status": job["status"],
+                    "status": cur_status,
                     "exit_code": job.get("exit_code"),
                     "error_summary": job.get("error_summary"),
                 }
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                last_status_sent = cur_status
+            if job["status"] in JOB_STATUS_TERMINAL:
                 break
             await asyncio.sleep(0.4)
 
@@ -1852,6 +2001,7 @@ async def series_sync_stream(path: str):
 
 @app.post("/api/series/{path:path}/covers")
 async def series_covers(path: str):
+    _require_root_folders()
     conn = _get_conn()
     row  = _db.get_series_by_path(conn, path)
     if not row:
@@ -1861,7 +2011,7 @@ async def series_covers(path: str):
         return JSONResponse({"ok": False, "error": "Kavita not configured in settings"})
     try:
         proc = await asyncio.create_subprocess_exec(
-            "python3", "/app/manga-sync.py",
+            sys.executable, MANGA_SYNC_SCRIPT,
             "--series", os.path.join(MANGA_ROOT, path),
             "--covers-only",
             stdout=asyncio.subprocess.PIPE,
@@ -1877,6 +2027,7 @@ async def series_covers(path: str):
 
 @app.post("/api/series/{path:path}/comicinfo-regenerate")
 async def series_regenerate_comicinfo(path: str):
+    _require_root_folders()
     conn = _get_conn()
     if not _db.get_series_by_path(conn, path):
         raise HTTPException(404, "Series not found")
@@ -1905,6 +2056,7 @@ async def series_regenerate_comicinfo(path: str):
 
 @app.get("/api/series/{path:path}/comicinfo-regenerate/stream")
 async def series_regenerate_comicinfo_stream(path: str):
+    _require_root_folders()
     conn = _get_conn()
     if not _db.get_series_by_path(conn, path):
         raise HTTPException(404, "Series not found")
@@ -1946,6 +2098,7 @@ async def series_regenerate_comicinfo_stream(path: str):
 
 @app.post("/api/series/{path:path}/compact-volumes")
 async def series_compact_volumes(path: str):
+    _require_root_folders()
     conn = _get_conn()
     if not _db.get_series_by_path(conn, path):
         raise HTTPException(404, "Series not found")
@@ -1981,6 +2134,7 @@ async def series_reset_source_metadata(path: str):
     English archives). Catalog rows that have no file are left intact, so
     sync can still discover and download missing chapters afterwards.
     """
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, path)
     if not row:
@@ -1992,6 +2146,7 @@ async def series_reset_source_metadata(path: str):
 @app.post("/api/series/{path:path}/delete-files")
 async def series_delete_files(path: str, body: DeleteSeriesFilesBody):
     """Delete chapter/volume archive files on disk for this series; DB is reconciled via scan."""
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, path)
     if not row:
@@ -2110,9 +2265,9 @@ async def get_chapter_comicinfo(path: str, chapter_id: int):
     if not fields.get("Manga"):
         fields["Manga"] = "YesAndRightToLeft"
     if not fields.get("Number") and r["chapter_num"] is not None:
-        fields["Number"] = _format_num(r["chapter_num"])
+        fields["Number"] = format_num(r["chapter_num"])
     if not fields.get("Volume") and r["volume_num"] is not None:
-        fields["Volume"] = _format_num(r["volume_num"])
+        fields["Volume"] = format_num(r["volume_num"])
     if not fields.get("Title") and r["title"]:
         fields["Title"] = str(r["title"]).strip()
     return JSONResponse({
@@ -2127,6 +2282,7 @@ async def get_chapter_comicinfo(path: str, chapter_id: int):
 
 @app.put("/api/comicinfo/series/{path:path}/chapters/{chapter_id}")
 async def update_chapter_comicinfo(path: str, chapter_id: int, body: ComicInfoUpdateBody):
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, path)
     if not row:
@@ -2145,7 +2301,12 @@ async def update_chapter_comicinfo(path: str, chapter_id: int, body: ComicInfoUp
         fields["Series"] = row.get("name") or row.get("title") or ""
     _validate_comicinfo_fields(fields)
     xml = _comicinfo_fields_to_xml(fields)
-    ok = inject_comicinfo(abs_f, xml, overwrite=True)
+    ok = inject_comicinfo(
+        abs_f,
+        xml,
+        overwrite=True,
+        file_permission_mask=load_settings().get("file_permission_mask"),
+    )
     if not ok:
         raise HTTPException(500, "Could not write ComicInfo.xml")
     _db.mark_chapter_comicinfo(conn, int(r["id"]))
@@ -2174,7 +2335,7 @@ async def get_volume_comicinfo(path: str, volume_id: int):
     if not fields.get("Manga"):
         fields["Manga"] = "YesAndRightToLeft"
     if not fields.get("Volume") and r["volume_num"] is not None:
-        fields["Volume"] = _format_num(r["volume_num"])
+        fields["Volume"] = format_num(r["volume_num"])
     if not fields.get("Title") and r["title"]:
         fields["Title"] = r["title"]
     return JSONResponse({
@@ -2189,6 +2350,7 @@ async def get_volume_comicinfo(path: str, volume_id: int):
 
 @app.put("/api/comicinfo/series/{path:path}/volumes/{volume_id}")
 async def update_volume_comicinfo(path: str, volume_id: int, body: ComicInfoUpdateBody):
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, path)
     if not row:
@@ -2207,7 +2369,12 @@ async def update_volume_comicinfo(path: str, volume_id: int, body: ComicInfoUpda
         fields["Series"] = row.get("name") or row.get("title") or ""
     _validate_comicinfo_fields(fields)
     xml = _comicinfo_fields_to_xml(fields)
-    ok = inject_comicinfo(abs_f, xml, overwrite=True)
+    ok = inject_comicinfo(
+        abs_f,
+        xml,
+        overwrite=True,
+        file_permission_mask=load_settings().get("file_permission_mask"),
+    )
     if not ok:
         raise HTTPException(500, "Could not write ComicInfo.xml")
     _db.mark_volume_comicinfo(conn, int(r["id"]))
@@ -2224,6 +2391,8 @@ async def apply_fix(
     new_name:   str = Form(...),
     issue_name: str = Form(...),
 ):
+    _require_root_folders()
+    _require_under_manga_root(old_path)
     log_path = os.path.join(MANGA_ROOT, _fix.LOG_FILENAME)
     log_data = _fix.load_log(log_path)
     try:
@@ -2236,6 +2405,7 @@ async def apply_fix(
 
 @app.post("/api/fix/series-skip", response_class=HTMLResponse)
 async def skip_series_from_fix(series_path: str = Form(...)):
+    _require_root_folders()
     conn = _get_conn()
     row = _db.get_series_by_path(conn, series_path)
     if not row:
@@ -2261,6 +2431,59 @@ async def skip_series_from_fix(series_path: str = Form(...)):
     return HTMLResponse("")
 
 
+@app.post("/api/fix/series-apply-all")
+async def apply_all_series_fixes(series_path: str = Form(...)):
+    _require_root_folders()
+    conn = _get_conn()
+    row = _db.get_series_by_path(conn, series_path)
+    if not row:
+        raise HTTPException(404, "Series not found")
+    series_dir = os.path.join(MANGA_ROOT, series_path)
+    if not os.path.isdir(series_dir):
+        raise HTTPException(404, "Series folder not found on disk")
+
+    log_path = os.path.join(MANGA_ROOT, _fix.LOG_FILENAME)
+    log_data = _fix.load_log(log_path)
+    renamed = 0
+    skipped_missing = 0
+    seen_paths: set[str] = set()
+
+    findings = list(_fix.scan(series_dir))
+    findings.extend(_scan_settings_naming_issues(series_path=series_path))
+    findings.sort(key=lambda x: x[0].lower())
+    for old_path, issue_name, new_name in findings:
+        if old_path in seen_paths:
+            continue
+        seen_paths.add(old_path)
+        if not os.path.exists(old_path):
+            skipped_missing += 1
+            continue
+        try:
+            _fix.do_rename(old_path, new_name, issue_name, log_data, log_path)
+            renamed += 1
+        except Exception:
+            continue
+
+    dup_groups = _fix.scan_duplicates(series_dir)
+    dedup_applied = 0
+    for group in dup_groups:
+        try:
+            _fix.apply_dup_group(group, log_data, log_path)
+            dedup_applied += 1
+        except Exception:
+            continue
+
+    _db.scan_disk_files(series_dir, row["id"], conn)
+    return JSONResponse({
+        "ok": True,
+        "series_path": series_path,
+        "renamed": renamed,
+        "dedup_groups": dedup_applied,
+        "resolved": renamed + dedup_applied,
+        "skipped_missing": skipped_missing,
+    })
+
+
 @app.post("/api/fix/apply-dup", response_class=HTMLResponse)
 async def apply_dup(
     keep_path:    str = Form(...),
@@ -2268,6 +2491,7 @@ async def apply_dup(
     needs_rename: str = Form(""),
     keep_name:    str = Form(...),
 ):
+    _require_root_folders()
     log_path = os.path.join(MANGA_ROOT, _fix.LOG_FILENAME)
     log_data = _fix.load_log(log_path)
     all_paths = [keep_path] + [x for x in delete_paths.split("|") if x]

@@ -243,6 +243,27 @@
   }
 </style>
 
+{% if no_root_folders %}
+<div class="mb-6">
+  <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Dashboard</h1>
+  <p class="text-sm mt-1" style="color:var(--text-muted)">Set up library root folder(s) before tracking series or running sync.</p>
+</div>
+<div class="max-w-lg">
+  <div class="rounded-xl border p-10 text-center"
+       style="background:var(--surface);border-color:rgba(251,191,36,.3)">
+    <div class="mb-4 text-4xl opacity-30">📁</div>
+    <p class="font-semibold text-sm" style="color:#fbbf24;font-family:'Syne',sans-serif">Root folder required</p>
+    <p class="text-xs mt-2 mb-6" style="color:var(--text-muted)">
+      Add at least one folder under your manga mount (for example <span class="font-mono">en</span> or <span class="font-mono">jp</span>). Nothing is scanned or synced until then.
+    </p>
+    <a href="/settings"
+       class="inline-block text-xs font-semibold px-5 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition-colors"
+       style="font-family:'Syne',sans-serif">
+      Open Settings →
+    </a>
+  </div>
+</div>
+{% else %}
 <div class="mb-6 flex items-center justify-between gap-3">
   <div>
     <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Dashboard</h1>
@@ -268,7 +289,7 @@
         </svg>
       </button>
     </div>
-    <a href="/sync"
+    <a href="/jobs"
        class="bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
        style="font-family:'Syne',sans-serif;letter-spacing:.02em">
       Sync All
@@ -390,18 +411,23 @@
 </div>
 
 {% endif %}
+{% endif %}
 
 <script>
 /* ── View toggle ─────────────────────────────────────── */
 function setView(v) {
+  const grid = document.getElementById('series-grid');
+  const list = document.getElementById('series-list');
+  if (!grid || !list) return;
   const isGrid = v === 'grid';
-  document.getElementById('series-grid').style.display = isGrid ? '' : 'none';
-  document.getElementById('series-list').style.display = isGrid ? 'none' : '';
+  grid.style.display = isGrid ? '' : 'none';
+  list.style.display = isGrid ? 'none' : '';
   document.getElementById('btn-grid').classList.toggle('active', isGrid);
   document.getElementById('btn-list').classList.toggle('active', !isGrid);
   localStorage.setItem('dash-view', v);
 }
 (function() {
+  if (!document.getElementById('series-grid')) return;
   const saved = localStorage.getItem('dash-view') || 'grid';
   setView(saved);
 })();
