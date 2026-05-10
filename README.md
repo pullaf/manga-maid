@@ -57,7 +57,8 @@ services:
     environment:
       PUID: 1000             # run as your user - match your host UID
       PGID: 1000             # match your host GID
-      MANGA_ROOT: "/manga"
+      TZ: "America/New_York" # your timezone
+      DEFAULT_LANGUAGE: "en" # preferred chapter language
     volumes:
       - /path/to/your/manga:/manga
       - /path/to/data:/data  # config + logs
@@ -89,9 +90,11 @@ Then open `http://your-host:4649`, add series, and configure the sync schedule i
 |---|---|---|
 | `PUID` | `0` (root) | UID to run as. Set to your host user's UID so downloaded files are owned correctly. |
 | `PGID` | `0` (root) | GID to run as. |
-| `MANGA_ROOT` | `/manga` | Path inside the container where your library is mounted. |
+| `TZ` | — | Timezone for schedule display (e.g. `Europe/London`, `Asia/Tokyo`). |
+| `DEFAULT_LANGUAGE` | `en` | Preferred chapter language code used when adding new series (e.g. `it`, `fr`, `ja-ro`). |
 | `DATA_DIR` | `/data` | Base path for config and logs. |
 | `SYNC_LOG` | `$DATA_DIR/logs/sync.log` | Override log file location. |
+| `TELEMETRY` | `true` | Set to `false` to opt out of anonymous usage statistics. Can also be toggled in Settings → Privacy. |
 
 > Sync schedule is now persisted in app settings (SQLite) and edited from the web UI.
 > The container reads that value on boot and live-reloads cron when you change it in Settings.
