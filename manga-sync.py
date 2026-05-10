@@ -1093,6 +1093,7 @@ def _send_webhook(url: str, platform: str, items: list[tuple[str, int]]):
             body = json.dumps({"content": text}).encode()
             req = request.Request(url, data=body, method="POST")
             req.add_header("Content-Type", "application/json")
+        req.add_header("User-Agent", "manga-sync/1.0")
         with request.urlopen(req, timeout=10):
             pass
         _log("[webhook] notification sent")
@@ -1107,6 +1108,7 @@ def main(
     refresh_volume_comicinfo: bool = False,
     normalize_volume_filenames: bool = False,
     regenerate_comicinfo: bool = False,
+    notify: bool = False,
 ):
     _rotate_log()
 
@@ -1300,7 +1302,7 @@ def main(
         except Exception as e:
             _log(f"[kavita] scan failed: {e}")
 
-    if downloads:
+    if notify and downloads:
         wurl = settings.get("webhook_url", "").strip()
         if wurl:
             _send_webhook(wurl, settings.get("webhook_platform", "generic"), downloads)
@@ -1330,6 +1332,11 @@ if __name__ == "__main__":
         help="Strip ch.X-Y suffix from merged volume stems (requires --series)",
     )
     parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="Send webhook notification if new chapters were downloaded",
+    )
+    parser.add_argument(
         "--regenerate-comicinfo",
         action="store_true",
         help="Force rewrite ComicInfo.xml for all chapter/volume files in a series (requires --series)",
@@ -1342,4 +1349,5 @@ if __name__ == "__main__":
         refresh_volume_comicinfo=args.refresh_volume_comicinfo,
         normalize_volume_filenames=args.normalize_volume_filenames,
         regenerate_comicinfo=args.regenerate_comicinfo,
+        notify=args.notify,
     )
