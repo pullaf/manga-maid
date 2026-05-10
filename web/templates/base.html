@@ -197,6 +197,10 @@
     #sidebar {
       background: var(--sidebar-bg);
       border-right: 1px solid var(--border);
+      width: 12rem;
+    }
+    @media (max-width: 767px) {
+      #sidebar { width: 82vw; }
     }
 
     /* ── Modal ─────────────────────────────────────────────── */
@@ -301,13 +305,26 @@
         main { padding-bottom: 2rem !important; }
       }
     }
+
+    /* ── Mobile sidebar nav touch targets ─────────────────── */
+    @media (max-width: 767px) {
+      #sidebar .nav-link {
+        padding: 14px 20px;
+        font-size: 16px;
+        gap: 16px;
+        border-radius: 10px;
+      }
+      #sidebar .nav-link svg { width: 20px !important; height: 20px !important; }
+      #sidebar nav { padding: 12px; gap: 4px; }
+    }
+
   </style>
 </head>
 <body class="flex h-dvh overflow-hidden">
 
   <!-- Mobile header -->
-  <header class="mobile-header md:hidden fixed top-0 inset-x-0 z-50 flex items-center justify-between px-4 h-13" style="height:52px">
-    <div class="flex items-center gap-2.5">
+  <header class="mobile-header md:hidden fixed top-0 inset-x-0 z-50 flex items-center justify-between px-4" style="height:52px">
+    <a href="/" class="flex items-center gap-2.5" style="text-decoration:none">
       <svg viewBox="0 0 20 20" class="w-5 h-5 shrink-0" fill="none">
         <rect x="1" y="1" width="7" height="9" rx="1.5" fill="#7c3aed" opacity=".9"/>
         <rect x="10" y="1" width="9" height="4.5" rx="1.5" fill="#7c3aed" opacity=".9"/>
@@ -315,9 +332,9 @@
         <rect x="1" y="12" width="18" height="7" rx="1.5" fill="#7c3aed" opacity=".75"/>
       </svg>
       <span class="font-display font-700 text-sm text-violet-400 tracking-wide" style="font-family:'Syne',sans-serif;font-weight:700">Manga Maid</span>
-    </div>
+    </a>
     <button onclick="openMobileNav()" class="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition-colors" aria-label="Menu">
-      <svg viewBox="0 0 18 14" fill="currentColor" class="w-4.5" style="width:18px;height:14px">
+      <svg viewBox="0 0 18 14" fill="currentColor" style="width:18px;height:14px">
         <rect width="18" height="2" rx="1"/>
         <rect y="6" width="18" height="2" rx="1"/>
         <rect y="12" width="18" height="2" rx="1"/>
@@ -329,7 +346,7 @@
   <div id="sidebar-overlay" class="md:hidden hidden fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" onclick="closeMobileNav()"></div>
 
   <!-- Sidebar -->
-  <aside id="sidebar" class="fixed md:static inset-y-0 left-0 z-50 w-48 flex flex-col shrink-0
+  <aside id="sidebar" class="fixed md:static inset-y-0 left-0 z-50 flex flex-col shrink-0
               -translate-x-full md:translate-x-0 transition-transform duration-200 ease-out">
     <!-- Logo -->
     <div class="flex items-center gap-3 px-4 py-5" style="border-bottom:1px solid var(--border)">

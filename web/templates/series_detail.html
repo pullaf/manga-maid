@@ -71,6 +71,17 @@
   .file-del-btn:hover { color: var(--danger); background: rgba(248,113,113,.12); }
   .file-del-btn svg { display: block; }
   .file-row-cb { accent-color: var(--accent); }
+  @media (max-width: 767px) {
+    .file-row { flex-wrap: wrap; }
+    .file-row-actions {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      padding-left: 22px; /* align past checkbox */
+    }
+  }
   .gap-chip {
     display: inline-flex;
     align-items: center;
@@ -250,17 +261,19 @@
       </div>
       <div class="space-y-0.5 text-xs font-mono max-h-96 overflow-y-auto">
         {% for v in volumes %}
-        <div class="flex items-center gap-2 py-1.5 pr-1 rounded-lg hover:bg-opacity-50" style="color:var(--text-muted)">
+        <div class="file-row flex items-center gap-2 py-1.5 pr-1 rounded-lg hover:bg-opacity-50" style="color:var(--text-muted)">
           <input type="checkbox" class="vol-file-cb file-row-cb rounded border shrink-0" style="border-color:var(--border-mid)"
                  data-id="{{ v.id }}" data-name="{{ v.display_path|e }}">
           <span class="truncate flex-1 min-w-0">{{ v.display_path }}</span>
-          <span class="shrink-0" style="color:var(--text-dim)">{{ v.display_size }}</span>
-          <button type="button" class="detail-act-btn detail-act-btn--muted text-[11px] px-2 py-1 comicinfo-open"
-                  data-kind="volume" data-id="{{ v.id }}" data-name="{{ v.display_path|e }}">ComicInfo</button>
-          <button type="button" class="file-del-btn vol-del-one" title="Delete from disk…"
-                  data-id="{{ v.id }}" data-name="{{ v.display_path|e }}" aria-label="Delete volume file">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
-          </button>
+          <div class="file-row-actions shrink-0 flex items-center gap-1.5">
+            <span style="color:var(--text-dim)">{{ v.display_size }}</span>
+            <button type="button" class="detail-act-btn detail-act-btn--muted text-[11px] px-2 py-1 comicinfo-open"
+                    data-kind="volume" data-id="{{ v.id }}" data-name="{{ v.display_path|e }}">ComicInfo</button>
+            <button type="button" class="file-del-btn vol-del-one" title="Delete from disk…"
+                    data-id="{{ v.id }}" data-name="{{ v.display_path|e }}" aria-label="Delete volume file">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+            </button>
+          </div>
         </div>
         {% endfor %}
       </div>
@@ -285,17 +298,19 @@
       </div>
       <div class="space-y-0.5 text-xs font-mono max-h-96 overflow-y-auto">
         {% for c in chapters %}
-        <div class="flex items-center gap-2 py-1.5 pr-1 rounded-lg hover:bg-opacity-50" style="color:var(--text-muted)">
+        <div class="file-row flex items-center gap-2 py-1.5 pr-1 rounded-lg hover:bg-opacity-50" style="color:var(--text-muted)">
           <input type="checkbox" class="ch-file-cb file-row-cb rounded border shrink-0" style="border-color:var(--border-mid)"
                  data-id="{{ c.id }}" data-name="{{ c.display_path|e }}">
           <span class="truncate flex-1 min-w-0">{{ c.display_path }}</span>
-          <span class="shrink-0" style="color:var(--text-dim)">{{ c.display_size }}</span>
-          <button type="button" class="detail-act-btn detail-act-btn--muted text-[11px] px-2 py-1 comicinfo-open"
-                  data-kind="chapter" data-id="{{ c.id }}" data-name="{{ c.display_path|e }}">ComicInfo</button>
-          <button type="button" class="file-del-btn ch-del-one" title="Delete from disk…"
-                  data-id="{{ c.id }}" data-name="{{ c.display_path|e }}" aria-label="Delete chapter file">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
-          </button>
+          <div class="file-row-actions shrink-0 flex items-center gap-1.5">
+            <span style="color:var(--text-dim)">{{ c.display_size }}</span>
+            <button type="button" class="detail-act-btn detail-act-btn--muted text-[11px] px-2 py-1 comicinfo-open"
+                    data-kind="chapter" data-id="{{ c.id }}" data-name="{{ c.display_path|e }}">ComicInfo</button>
+            <button type="button" class="file-del-btn ch-del-one" title="Delete from disk…"
+                    data-id="{{ c.id }}" data-name="{{ c.display_path|e }}" aria-label="Delete chapter file">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/></svg>
+            </button>
+          </div>
         </div>
         {% endfor %}
       </div>
