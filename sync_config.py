@@ -1,5 +1,7 @@
 import os
 import re
+import time
+from file_permissions import sanitize_file_permission_mask
 
 # Settings are stored in SQLite (``app_config`` table under ``DATA_DIR/db/``).
 # ``CONFIG_PATH`` env still selects a legacy ``settings.json`` for one-time import
@@ -13,11 +15,14 @@ DEFAULTS = {
     "volume_naming":   "[%1 %2] %3 vol.%4",
     "download_delay":  1.0,
     "sync_cron":       "0 */6 * * *",
-    "merge_volumes":   True,
+    "merge_volumes":   False,
     "auto_covers":     False,
     "auto_scan":       False,
     "kavita_url":      "",
     "kavita_api_key":  "",
+    "file_permission_mask": "664",
+    "webhook_url":     "",
+    "webhook_platform": "generic",  # generic | discord | ntfy
 }
 
 
@@ -51,7 +56,17 @@ def sanitize_sync_cron(expr: str | None) -> str:
     return " ".join(parts)
 
 
+_settings_cache: dict | None = None
+_settings_cache_at: float = 0.0
+_SETTINGS_CACHE_TTL = 5.0
+
+
 def load_settings() -> dict:
+    global _settings_cache, _settings_cache_at
+    now = time.monotonic()
+    if _settings_cache is not None and (now - _settings_cache_at) < _SETTINGS_CACHE_TTL:
+        return _settings_cache
+
     from db import init_db, read_stored_settings
 
     conn = init_db()
@@ -65,10 +80,15 @@ def load_settings() -> dict:
     out.pop("merge_volume_naming", None)
     out["volume_naming"] = sanitize_volume_naming(out.get("volume_naming"))
     out["sync_cron"] = sanitize_sync_cron(out.get("sync_cron"))
+    out["file_permission_mask"] = sanitize_file_permission_mask(out.get("file_permission_mask"))
+    _settings_cache = out
+    _settings_cache_at = now
     return out
 
 
 def save_settings(data: dict):
+    global _settings_cache_at
+    _settings_cache_at = 0.0  # invalidate cache
     data = dict(data)
     data.pop("volume_mode", None)
     data.pop("merge_volume_naming", None)
@@ -84,6 +104,7 @@ def save_settings(data: dict):
         merged.pop("merge_volume_naming", None)
         merged["volume_naming"] = sanitize_volume_naming(merged.get("volume_naming"))
         merged["sync_cron"] = sanitize_sync_cron(merged.get("sync_cron"))
+        merged["file_permission_mask"] = sanitize_file_permission_mask(merged.get("file_permission_mask"))
         write_stored_settings(conn, merged)
     finally:
         conn.close()

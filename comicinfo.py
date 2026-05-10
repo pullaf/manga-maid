@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
+from file_permissions import apply_file_permission_mask
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif"}
 
@@ -108,7 +109,12 @@ def count_pages(cbz_path: str) -> int:
         return 0
 
 
-def inject_comicinfo(cbz_path: str, xml_content: str, overwrite: bool = False) -> bool:
+def inject_comicinfo(
+    cbz_path: str,
+    xml_content: str,
+    overwrite: bool = False,
+    file_permission_mask: str | None = None,
+) -> bool:
     """Add or replace ComicInfo.xml inside a CBZ. Returns True on success."""
     if not os.path.exists(cbz_path):
         return False
@@ -133,6 +139,7 @@ def inject_comicinfo(cbz_path: str, xml_content: str, overwrite: bool = False) -
                 zout.writestr("ComicInfo.xml", xml_content.encode("utf-8"))
 
         shutil.move(tmp_path, cbz_path)
+        apply_file_permission_mask(cbz_path, file_permission_mask)
         return True
     except Exception:
         if tmp_path and os.path.exists(tmp_path):
@@ -145,6 +152,7 @@ def merge_chapters_into_volume(
     output_path: str,
     comicinfo_xml: str = None,
     cover_image_bytes: bytes = None,
+    file_permission_mask: str | None = None,
 ) -> bool:
     """Merge sorted chapter CBZs into a single volume CBZ. Returns True on success.
 
@@ -177,6 +185,7 @@ def merge_chapters_into_volume(
                 zout.writestr("ComicInfo.xml", comicinfo_xml.encode("utf-8"))
 
         shutil.move(tmp_path, output_path)
+        apply_file_permission_mask(output_path, file_permission_mask)
         return True
     except Exception:
         if tmp_path and os.path.exists(tmp_path):

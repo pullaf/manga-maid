@@ -2,8 +2,50 @@
 {% block content %}
 <div class="mb-8">
   <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Jobs</h1>
-  <p class="text-sm mt-1" style="color:var(--text-muted)">Running, queued, and recent sync jobs</p>
+  <p class="text-sm mt-1" style="color:var(--text-muted)">Launch maintenance jobs and watch running, queued, and recent activity</p>
 </div>
+
+{% if no_root_folders %}
+<div class="rounded-xl border p-4 mb-4" style="background:var(--surface);border-color:rgba(251,191,36,.3)">
+  <p class="text-sm font-semibold" style="color:#fbbf24;font-family:'Syne',sans-serif">Launchboard disabled</p>
+  <p class="text-xs mt-1" style="color:var(--text-muted)">Configure at least one root folder in Settings to run sync or disk reconcile. You can still browse the job queue and logs below.</p>
+  <a href="/settings" class="inline-block text-xs font-semibold mt-3 px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition-colors" style="font-family:'Syne',sans-serif">Settings →</a>
+</div>
+{% else %}
+<div class="rounded-xl border p-4 mb-4" style="background:var(--surface);border-color:var(--border)">
+  <div class="flex items-center justify-between gap-2 mb-3">
+    <h2 class="text-sm font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">Launchboard</h2>
+    <span class="text-xs" style="color:var(--text-dim)">Quick actions enqueue jobs in the shared queue.</span>
+  </div>
+  <div class="grid gap-3 md:grid-cols-2">
+    <div class="rounded-lg border p-3" style="background:var(--surface-alt);border-color:var(--border-mid)">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div class="text-sm font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">Sync All Series</div>
+          <p class="text-xs mt-1" style="color:var(--text-dim)">Runs MangaDex sync across all linked series and applies post-sync routines.</p>
+        </div>
+        <button type="button" data-launch-kind="sync-all" onclick="launchJob(this, '/api/jobs/sync-all')"
+                class="bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold px-3 py-2 rounded-lg transition-colors">
+          Launch
+        </button>
+      </div>
+    </div>
+    <div class="rounded-lg border p-3" style="background:var(--surface-alt);border-color:var(--border-mid)">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div class="text-sm font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">Disk Reconcile</div>
+          <p class="text-xs mt-1" style="color:var(--text-dim)">Rescans root folders, discovers local series, and refreshes tracked files in the DB.</p>
+        </div>
+        <button type="button" data-launch-kind="reconcile-disk" onclick="launchJob(this, '/api/jobs/reconcile-disk')"
+                class="text-xs font-semibold px-3 py-2 rounded-lg border transition-colors"
+                style="border-color:var(--border-hi);color:var(--text-muted)">
+          Launch
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 
 <div class="rounded-xl border p-3 mb-4 flex flex-wrap items-center gap-2.5"
      style="background:var(--surface);border-color:var(--border)">
@@ -35,6 +77,25 @@ let jobStream = null;
 let latestSeq = 0;
 let jobsAutoScroll = true;
 let jobsFilter = '';
+let statusHintShownForJob = {};
+
+async function launchJob(btn, endpoint) {
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Launching...';
+  try {
+    const resp = await fetch(endpoint, { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok || !data.ok || !data.job) throw new Error(data.error || 'Could not enqueue job');
+    await refreshJobsList();
+    selectJob(data.job.id);
+  } catch (e) {
+    appendConsoleLine('[ui] launch error: ' + String(e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
 
 function statusBadge(status) {
   if (status === 'running') return '<span class="text-[11px] px-1.5 py-0.5 rounded" style="background:rgba(52,211,153,.14);color:#34d399">running</span>';
@@ -129,6 +190,7 @@ function appendConsoleLine(text) {
 function selectJob(jobId) {
   selectedJobId = jobId;
   latestSeq = 0;
+  statusHintShownForJob[jobId] = false;
   if (jobStream) {
     jobStream.close();
     jobStream = null;
@@ -147,6 +209,10 @@ function selectJob(jobId) {
         document.getElementById('job-console-status').textContent = 'Live';
       } else if (payload.type === 'status') {
         document.getElementById('job-console-status').textContent = payload.status || 'done';
+        if ((payload.status === 'queued' || payload.status === 'running') && !statusHintShownForJob[jobId]) {
+          appendConsoleLine('[job] status: ' + payload.status + ' (waiting for output)');
+          statusHintShownForJob[jobId] = true;
+        }
         if (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled' || payload.status === 'missing') {
           jobStream.close();
           jobStream = null;

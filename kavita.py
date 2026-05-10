@@ -3,6 +3,11 @@ import json
 from urllib import error as urlerror
 from urllib import parse, request as urlrequest
 
+KAVITA_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
 
 class KavitaClient:
     def __init__(self, base_url: str, api_key: str):
@@ -17,6 +22,7 @@ class KavitaClient:
         })
         req = urlrequest.Request(url, method="POST")
         req.add_header("Content-Length", "0")
+        req.add_header("User-Agent", KAVITA_USER_AGENT)
         with urlrequest.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read())
         self._token = data["token"]
@@ -29,6 +35,7 @@ class KavitaClient:
             url += "?" + parse.urlencode(params)
         data = json.dumps(body).encode() if body is not None else None
         req = urlrequest.Request(url, data=data, method=method)
+        req.add_header("User-Agent", KAVITA_USER_AGENT)
         req.add_header("Authorization", f"Bearer {self._token}")
         if data:
             req.add_header("Content-Type", "application/json")

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """manga-sync — download new chapters, merge volumes, inject ComicInfo.xml."""
 
+import contextlib
 import importlib.util
+import json
 import math
 import os
 import re
@@ -51,6 +53,8 @@ from comicinfo import (                                 # noqa: E402
 )
 from sync_config import load_settings, sanitize_volume_naming  # noqa: E402
 from kavita import KavitaClient                        # noqa: E402
+from file_permissions import apply_file_permission_mask # noqa: E402
+from naming import apply_naming_template, floor_int_str # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +90,7 @@ def _api_get(path: str, params: dict) -> dict:
     url = f"{MDEX_BASE}{path}?" + parse.urlencode(params, doseq=True)
     try:
         with request.urlopen(url, timeout=30) as resp:
-            return __import__("json").loads(resp.read())
+            return json.loads(resp.read())
     except urlerror.HTTPError as e:
         raise RuntimeError(f"HTTP {e.code} for {url}") from e
 
@@ -394,66 +398,6 @@ def _mdx_download(
 # Volume merging
 # ---------------------------------------------------------------------------
 
-def _apply_template(template: str, lang: str, group: str, title: str, vol_num,
-                    ch_range: str = "") -> str:
-    def _safe(s):
-        return re.sub(r'[<>:"/\\|?*]', "_", str(s or ""))
-
-    result = template
-    result = result.replace("%1", _safe(lang))
-    result = result.replace("%2", _safe(group))
-    result = result.replace("%3", _safe(title))
-    result = result.replace("%4", str(int(vol_num)) if vol_num is not None else "")
-    result = result.replace("%5", ch_range).replace("%6", "")
-    # Drop empty grouping wrappers left by missing placeholders like %2.
-    result = re.sub(r"\(\s*\)", "", result)
-    result = re.sub(r"\[\s*\]", "", result)
-    result = re.sub(r"\{\s*\}", "", result)
-    result = re.sub(r"\s+([)\]}])", r"\1", result)
-    result = re.sub(r"([(\[{])\s+", r"\1", result)
-    result = re.sub(r"\s{2,}", " ", result).strip()
-    return result
-
-
-def _apply_chapter_template(
-    template: str,
-    *,
-    lang: str,
-    group: str,
-    title: str,
-    vol_num,
-    chapter_num,
-    chapter_title: str | None,
-) -> str:
-    def _safe(s):
-        return re.sub(r'[<>:"/\\|?*]', "_", str(s or ""))
-
-    result = template or ""
-    result = result.replace("%1", _safe(lang))
-    result = result.replace("%2", _safe(group))
-    result = result.replace("%3", _safe(title))
-    result = result.replace("%4", str(int(vol_num)) if vol_num is not None else "")
-    result = result.replace("%5", _fmt_chapter_token(chapter_num) if chapter_num is not None else "")
-    result = result.replace("%6", _safe(chapter_title or ""))
-    # Drop empty grouping wrappers left by missing placeholders like %2 or %6.
-    result = re.sub(r"\(\s*\)", "", result)
-    result = re.sub(r"\[\s*\]", "", result)
-    result = re.sub(r"\{\s*\}", "", result)
-    result = re.sub(r"\s+([)\]}])", r"\1", result)
-    result = re.sub(r"([(\[{])\s+", r"\1", result)
-    result = re.sub(r"\s{2,}", " ", result).strip()
-    return result
-
-
-def _fmt_chapter_for_range(n) -> str:
-    return str(math.floor(float(n)))
-
-
-def _fmt_chapter_token(n) -> str:
-    num = float(n)
-    return str(int(num)) if num.is_integer() else str(num)
-
-
 def _volume_cbz_comicinfo_xml(
     *,
     series_title: str,
@@ -477,9 +421,9 @@ def _volume_cbz_comicinfo_xml(
     desc = (meta or {}).get("description")
     if chapter_lo is not None and chapter_hi is not None:
         ch_range = (
-            _fmt_chapter_for_range(chapter_lo)
+            floor_int_str(chapter_lo)
             if chapter_lo == chapter_hi
-            else f"{_fmt_chapter_for_range(chapter_lo)}-{_fmt_chapter_for_range(chapter_hi)}"
+            else f"{floor_int_str(chapter_lo)}-{floor_int_str(chapter_hi)}"
         )
         prefix = f"This volume contains chapters {ch_range}."
         desc = f"{prefix}\n\n{desc}" if desc else prefix
@@ -560,7 +504,7 @@ def normalize_volume_filenames_for_kavita(series_row: dict, conn) -> int:
     return n
 
 
-def refresh_volume_comicinfo_embeds(series_row: dict, conn) -> int:
+def refresh_volume_comicinfo_embeds(series_row: dict, conn, settings: dict | None = None) -> int:
     """Rewrite ComicInfo in volume CBZs (fixes Kavita showing Number == volume)."""
     series_id   = series_row["id"]
     series_path = series_row["path"]
@@ -573,6 +517,7 @@ def refresh_volume_comicinfo_embeds(series_row: dict, conn) -> int:
     series_title = (meta or {}).get("title") or os.path.basename(series_dir)
     label       = series_row.get("name", series_path)
 
+    file_permission_mask = (settings or {}).get("file_permission_mask")
     rows = conn.execute(
         "SELECT * FROM volumes WHERE series_id=? AND path IS NOT NULL",
         (series_id,),
@@ -609,7 +554,12 @@ def refresh_volume_comicinfo_embeds(series_row: dict, conn) -> int:
             series_web=series_web,
             page_count=count_pages(cbz_path),
         )
-        if inject_comicinfo(cbz_path, xml, overwrite=True):
+        if inject_comicinfo(
+            cbz_path,
+            xml,
+            overwrite=True,
+            file_permission_mask=file_permission_mask,
+        ):
             mark_volume_comicinfo(conn, vol["id"])
             done += 1
     _log(f"[{label}] refreshed ComicInfo in {done} volume file(s) (Kavita-friendly)")
@@ -662,8 +612,9 @@ def _merge_volume_batch(
         group_name = ch_rows[0].get("group_name") or preferred_group or ""
         # Never pass chapter span into the filename template (Kavita); span is
         # only in ComicInfo summary.
-        base_name  = _apply_template(volume_naming, language or "en",
-                                     group_name, series_title, vol_num, "")
+        base_name  = apply_naming_template(volume_naming, language=language or "en",
+                                          group=group_name, title=series_title,
+                                          volume_num=vol_num)
         out_name   = base_name if base_name.endswith(f".{file_format}") \
                      else f"{base_name}.{file_format}"
         out_path   = os.path.join(series_dir, out_name)
@@ -706,7 +657,13 @@ def _merge_volume_batch(
              f"({len(ch_paths)} ch) → {out_name}"
              + (" [+cover]" if cover_bytes else ""))
 
-        if merge_chapters_into_volume(ch_paths, out_path, xml, cover_bytes):
+        if merge_chapters_into_volume(
+            ch_paths,
+            out_path,
+            xml,
+            cover_bytes,
+            file_permission_mask=settings.get("file_permission_mask"),
+        ):
             rel_out  = os.path.relpath(out_path, MANGA_ROOT)
             vol_id   = vol_row["id"]
             mark_volume_merged(conn, vol_id, rel_out, os.path.getsize(out_path))
@@ -791,6 +748,7 @@ def _ensure_comicinfo_all(
     series_web: str | None = None,
     series_label: str | None = None,
     force_overwrite: bool = False,
+    file_permission_mask: str | None = None,
 ):
     ch_rows, vol_rows = get_files_missing_comicinfo(conn, series_id)
     if not ch_rows and not vol_rows:
@@ -853,7 +811,12 @@ def _ensure_comicinfo_all(
             page_count=count_pages(cbz_path),
             web=ch_web,
         )
-        if inject_comicinfo(cbz_path, xml, overwrite=True):
+        if inject_comicinfo(
+            cbz_path,
+            xml,
+            overwrite=True,
+            file_permission_mask=file_permission_mask,
+        ):
             mark_chapter_comicinfo(conn, ch["id"])
             injected_ch += 1
             _log(f"[{label}] ComicInfo {idx}/{total_ch}: {os.path.basename(cbz_path)}")
@@ -887,7 +850,12 @@ def _ensure_comicinfo_all(
             series_web=series_web,
             page_count=count_pages(cbz_path),
         )
-        if inject_comicinfo(cbz_path, xml, overwrite=True):
+        if inject_comicinfo(
+            cbz_path,
+            xml,
+            overwrite=True,
+            file_permission_mask=file_permission_mask,
+        ):
             mark_volume_comicinfo(conn, vol["id"])
             injected_vol += 1
             _log(f"[{label}] ComicInfo vol {idx}/{total_vol}: {os.path.basename(cbz_path)}")
@@ -907,10 +875,6 @@ def _run_fix_pass(series_dir: str):
 
 def _kavita_set_covers(client: KavitaClient, series_dir: str, manga_id: str):
     series_name = os.path.basename(series_dir)
-    try:
-        from manga_sync_helpers import fetch_volume_covers  # type: ignore
-    except ImportError:
-        pass
     try:
         data = _api_get("/cover", {
             "manga[]": manga_id, "limit": 100, "order[volume]": "asc",
@@ -963,6 +927,7 @@ def _sync_one_series(
     source_name = series_row.get("source_name") or "mangadex"
     name        = series_row.get("name") or os.path.basename(series_path)
     series_web  = f"https://mangadex.org/title/{manga_id}" if manga_id else None
+    file_permission_mask = settings.get("file_permission_mask")
     _log(f"[{name}] checking for updates…")
 
     # Always reconcile disk state first
@@ -980,9 +945,22 @@ def _sync_one_series(
         _ensure_comicinfo_all(
             series_id, series_dir, conn, meta, language,
             series_web=series_web, series_label=name,
+            file_permission_mask=file_permission_mask,
         )
         update_source_sync_time(conn, series_id, source_name)
-        return False
+        return 0
+
+    # Completed/cancelled series: no new chapters ever; skip feed polling.
+    series_status = (meta.get("status") or "").lower()
+    if series_status in ("completed", "cancelled"):
+        _log(f"[{name}] series is {series_status} — skipping feed")
+        _ensure_comicinfo_all(
+            series_id, series_dir, conn, meta, language,
+            series_web=series_web, series_label=name,
+            file_permission_mask=file_permission_mask,
+        )
+        update_source_sync_time(conn, series_id, source_name)
+        return 0
 
     # Sync chapter feed → DB
     try:
@@ -997,7 +975,8 @@ def _sync_one_series(
         _log(f"[{name}] up-to-date")
         _ensure_comicinfo_all(
             series_id, series_dir, conn, meta, language,
-            series_web=series_web, series_label=name
+            series_web=series_web, series_label=name,
+            file_permission_mask=file_permission_mask,
         )
         return False
 
@@ -1029,14 +1008,14 @@ def _sync_one_series(
                     ).fetchone()
                     if vr:
                         vol_num = vr["volume_num"]
-                desired_stem = _apply_chapter_template(
+                desired_stem = apply_naming_template(
                     ch_naming,
-                    lang=language,
+                    language=language,
                     group=ch_row.get("group_name") or "",
                     title=name,
-                    vol_num=vol_num,
+                    volume_num=vol_num,
                     chapter_num=ch_row["chapter_num"],
-                    chapter_title=ch_row.get("title"),
+                    chapter_title=ch_row.get("title") or "",
                 )
                 if desired_stem:
                     ext = os.path.splitext(fpath)[1]
@@ -1053,6 +1032,7 @@ def _sync_one_series(
                                 os.remove(fpath)
                             fpath = desired_path
                 rel = os.path.relpath(fpath, MANGA_ROOT)
+                apply_file_permission_mask(fpath, file_permission_mask)
                 mark_chapter_downloaded(conn, ch_row["id"], rel,
                                         os.path.getsize(fpath))
                 downloaded += 1
@@ -1063,10 +1043,9 @@ def _sync_one_series(
 
         time.sleep(delay)
 
-    merge_ok = bool(settings.get("merge_volumes", True))
-    ov = series_row.get("merge_volumes_override")
-    if ov is not None:
-        merge_ok = bool(ov)
+    # Legacy UI-level "compact into volume" toggles are intentionally ignored.
+    # Volume merge should only run via explicit compact mode CLI path.
+    merge_ok = False
 
     # Filename cleanup (skip series excluded from Fix Files / manual filenames)
     if not series_row.get("exclude_from_fix"):
@@ -1082,7 +1061,8 @@ def _sync_one_series(
     # ComicInfo injection for all remaining files
     _ensure_comicinfo_all(
         series_id, series_dir, conn, meta, language,
-        series_web=series_web, series_label=name
+        series_web=series_web, series_label=name,
+        file_permission_mask=file_permission_mask,
     )
 
     # Kavita covers
@@ -1091,12 +1071,35 @@ def _sync_one_series(
 
     update_source_sync_time(conn, series_id, source_name)
     _log(f"[{name}] done — {downloaded}/{len(to_download)} downloaded")
-    return downloaded > 0
+    return downloaded
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+def _send_webhook(url: str, platform: str, items: list[tuple[str, int]]):
+    lines = [
+        f"• {name} — {count} new chapter{'s' if count != 1 else ''}"
+        for name, count in items
+    ]
+    text = "New chapters downloaded:\n" + "\n".join(lines)
+    try:
+        if platform == "ntfy":
+            body = text.encode()
+            req = request.Request(url, data=body, method="POST")
+            req.add_header("Content-Type", "text/plain")
+        else:  # discord, generic, or anything else
+            body = json.dumps({"content": text}).encode()
+            req = request.Request(url, data=body, method="POST")
+            req.add_header("Content-Type", "application/json")
+        req.add_header("User-Agent", "manga-sync/1.0")
+        with request.urlopen(req, timeout=10):
+            pass
+        _log("[webhook] notification sent")
+    except Exception as e:
+        _log(f"[webhook] failed: {e}")
+
 
 def main(
     series_filter: str = None,
@@ -1105,18 +1108,19 @@ def main(
     refresh_volume_comicinfo: bool = False,
     normalize_volume_filenames: bool = False,
     regenerate_comicinfo: bool = False,
+    notify: bool = False,
 ):
     _rotate_log()
 
     conn = init_db(DATA_DIR)
     migrated = migrate_json_configs(MANGA_ROOT, conn)
-    added    = scan_disk_series(MANGA_ROOT, conn)
+    settings = load_settings()
+    roots = [rf for rf in (settings.get("root_folders") or []) if rf is not None]
+    added = scan_disk_series(MANGA_ROOT, conn, allowed_roots=roots)
     if migrated:
         _log(f"[startup] migrated {migrated} .mangadex.json config(s) to DB")
     if added:
         _log(f"[startup] catalogued {added} unlinked series from disk")
-
-    settings = load_settings()
 
     kavita_client = None
     kurl = settings.get("kavita_url", "").strip()
@@ -1129,6 +1133,13 @@ def main(
         series_list = [s for s in [get_series_by_path(conn, rel_path)] if s]
     else:
         series_list = get_all_series(conn)
+        if roots:
+            filtered: list[dict] = []
+            for s in series_list:
+                p = (s.get("path") or "").replace("\\", "/").strip()
+                if any(p == rf or p.startswith(rf + "/") for rf in roots):
+                    filtered.append(s)
+            series_list = filtered
 
     if covers_only:
         for s in series_list:
@@ -1180,7 +1191,7 @@ def main(
             _log(f"[comicinfo-refresh] unknown series: {rel_path}")
             conn.close()
             return
-        refresh_volume_comicinfo_embeds(row, conn)
+        refresh_volume_comicinfo_embeds(row, conn, settings=settings)
         conn.close()
         return
 
@@ -1245,6 +1256,7 @@ def main(
             series_web=(f"https://mangadex.org/title/{row['source_id']}" if row.get("source_id") else None),
             series_label=row.get("name", row["path"]),
             force_overwrite=True,
+            file_permission_mask=settings.get("file_permission_mask"),
         )
         _log("[comicinfo-regenerate] done")
         conn.close()
@@ -1252,6 +1264,7 @@ def main(
 
     any_downloaded = False
     processed = 0
+    downloads: list[tuple[str, int]] = []
 
     for series_row in series_list:
         processed += 1
@@ -1269,12 +1282,16 @@ def main(
                 series_row.get("language", "en"),
                 series_web=None,
                 series_label=series_name,
+                file_permission_mask=settings.get("file_permission_mask"),
             )
             continue
 
         try:
-            if _sync_one_series(series_row, conn, settings, kavita_client):
+            count = _sync_one_series(series_row, conn, settings, kavita_client)
+            if count:
                 any_downloaded = True
+                name = series_row.get("name") or os.path.basename(series_row["path"])
+                downloads.append((name, count))
         except Exception as e:
             _log(f"[{series_row.get('name', series_row['path'])}] error: {e}")
 
@@ -1284,6 +1301,11 @@ def main(
             _log("[kavita] library scan triggered")
         except Exception as e:
             _log(f"[kavita] scan failed: {e}")
+
+    if notify and downloads:
+        wurl = settings.get("webhook_url", "").strip()
+        if wurl:
+            _send_webhook(wurl, settings.get("webhook_platform", "generic"), downloads)
 
     _log(f"[sync] completed — processed {processed} series")
     conn.close()
@@ -1310,6 +1332,11 @@ if __name__ == "__main__":
         help="Strip ch.X-Y suffix from merged volume stems (requires --series)",
     )
     parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="Send webhook notification if new chapters were downloaded",
+    )
+    parser.add_argument(
         "--regenerate-comicinfo",
         action="store_true",
         help="Force rewrite ComicInfo.xml for all chapter/volume files in a series (requires --series)",
@@ -1322,4 +1349,5 @@ if __name__ == "__main__":
         refresh_volume_comicinfo=args.refresh_volume_comicinfo,
         normalize_volume_filenames=args.normalize_volume_filenames,
         regenerate_comicinfo=args.regenerate_comicinfo,
+        notify=args.notify,
     )
