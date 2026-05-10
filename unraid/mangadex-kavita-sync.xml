@@ -1,0 +1,88 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>MangaDex-Kavita-Sync</Name>
+  <Repository>ghcr.io/pullaf/mangadex-kavita-sync:latest</Repository>
+  <Registry>https://ghcr.io</Registry>
+  <Network>bridge</Network>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/pullaf/mangadex-kavita-sync/issues</Support>
+  <Project>https://github.com/pullaf/mangadex-kavita-sync</Project>
+  <Overview>Sync MangaDex manga directly into your Kavita library. Automatically downloads new chapters on a schedule, writes ComicInfo.xml metadata, and provides a web UI for managing your sync list and settings.</Overview>
+  <Category>Downloaders: MediaApp:Books</Category>
+  <WebUI>http://[IP]:[PORT:4649]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/pullaf/mangadex-kavita-sync/main/unraid/mangadex-kavita-sync.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/pullaf/mangadex-kavita-sync/main/unraid/icon.png</Icon>
+  <ExtraParams/>
+  <Description>Sync MangaDex manga directly into your Kavita library. Automatically downloads new chapters on a schedule, writes ComicInfo.xml metadata, and provides a web UI for managing your sync list and settings.</Description>
+
+  <Config Name="Web UI Port"
+          Target="4649"
+          Default="4649"
+          Mode="tcp"
+          Description="Port for the web interface."
+          Type="Port"
+          Display="always"
+          Required="true"
+          Mask="false">4649</Config>
+
+  <Config Name="Manga Path"
+          Target="/manga"
+          Default="/mnt/user/Manga"
+          Mode="rw"
+          Description="Path to your manga library folder. Must be writable — this is where chapters are downloaded."
+          Type="Path"
+          Display="always"
+          Required="true"
+          Mask="false">/mnt/user/Manga</Config>
+
+  <Config Name="Data Path"
+          Target="/data"
+          Default="/mnt/user/appdata/mangadex-kavita-sync"
+          Mode="rw"
+          Description="Persistent storage for config, database, and logs."
+          Type="Path"
+          Display="always"
+          Required="true"
+          Mask="false">/mnt/user/appdata/mangadex-kavita-sync</Config>
+
+  <Config Name="PUID"
+          Target="PUID"
+          Default="99"
+          Mode=""
+          Description="User ID the container runs as. Match this to your Kavita/media user to avoid permission issues. Unraid default is 99 (nobody)."
+          Type="Variable"
+          Display="always"
+          Required="false"
+          Mask="false">99</Config>
+
+  <Config Name="PGID"
+          Target="PGID"
+          Default="100"
+          Mode=""
+          Description="Group ID the container runs as. Unraid default is 100 (users)."
+          Type="Variable"
+          Display="always"
+          Required="false"
+          Mask="false">100</Config>
+
+  <Config Name="Timezone"
+          Target="TZ"
+          Default="America/New_York"
+          Mode=""
+          Description="Your local timezone (e.g. Europe/London, Asia/Tokyo). Used for sync schedule display."
+          Type="Variable"
+          Display="always"
+          Required="false"
+          Mask="false">America/New_York</Config>
+
+  <Config Name="Default Language"
+          Target="DEFAULT_LANGUAGE"
+          Default="en"
+          Mode=""
+          Description="Preferred chapter language code (e.g. en, it, fr, ja-ro). Used when adding new series."
+          Type="Variable"
+          Display="always"
+          Required="false"
+          Mask="false">en</Config>
+</Container>
