@@ -42,15 +42,19 @@ def _bucket(n: int) -> str:
 def collect_and_send() -> None:
     if not _ENDPOINT:
         return
-    if os.environ.get("TELEMETRY", "true").lower() in ("false", "0", "no"):
-        return
     try:
         import db as _db
-        from sync_config import load_settings
+        from sync_config import load_settings, save_settings
+
+        env_disabled = os.environ.get("TELEMETRY", "true").lower() in ("false", "0", "no")
 
         conn = _db.init_db()
         try:
             settings = load_settings()
+            if env_disabled:
+                if settings.get("telemetry_enabled", True):
+                    save_settings({"telemetry_enabled": False})
+                return
             if not settings.get("telemetry_enabled", True):
                 return
             series_count = conn.execute("SELECT COUNT(*) FROM series").fetchone()[0]
