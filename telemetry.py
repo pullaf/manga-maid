@@ -79,7 +79,7 @@ def collect_and_send() -> None:
         req = urlrequest.Request(
             _ENDPOINT,
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "User-Agent": f"manga-sync/{APP_VERSION}"},
             method="POST",
         )
         with urlrequest.urlopen(req, timeout=5):
