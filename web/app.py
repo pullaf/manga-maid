@@ -126,6 +126,8 @@ async def _lifespan(app: FastAPI):
     _job_worker_stop.clear()
     with contextlib.suppress(Exception):
         _enqueue_reconcile_job("startup")
+    import telemetry
+    asyncio.create_task(loop.run_in_executor(None, telemetry.collect_and_send))
     global _job_worker_task, _reconcile_scheduler_task
     _job_worker_task = asyncio.create_task(_jobs_worker_loop())
     _reconcile_scheduler_task = asyncio.create_task(_reconcile_scheduler_loop())
@@ -148,6 +150,7 @@ async def _lifespan(app: FastAPI):
 app = FastAPI(title="Manga Maid", lifespan=_lifespan)
 templates = Jinja2Templates(directory=os.path.join(_WEB_DIR, "templates"))
 templates.env.filters["urlencode"] = quote_plus
+templates.env.globals["APP_VERSION"] = os.environ.get("APP_VERSION", "dev")
 
 _sync_running = False
 _cover_cache: dict[str, bytes] = {}

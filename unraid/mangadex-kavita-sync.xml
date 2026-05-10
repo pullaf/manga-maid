@@ -85,4 +85,14 @@
           Display="always"
           Required="false"
           Mask="false">en</Config>
+
+  <Config Name="Platform"
+          Target="PLATFORM"
+          Default="unraid"
+          Mode=""
+          Description=""
+          Type="Variable"
+          Display="never"
+          Required="false"
+          Mask="false">unraid</Config>
 </Container>
