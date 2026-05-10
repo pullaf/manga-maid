@@ -73,19 +73,17 @@ def _series_language_choices(
     return rows
 
 
-def _pick_default_series_language(available: list[str]) -> str:
-    """Bias toward English when MangaDex offers it.
+_DEFAULT_LANGUAGE = os.environ.get("DEFAULT_LANGUAGE", "en").strip().lower() or "en"
 
-    The previous default — ``available_langs[0]`` — picked whatever order
-    MangaDex returned, which is *not* a meaningful preference and is how
-    English libraries ended up tagged with ``vi`` after a one-click link.
-    """
+
+def _pick_default_series_language(available: list[str]) -> str:
+    """Prefer DEFAULT_LANGUAGE env var; fall back to first available, then 'en'."""
     norm = [(a or "").strip().lower() for a in (available or []) if a]
-    if "en" in norm:
-        return "en"
-    if norm:
-        return norm[0]
-    return "en"
+    if not norm:
+        return _DEFAULT_LANGUAGE
+    if _DEFAULT_LANGUAGE in norm:
+        return _DEFAULT_LANGUAGE
+    return norm[0]
 
 _WEB_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_WEB_DIR)

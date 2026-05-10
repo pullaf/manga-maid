@@ -160,7 +160,6 @@
       {% set toggles = [
         ("auto_scan", settings.auto_scan, "Auto library scan", "Trigger a Kavita library scan after every sync"),
         ("auto_covers", settings.auto_covers, "Auto set covers", "Fetch volume covers from MangaDex and push them to Kavita"),
-        ("telemetry_enabled", settings.telemetry_enabled, "Anonymous usage stats", "Send anonymous stats on startup (instance count, languages, features used). No personal data or IPs stored."),
       ] %}
       {% for name, value, label, desc in toggles %}
       <label class="flex items-center justify-between">
@@ -242,6 +241,30 @@
            class="text-xs rounded-lg p-3 overflow-x-auto leading-relaxed"
            style="background:var(--surface-alt);border:1px solid var(--border);color:var(--text-dim);font-family:ui-monospace,monospace;white-space:pre-wrap;word-break:break-all">…</pre>
     </div>
+  </div>
+
+  <!-- Privacy -->
+  <div class="rounded-xl border p-6 space-y-4" style="background:var(--surface);border-color:var(--border)">
+    <div>
+      <h2 class="font-semibold text-sm" style="font-family:'Syne',sans-serif;color:var(--text)">Privacy</h2>
+      <p class="text-xs mt-1" style="color:var(--text-dim)">No personal data or IPs are ever stored.</p>
+    </div>
+    <label class="flex items-center justify-between">
+      <div>
+        <span class="text-sm font-medium" style="color:var(--text)">Anonymous usage stats</span>
+        <p class="text-xs mt-0.5" style="color:var(--text-dim)">Send anonymous stats on startup: instance count, languages, and which features are in use.</p>
+      </div>
+      <button type="button" onclick="toggleSwitch(this)"
+              data-name="telemetry_enabled"
+              data-on="{{ 'true' if settings.telemetry_enabled else 'false' }}"
+              class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors shrink-0 ml-3"
+              style="{{ 'background:var(--accent)' if settings.telemetry_enabled else 'background:var(--surface-alt)' }}">
+        <span class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform
+                     {{ 'translate-x-6' if settings.telemetry_enabled else 'translate-x-1' }}"></span>
+      </button>
+      <input type="hidden" name="telemetry_enabled" id="input_telemetry_enabled"
+             value="{{ 'true' if settings.telemetry_enabled else 'false' }}">
+    </label>
   </div>
 
   <button type="submit"

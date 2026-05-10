@@ -1,6 +1,9 @@
 services:
   manga-sync:
-    build: .
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
     image: mangadex-kavita-sync:local
     environment:
       SYNC_CRON: "0 */6 * * *"   # every 6 hours — standard cron syntax
