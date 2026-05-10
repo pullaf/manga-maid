@@ -51,6 +51,8 @@ def collect_and_send() -> None:
         conn = _db.init_db()
         try:
             settings = load_settings()
+            if not settings.get("telemetry_enabled", True):
+                return
             series_count = conn.execute("SELECT COUNT(*) FROM series").fetchone()[0]
             langs = [
                 r[0] for r in conn.execute(

@@ -23,6 +23,7 @@ DEFAULTS = {
     "file_permission_mask": "664",
     "webhook_url":     "",
     "webhook_platform": "generic",  # generic | discord | ntfy
+    "telemetry_enabled": True,
 }
 
 

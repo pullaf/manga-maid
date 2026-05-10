@@ -160,6 +160,7 @@
       {% set toggles = [
         ("auto_scan", settings.auto_scan, "Auto library scan", "Trigger a Kavita library scan after every sync"),
         ("auto_covers", settings.auto_covers, "Auto set covers", "Fetch volume covers from MangaDex and push them to Kavita"),
+        ("telemetry_enabled", settings.telemetry_enabled, "Anonymous usage stats", "Send anonymous stats on startup (instance count, languages, features used). No personal data or IPs stored."),
       ] %}
       {% for name, value, label, desc in toggles %}
       <label class="flex items-center justify-between">
