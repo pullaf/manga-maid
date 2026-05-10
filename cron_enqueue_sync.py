@@ -30,7 +30,7 @@ def main() -> int:
         conn,
         job_type="sync_all",
         queue_key="default",
-        payload={},
+        payload={"reason": "scheduled"},
     )
     print(f"[cron] enqueued sync_all job #{job_id}")
     conn.close()

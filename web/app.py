@@ -258,6 +258,8 @@ def _job_display_name(job: dict) -> str:
 def _job_payload_argv(job: dict) -> list[str] | None:
     payload = job.get("payload") or {}
     if job.get("job_type") == JOB_TYPE_SYNC_ALL:
+        if payload.get("reason") == "scheduled":
+            return ["--notify"]
         return []
     if job.get("job_type") == JOB_TYPE_SYNC_SERIES:
         series_path = payload.get("series_path") or job.get("series_path_snapshot")
@@ -1121,6 +1123,42 @@ async def save_settings_endpoint(
         with contextlib.suppress(Exception):
             _enqueue_reconcile_job("settings_root_folders_changed")
     return RedirectResponse("/settings", status_code=303)
+
+
+@app.post("/api/settings/test-webhook")
+async def test_webhook(request: Request):
+    body = await request.json()
+    url      = (body.get("webhook_url") or "").strip()
+    platform = body.get("webhook_platform") or "generic"
+    title    = body.get("title") or "My Manga Title"
+    count    = int(body.get("count") or 1)
+    if not url:
+        return JSONResponse({"ok": False, "error": "No webhook URL configured"})
+    ch = "chapter" if count == 1 else "chapters"
+    text = f"New chapters downloaded:\n• {title} — {count} new {ch}"
+    try:
+        from urllib import request as _urllib_request
+        import json as _json
+        if platform == "ntfy":
+            body_bytes = text.encode()
+            req = _urllib_request.Request(url, data=body_bytes, method="POST")
+            req.add_header("Content-Type", "text/plain")
+        else:
+            body_bytes = _json.dumps({"content": text}).encode()
+            req = _urllib_request.Request(url, data=body_bytes, method="POST")
+            req.add_header("Content-Type", "application/json")
+        req.add_header("User-Agent", "manga-sync/1.0")
+        with _urllib_request.urlopen(req, timeout=10):
+            pass
+        return JSONResponse({"ok": True, "error": None})
+    except Exception as e:
+        from urllib.error import HTTPError
+        if isinstance(e, HTTPError):
+            body = e.read(512).decode(errors="replace").strip()
+            msg = f"HTTP {e.code}: {body or e.reason}"
+        else:
+            msg = str(e)
+        return JSONResponse({"ok": False, "error": msg})
 
 
 @app.get("/api/settings/webhook-preview")
