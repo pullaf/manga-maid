@@ -42,10 +42,12 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.value }}"
           BASE="ghcr.io/pullaf/mangadex-kavita-sync"
-          if [[ "$VERSION" != "dev" ]]; then
-            echo "value=${BASE}:${VERSION},${BASE}:latest" >> "$GITHUB_OUTPUT"
-          else
+          if [[ "$VERSION" == "dev" ]]; then
             echo "value=${BASE}:dev" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" == *-* ]]; then
+            echo "value=${BASE}:${VERSION}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${BASE}:${VERSION},${BASE}:latest" >> "$GITHUB_OUTPUT"
           fi
 
       - uses: docker/login-action@v3
