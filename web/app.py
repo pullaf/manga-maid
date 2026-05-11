@@ -14,6 +14,7 @@ from urllib.parse import quote_plus
 
 from fastapi import FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
@@ -146,6 +147,7 @@ async def _lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Manga Maid", lifespan=_lifespan)
+app.mount("/static", StaticFiles(directory=os.path.join(_WEB_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(_WEB_DIR, "templates"))
 templates.env.filters["urlencode"] = quote_plus
 templates.env.globals["APP_VERSION"] = os.environ.get("APP_VERSION", "dev")
@@ -998,7 +1000,7 @@ async def series_details_page(request: Request, path: str):
         "SELECT COUNT(DISTINCT chapter_num) AS n FROM chapters WHERE series_id=?",
         (row["id"],),
     ).fetchone()["n"] or 0
-    source_volumes = row.get("config", {}).get("total_volumes") or row.get("volume_count") or 0
+    source_volumes = row.get("config", {}).get("total_volumes") or row.get("source_volume_count") or 0
     # Count volume coverage from both actual merged volume archives and chapter
     # files that are assigned to a MangaDex volume bucket.
     covered_volume_ids = {v["id"] for v in volumes}

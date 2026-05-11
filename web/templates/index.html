@@ -343,7 +343,7 @@
         {% if vols and chs %}<span style="color:var(--border)">·</span>{% endif %}
         {% if chs %}{{ chs }} ch{{ 's' if chs != 1 }}{% endif %}
         {% if not vols and not chs %}-{% endif %}
-        {% if s.config.get("status") == "completed" and s.config.get("total_volumes") and vols >= s.config.total_volumes %}<span class="badge-complete">complete</span>{% endif %}
+        {% if s.config.get("status") == "completed" and (vols or chs) %}<span class="badge-complete">complete</span>{% endif %}
       </div>
       <div class="card-actions">
         {% if s.linked %}
@@ -391,7 +391,7 @@
       {% else %}
       <span class="badge-local">LOCAL</span>
       {% endif %}
-      <span>{% set vols = s.volume_count or 0 %}{% set chs = s.chapter_count or 0 %}{% if vols %}{{ vols }} vol{{ 's' if vols != 1 }}{% endif %}{% if vols and chs %} · {% endif %}{% if chs %}{{ chs }} ch{{ 's' if chs != 1 }}{% endif %}{% if not vols and not chs %}-{% endif %}{% if s.config.get("status") == "completed" and s.config.get("total_volumes") and vols >= s.config.total_volumes %} <span class="badge-complete">complete</span>{% endif %}</span>
+      <span>{% set vols = s.volume_count or 0 %}{% set chs = s.chapter_count or 0 %}{% if vols %}{{ vols }} vol{{ 's' if vols != 1 }}{% endif %}{% if vols and chs %} · {% endif %}{% if chs %}{{ chs }} ch{{ 's' if chs != 1 }}{% endif %}{% if not vols and not chs %}-{% endif %}{% if s.config.get("status") == "completed" and (vols or chs) %} <span class="badge-complete">complete</span>{% endif %}</span>
     </div>
     <div class="list-actions">
       {% if s.linked %}

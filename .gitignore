@@ -6,3 +6,6 @@ __pycache__/
 .sync.log
 CLAUDE.md
 .cursor/
+stats.sh
+.wrangler/
+cf-worker/.wrangler/

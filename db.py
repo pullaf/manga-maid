@@ -550,12 +550,12 @@ def get_all_series(conn: sqlite3.Connection) -> list[dict]:
             sm.year, sm.status, sm.content_rating, sm.total_volumes, sm.cover_filename,
             (SELECT COUNT(*) FROM chapters c
              WHERE c.series_id = s.id AND c.path IS NOT NULL) AS chapter_count,
-            (SELECT MAX(c.chapter_num) FROM chapters c
-             WHERE c.series_id = s.id AND c.path IS NOT NULL) AS last_chapter,
-            (SELECT COUNT(*) FROM volumes v
-             WHERE v.series_id = s.id AND v.path IS NOT NULL) AS volume_count,
-            (SELECT MAX(v.volume_num) FROM volumes v
-             WHERE v.series_id = s.id AND v.path IS NOT NULL) AS last_volume
+            (SELECT COUNT(*) FROM (
+                SELECT id FROM volumes WHERE series_id = s.id AND path IS NOT NULL
+                UNION
+                SELECT volume_id FROM chapters
+                WHERE series_id = s.id AND path IS NOT NULL AND volume_id IS NOT NULL
+            )) AS volume_count
         FROM series s
         LEFT JOIN series_sources ss ON s.id = ss.series_id
             AND ss.priority = (SELECT MIN(priority) FROM series_sources WHERE series_id = s.id)
@@ -572,7 +572,6 @@ def get_all_series(conn: sqlite3.Connection) -> list[dict]:
         d["subfolder"] = parent if parent != "." else ""
         d["name"]      = os.path.basename(rel)
         d["linked"]    = bool(d.get("source_id"))
-        d["file_count"] = (d["chapter_count"] or 0) + (d["volume_count"] or 0)
         d["preferred_groups"] = preferred_groups_list_from_row(d)
         d["config"] = {
             "id":            d.get("source_id"),
@@ -598,7 +597,7 @@ def get_series_by_path(conn: sqlite3.Connection, path: str) -> dict | None:
                sm.cover_filename, sm.status, sm.total_volumes, sm.description,
                sm.tags, sm.authors, sm.artists, sm.year, sm.content_rating,
                (SELECT COUNT(*) FROM chapters c WHERE c.series_id = s.id) AS chapter_count,
-               (SELECT COUNT(*) FROM volumes v WHERE v.series_id = s.id) AS volume_count
+               (SELECT COUNT(*) FROM volumes v WHERE v.series_id = s.id) AS source_volume_count
         FROM series s
         LEFT JOIN series_sources ss ON s.id = ss.series_id
             AND ss.priority = (SELECT MIN(priority) FROM series_sources WHERE series_id = s.id)
