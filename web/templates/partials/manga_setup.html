@@ -4,6 +4,14 @@
   <input type="hidden" name="preferred_groups_json" id="preferred-groups-json" value="[]">
   <input type="hidden" name="language" id="language-hidden" value="{{ default_lang }}">
 
+  {% if existing_path %}
+  <div class="rounded-lg px-3 py-2.5 text-xs flex items-start gap-2"
+       style="background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.35);color:#f87171">
+    <span class="shrink-0 font-bold">!</span>
+    <span>Already in your library at <a href="/series/{{ existing_path }}" style="text-decoration:underline;color:#f87171">{{ existing_path }}</a>. Adding again will overwrite its settings.</span>
+  </div>
+  {% endif %}
+
   <!-- Manga header -->
   <div class="flex gap-4 pb-4" style="border-bottom:1px solid var(--border)">
     {% if cover_url %}

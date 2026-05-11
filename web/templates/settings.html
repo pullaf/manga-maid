@@ -182,6 +182,49 @@
     </div>
   </div>
 
+  <!-- Suwayomi -->
+  <div class="rounded-xl border p-6 space-y-5" style="background:var(--surface);border-color:var(--border)">
+    <div>
+      <h2 class="font-semibold text-sm" style="font-family:'Syne',sans-serif;color:var(--text)">Suwayomi Integration</h2>
+      <p class="text-xs mt-1" style="color:var(--text-dim)">
+        Optional. Run <a href="https://github.com/Suwayomi/Suwayomi-Server" target="_blank" rel="noopener" style="color:var(--accent-light)">Suwayomi-Server</a>
+        to unlock 200+ Mihon/Tachiyomi extension sources. Enable sources in
+        <a href="/sources" style="color:var(--accent-light)">Sources</a>.
+      </p>
+    </div>
+
+    <div>
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Suwayomi URL</label>
+      <input type="url" name="suwayomi_url" value="{{ settings.suwayomi_url }}"
+             placeholder="http://suwayomi:4567"
+             id="suwayomi-url-input"
+             class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+    </div>
+
+    <div class="grid grid-cols-2 gap-3">
+      <div>
+        <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Username <span style="color:var(--text-dim)">(optional)</span></label>
+        <input type="text" name="suwayomi_username" value="{{ settings.suwayomi_username }}"
+               autocomplete="off"
+               class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+      </div>
+      <div>
+        <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Password <span style="color:var(--text-dim)">(optional)</span></label>
+        <div class="flex gap-2">
+          <input type="password" name="suwayomi_password" placeholder="leave blank to keep"
+                 id="suwayomi-pw-input"
+                 class="flex-1 border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+          <button type="button" onclick="testSuwayomi()"
+                  class="shrink-0 text-xs border rounded-lg px-3 py-2.5 transition-colors"
+                  style="border-color:var(--border-mid);color:var(--text-muted)">
+            Test
+          </button>
+        </div>
+      </div>
+    </div>
+    <p id="suwayomi-test-result" class="text-xs hidden"></p>
+  </div>
+
   <!-- Notifications -->
   <div class="rounded-xl border p-6 space-y-5" style="background:var(--surface);border-color:var(--border)">
     <div>
@@ -433,7 +476,7 @@ function webhookPreviewRender() {
   const block = document.getElementById('webhook-preview-block');
   if (!block || !_previewTitle) return;
   const ch = _previewCount === 1 ? 'chapter' : 'chapters';
-  const text = `New chapters downloaded:\n• ${_previewTitle} — ${_previewCount} new ${ch}`;
+  const text = `New chapters downloaded:\n• ${_previewTitle} - ${_previewCount} new ${ch}`;
   const platform = _selectedPlatform();
   if (platform === 'ntfy') {
     block.textContent = text;
@@ -491,6 +534,29 @@ document.getElementById('btn-webhook-test').addEventListener('click', async () =
 
 wppSelect({{ settings.webhook_platform | tojson }});
 webhookPreviewFetch();
+
+async function testSuwayomi() {
+  const result = document.getElementById('suwayomi-test-result');
+  result.textContent = 'Testing…';
+  result.style.color = 'var(--text-dim)';
+  result.classList.remove('hidden');
+  const url = document.getElementById('suwayomi-url-input').value;
+  const pw  = document.getElementById('suwayomi-pw-input').value;
+  const user = document.querySelector('[name=suwayomi_username]').value;
+  const resp = await fetch('/api/settings/test-suwayomi', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({suwayomi_url: url, suwayomi_username: user, suwayomi_password: pw}),
+  });
+  const data = await resp.json();
+  if (data.ok) {
+    result.textContent = `✓ Connected! ${data.source_count} source(s) installed.`;
+    result.style.color = 'var(--success)';
+  } else {
+    result.textContent = '✗ ' + (data.error || 'Could not connect');
+    result.style.color = 'var(--danger)';
+  }
+}
 
 async function testKavita() {
   const result = document.getElementById('test-result');

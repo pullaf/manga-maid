@@ -111,6 +111,8 @@
 
 <div style="margin-bottom:24px">
   <div id="detail-actions" data-series-path="{{ series.path }}">
+    {% set _is_suwayomi = (series.source_name or '').__contains__('suwayomi') %}
+    {% set _mdx_uuid = series.mangadex_id if _is_suwayomi else series.config.id %}
     <div class="action-group">
       {% if series.linked %}
       <button type="button" class="detail-act-btn detail-act-btn--accent" onclick="detailSeriesSync(this)" data-path="{{ series.path }}">Sync now</button>
@@ -119,12 +121,27 @@
       <button type="button" class="detail-act-btn detail-act-btn--warn"
               onclick="detailSeriesResetSourceMetadata(this)"
               data-path="{{ series.path }}"
-              title="Drop per-chapter MangaDex metadata for files already on disk. Series-level info (cover, language, status) stays.">Treat files as local</button>
-      <a href="https://mangadex.org/title/{{ series.config.id }}" target="_blank" rel="noopener"
+              title="Drop per-chapter source metadata for files already on disk. Series-level info stays.">Treat files as local</button>
+      {% if _mdx_uuid %}
+      <a href="https://mangadex.org/title/{{ _mdx_uuid }}" target="_blank" rel="noopener"
          class="detail-act-btn detail-act-btn--muted" title="Open on MangaDex">Open MangaDex ↗</a>
+      {% elif _is_suwayomi %}
+      <span class="detail-act-btn detail-act-btn--muted" style="cursor:default">{{ source_labels.get(series.source_name, 'Source') }}</span>
+      {% endif %}
+      {% if _is_suwayomi %}
+        {% if series.mangadex_id %}
+        <button type="button" class="detail-act-btn detail-act-btn--muted"
+                onclick="unlinkMdxCompanion(this)" data-path="{{ series.path }}">Unlink MangaDex companion</button>
+        {% else %}
+        <button type="button" class="detail-act-btn detail-act-btn--muted"
+                hx-get="/api/series/{{ series.path }}/mdx-companion-search"
+                hx-target="#modal-body"
+                hx-swap="innerHTML">Link MangaDex companion</button>
+        {% endif %}
+      {% endif %}
       {% else %}
       <a href="/series?q={{ series.name | urlencode }}&folder={{ series.name | urlencode }}&sub={{ _sub | urlencode }}"
-         class="detail-act-btn detail-act-btn--accent">Link to MangaDex</a>
+         class="detail-act-btn detail-act-btn--accent">Link to source</a>
       {% endif %}
       <a href="/fix?series={{ series.path | urlencode }}" class="detail-act-btn detail-act-btn--muted">Fix filenames</a>
       <button type="button" class="detail-act-btn detail-act-btn--muted"
@@ -188,7 +205,7 @@
           {% if series.config.status in ("completed", "cancelled") %}
           <div class="rounded-lg px-2.5 py-2 border text-xs mt-1"
                style="border-color:rgba(52,211,153,.3);background:rgba(52,211,153,.06);color:var(--text-dim)">
-            Auto-sync paused — series is {{ series.config.status }}
+            Auto-sync paused - series is {{ series.config.status }}
           </div>
           {% endif %}
         </div>
@@ -208,7 +225,7 @@
             <div class="text-xs font-semibold" style="color:{{ '#34d399' if chapter_ok else '#fbbf24' }}">
               Chapters{% if chapter_ok %} · Up to date{% else %} · Missing{% endif %}
             </div>
-            {% if not chapter_ok %}
+            {% if not chapter_ok and not _is_suwayomi %}
             <button type="button"
                     class="text-xs px-2 py-0.5 rounded border transition-colors shrink-0"
                     style="border-color:rgba(251,191,36,.4);color:#fbbf24;background:transparent"
@@ -219,6 +236,7 @@
             You have <span style="color:var(--text)">{{ have_chapters }}</span> / <span style="color:var(--text)">{{ source_chapters or "?" }}</span> from source
           </div>
         </div>
+        {% if not _is_suwayomi or _mdx_uuid %}
         <div class="rounded-lg px-2.5 py-2 border"
              style="border-color:{{ 'rgba(52,211,153,.45)' if volume_ok else 'rgba(251,191,36,.45)' }};background:{{ 'rgba(52,211,153,.08)' if volume_ok else 'rgba(251,191,36,.08)' }}">
           <div class="text-xs font-semibold" style="color:{{ '#34d399' if volume_ok else '#fbbf24' }}">
@@ -228,11 +246,12 @@
             You have <span style="color:var(--text)">{{ have_volumes }}</span> / <span style="color:var(--text)">{{ source_volumes or "?" }}</span> from source
           </div>
         </div>
+        {% endif %}
       </div>
       {% else %}
       <div class="rounded-lg px-2.5 py-2 border"
            style="border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.08);color:var(--text-dim)">
-        Link this series to MangaDex to show source progress (chapters/volumes parity).
+        {% if _is_suwayomi %}Link a MangaDex companion to show metadata.{% else %}Link this series to MangaDex to show source progress (chapters/volumes parity).{% endif %}
       </div>
       {% endif %}
       <div style="color:var(--text-muted)">Year: <span style="color:var(--text)">{{ series.year or "-" }}</span></div>
@@ -417,6 +436,22 @@
 <script>
 function seriesDetailApiUrl(path, suffix) {
   return '/api/series/' + path.split('/').map(encodeURIComponent).join('/') + suffix;
+}
+
+async function unlinkMdxCompanion(btn) {
+  var path = btn.dataset.path;
+  var ok = await window.appConfirm('Remove the MangaDex companion link for this series? Cover art and MangaDex metadata will no longer be fetched.');
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    var resp = await fetch(seriesDetailApiUrl(path, '/mdx-companion'), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mangadex_id: ''})
+    });
+    if (resp.ok) { window.location.reload(); }
+    else { btn.disabled = false; }
+  } catch (e) { btn.disabled = false; }
 }
 
 function appendDetailJobStatusHint(logEl, status) {
@@ -925,7 +960,7 @@ window.openGapModal = async function() {
     var resp = await fetch(seriesDetailApiUrl(path, '/chapter-gaps'));
     var data = await resp.json();
     if (data.mode === 'no_tracking') {
-      body.innerHTML = '<p style="color:var(--text-dim);font-size:13px">Volumes were imported directly — individual chapters aren\'t tracked for this series.</p>';
+      body.innerHTML = '<p style="color:var(--text-dim);font-size:13px">Volumes were imported directly - individual chapters aren\'t tracked for this series.</p>';
     } else if (data.mode === 'error') {
       body.innerHTML = '<p style="color:var(--text-dim);font-size:13px">Couldn\'t reach MangaDex.</p>';
     } else if (data.gaps === 0) {

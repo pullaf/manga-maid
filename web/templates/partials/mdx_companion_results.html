@@ -1,0 +1,29 @@
+{% for r in results %}
+<div class="mdx-companion-row flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer"
+     style="transition:background 0.12s"
+     data-id="{{ r.manga_id }}" data-title="{{ r.title | e }}"
+     onclick="selectMdxCompanion(this.dataset.id, this.dataset.title)"
+     onmouseover="this.style.background='var(--surface-alt)'" onmouseout="this.style.background=''">
+  {% if r.thumbnail_url %}
+  <img src="{{ r.thumbnail_url }}" alt="" loading="lazy"
+       style="width:32px;height:44px;object-fit:cover;border-radius:4px;flex-shrink:0"
+       onerror="this.style.display='none'">
+  {% else %}
+  <div style="width:32px;height:44px;border-radius:4px;flex-shrink:0;background:var(--surface-alt)"></div>
+  {% endif %}
+  <div class="min-w-0 flex-1">
+    <div class="text-sm truncate" style="color:var(--text)">{{ r.title }}</div>
+    {% if r.status or r.year %}
+    <div class="text-xs mt-0.5" style="color:var(--text-dim)">
+      {% if r.status %}{{ r.status }}{% endif %}{% if r.status and r.year %} · {% endif %}{% if r.year %}{{ r.year }}{% endif %}
+    </div>
+    {% endif %}
+  </div>
+  <svg viewBox="0 0 6 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+       style="width:6px;height:10px;flex-shrink:0;color:var(--text-dim)">
+    <polyline points="1,1 5,5 1,9"/>
+  </svg>
+</div>
+{% else %}
+<p class="px-3 py-2 text-xs" style="color:var(--text-dim)">No results found.</p>
+{% endfor %}

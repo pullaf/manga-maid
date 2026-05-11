@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""manga-sync — download new chapters, merge volumes, inject ComicInfo.xml."""
+"""manga-sync - download new chapters, merge volumes, inject ComicInfo.xml."""
 
 import contextlib
 import importlib.util
@@ -11,15 +11,12 @@ import subprocess
 import sys
 import time
 from datetime import datetime
-from urllib import error as urlerror
 from urllib import parse, request
 
 MANGA_ROOT = os.environ.get("MANGA_ROOT", "/manga")
 DATA_DIR   = os.environ.get("DATA_DIR",   "/data")
 SYNC_LOG   = os.environ.get("SYNC_LOG",   "/data/logs/sync.log")
 SYNC_LOG_MAX_LINES = 5000
-MDEX_BASE       = "https://api.mangadex.org"
-CONTENT_RATINGS = ["safe", "suggestive", "erotica", "pornographic"]
 
 _here = os.path.dirname(os.path.abspath(__file__))
 
@@ -55,6 +52,10 @@ from sync_config import load_settings, sanitize_volume_naming  # noqa: E402
 from kavita import KavitaClient                        # noqa: E402
 from file_permissions import apply_file_permission_mask # noqa: E402
 from naming import apply_naming_template, floor_int_str # noqa: E402
+from sources.mangadex import (                          # noqa: E402
+    MangaDexSource, _ChapterData, MDEX_COVERS,
+)
+from sources.suwayomi import SuwayomiSource             # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -83,37 +84,39 @@ def _log(msg: str):
 
 
 # ---------------------------------------------------------------------------
-# MangaDex API
+# Source adapter factory
 # ---------------------------------------------------------------------------
 
-def _api_get(path: str, params: dict) -> dict:
-    url = f"{MDEX_BASE}{path}?" + parse.urlencode(params, doseq=True)
-    try:
-        with request.urlopen(url, timeout=30) as resp:
-            return json.loads(resp.read())
-    except urlerror.HTTPError as e:
-        raise RuntimeError(f"HTTP {e.code} for {url}") from e
+def _get_source(source_name: str):
+    """Return the appropriate source adapter for a series_sources.source string."""
+    if source_name == "mangadex" or not source_name:
+        return MangaDexSource()
+    if source_name.startswith("suwayomi:"):
+        from sync_config import get_suwayomi_client
+        client = get_suwayomi_client()
+        if client is None:
+            raise RuntimeError("Suwayomi source configured but suwayomi_url is not set in settings")
+        suwayomi_source_id = source_name.split(":", 1)[1]
+        # Resolve display name + lang from installed sources (best-effort)
+        try:
+            installed = {str(s["id"]): s for s in client.list_sources()}
+            info = installed.get(suwayomi_source_id, {})
+            source_display = info.get("displayName") or info.get("name") or source_name
+            lang = info.get("lang") or "unknown"
+        except Exception:
+            source_display = source_name
+            lang = "unknown"
+        return SuwayomiSource(client, suwayomi_source_id, source_display, lang)
+    return MangaDexSource()
 
 
 def fetch_volume_covers(manga_id: str) -> dict[str, str]:
     """Map volume number string → MangaDex cover URL (.512.jpg), for tests and tooling."""
-    data = _api_get("/cover", {
-        "manga[]": manga_id, "limit": 100, "order[volume]": "asc",
-    })
-    covers: dict[str, str] = {}
-    for item in data.get("data", []):
-        attr = item["attributes"]
-        vol = attr.get("volume")
-        fname = attr.get("fileName")
-        if vol and fname:
-            covers[str(vol)] = (
-                f"https://uploads.mangadex.org/covers/{manga_id}/{fname}.512.jpg"
-            )
-    return covers
+    return MangaDexSource().get_volume_covers(manga_id)
 
 
 def _ensure_volume_cover_urls(conn, series_id: int, manga_id: str):
-    """Cache per-volume cover URLs in the DB (same source as sync merge / Nagatoro-style rips)."""
+    """Cache per-volume cover URLs in the DB."""
     try:
         for vol_str, url in fetch_volume_covers(manga_id).items():
             try:
@@ -125,146 +128,45 @@ def _ensure_volume_cover_urls(conn, series_id: int, manga_id: str):
         pass
 
 
-def _group_name(chapter_data: dict) -> str:
-    for rel in chapter_data.get("relationships", []):
-        if rel["type"] == "scanlation_group":
-            return rel.get("attributes", {}).get("name", "") or ""
-    return ""
-
-
-class _Ch:
-    __slots__ = ("ch_id", "ch_str", "ch_num", "volume", "group", "title", "publish_date")
-
-    def __init__(self, data: dict):
-        attr = data["attributes"]
-        self.ch_id        = data["id"]
-        self.ch_str       = attr.get("chapter") or "0"
-        self.ch_num       = float(self.ch_str)
-        self.volume       = attr.get("volume")
-        self.group        = _group_name(data)
-        self.title        = (attr.get("title") or "").strip() or None
-        self.publish_date = (attr.get("publishAt") or "")[:10] or None
-
-
-def _feed(manga_id: str, lang: str, params_extra: dict = None):
-    params = {
-        "translatedLanguage[]": lang,
-        "limit": 100,
-        "includes[]": "scanlation_group",
-        "contentRating[]": CONTENT_RATINGS,
-    }
-    if params_extra:
-        params.update(params_extra)
-    offset = 0
-    while True:
-        params["offset"] = offset
-        data  = _api_get(f"/manga/{manga_id}/feed", params)
-        items = data.get("data", [])
-        total = data.get("total", 0)
-        yield from items
-        offset += len(items)
-        if offset >= total or not items:
-            break
-        time.sleep(0.4)
-
-
 # ---------------------------------------------------------------------------
 # Metadata fetch & cache
 # ---------------------------------------------------------------------------
 
 def _fetch_and_cache_meta(
-    manga_id: str, series_id: int, source: str, language: str, conn
+    source: MangaDexSource, manga_id: str, series_id: int,
+    source_key: str, language: str, conn,
 ) -> dict:
     try:
-        data = _api_get(f"/manga/{manga_id}", {
-            "includes[]": ["author", "artist", "cover_art"],
-        })
-        attr = data["data"]["attributes"]
+        meta = source.get_metadata(manga_id)
 
-        titles = attr.get("title") or {}
-        title  = titles.get("en") or next(iter(titles.values()), "")
-
-        desc_map    = attr.get("description") or {}
-        description = desc_map.get("en") or next(iter(desc_map.values()), "") or None
-
-        tags = [
-            t["attributes"]["name"]["en"]
-            for t in (attr.get("tags") or [])
-            if t.get("attributes", {}).get("name", {}).get("en")
-        ]
-
-        authors, artists = [], []
-        cover_filename   = None
-        for rel in data["data"].get("relationships", []):
-            rtype = rel.get("type")
-            rname = (rel.get("attributes") or {}).get("name", "")
-            if rname:
-                if rtype == "author":
-                    authors.append(rname)
-                elif rtype == "artist":
-                    artists.append(rname)
-            if rtype == "cover_art":
-                cover_filename = (rel.get("attributes") or {}).get("fileName")
-
-        # Canonical tankōbon count: prefer attributes.lastVolume; fall back
-        # to /aggregate **without** a language filter (filtering by language
-        # under-counts series that aren't fully translated, e.g. only EN vols
-        # 1–11 published when the manga has 15 in print).
-        total_vols = 0
-        last_vol_raw = (attr.get("lastVolume") or "").strip()
-        if last_vol_raw:
+        # MangaDex: also cache per-volume cover URLs for the merge step
+        if isinstance(source, MangaDexSource):
             try:
-                lv = int(float(last_vol_raw))
-                if lv > 0:
-                    total_vols = lv
-            except (ValueError, TypeError):
-                pass
-        if not total_vols:
-            try:
-                agg = _api_get(f"/manga/{manga_id}/aggregate", {})
-                vols = agg.get("volumes") or {}
-                total_vols = len([k for k in vols if k not in ("none", "0")])
-            except Exception:
-                total_vols = 0
-
-        # Cache per-volume cover URLs so the merge step can embed them
-        try:
-            covers_data = _api_get("/cover", {
-                "manga[]": manga_id, "limit": 100, "order[volume]": "asc",
-            })
-            for item in covers_data.get("data", []):
-                cover_attr = item["attributes"]
-                vol_str    = cover_attr.get("volume")
-                fname      = cover_attr.get("fileName")
-                if vol_str and fname:
+                for vol_str, url in source.get_volume_covers(manga_id).items():
                     try:
-                        cover_url = (
-                            f"https://uploads.mangadex.org/covers/{manga_id}/{fname}.512.jpg"
-                        )
-                        upsert_volume(conn, series_id, float(vol_str),
-                                      cover_url=cover_url)
+                        upsert_volume(conn, series_id, float(vol_str), cover_url=url)
                     except (ValueError, TypeError):
                         pass
-            conn.commit()
-        except Exception:
-            pass
+                conn.commit()
+            except Exception:
+                pass
 
-        upsert_series_metadata(conn, series_id, source,
-            title=title,
-            description=description,
-            tags=tags,
-            authors=authors,
-            artists=artists,
-            year=attr.get("year"),
-            status=attr.get("status"),
-            content_rating=attr.get("contentRating"),
-            total_volumes=total_vols,
-            cover_filename=cover_filename,
+        upsert_series_metadata(conn, series_id, source_key,
+            title=meta["title"],
+            description=meta["description"],
+            tags=meta["tags"],
+            authors=meta["authors"],
+            artists=meta["artists"],
+            year=meta["year"],
+            status=meta["status"],
+            content_rating=meta["content_rating"],
+            total_volumes=meta["total_volumes"],
+            cover_filename=meta["cover_filename"],
         )
     except Exception as e:
         _log(f"  [warn] metadata fetch failed: {e}")
 
-    return get_series_metadata(conn, series_id, source) or {}
+    return get_series_metadata(conn, series_id, source_key) or {}
 
 
 # ---------------------------------------------------------------------------
@@ -279,12 +181,22 @@ def _series_preferred_groups(series_row: dict) -> list[str]:
 
 
 def _sync_chapters_to_db(
-    manga_id: str, language: str, preferred_groups: list[str],
-    series_id: int, conn,
+    source, manga_id: str, language: str,
+    preferred_groups: list[str], series_id: int, conn,
 ):
     """Fetch full chapter feed, pick best per chapter_num, upsert to DB."""
+    if isinstance(source, MangaDexSource):
+        _sync_chapters_mdx(source, manga_id, language, preferred_groups, series_id, conn)
+    else:
+        _sync_chapters_suwayomi(source, manga_id, preferred_groups, series_id, conn)
+
+
+def _sync_chapters_mdx(
+    source: MangaDexSource, manga_id: str, language: str,
+    preferred_groups: list[str], series_id: int, conn,
+):
     all_candidates: dict[float, list] = {}
-    for item in _feed(manga_id, language, {"order[chapter]": "asc"}):
+    for item in source.iter_feed(manga_id, language, {"order[chapter]": "asc"}):
         ch_str = item["attributes"].get("chapter")
         if not ch_str:
             continue
@@ -292,7 +204,7 @@ def _sync_chapters_to_db(
             ch_num = float(ch_str)
         except ValueError:
             continue
-        all_candidates.setdefault(ch_num, []).append((item["id"], _Ch(item)))
+        all_candidates.setdefault(ch_num, []).append((item["id"], _ChapterData(item)))
 
     for ch_num in sorted(all_candidates):
         candidates = all_candidates[ch_num]
@@ -315,12 +227,8 @@ def _sync_chapters_to_db(
             except (ValueError, TypeError):
                 pass
 
-        # Never propagate per-chapter feed metadata (title, group, source_id,
-        # publish_date) onto a row whose file is already on disk. The whole
-        # point of ``status='on_disk'`` is that ComicInfo for that file uses
-        # series-level info only — re-tagging it on every sync would undo
-        # that. We still ensure the volume mapping so merge logic can reason
-        # about coverage.
+        # Never propagate per-chapter feed metadata onto a row whose file is
+        # already on disk - ComicInfo for that file uses series-level info only.
         existing = conn.execute(
             "SELECT id, path, status FROM chapters"
             " WHERE series_id=? AND chapter_num=?",
@@ -338,6 +246,47 @@ def _sync_chapters_to_db(
             title=picked.title,
             group_name=picked.group,
             publish_date=picked.publish_date,
+        )
+
+        if vol_id is not None:
+            assign_chapter_to_volume(conn, chapter_id, vol_id)
+
+    conn.commit()
+
+
+def _sync_chapters_suwayomi(
+    source: SuwayomiSource, manga_id: str,
+    preferred_groups: list[str], series_id: int, conn,
+):
+    chapters = source.iter_chapters(manga_id)
+
+    for ch_info in sorted(chapters, key=lambda c: c["chapter_num"]):
+        ch_num = ch_info["chapter_num"]
+
+        vol_id = None
+        if ch_info.get("volume_num") is not None:
+            try:
+                vol_id = upsert_volume(conn, series_id, ch_info["volume_num"])
+            except (ValueError, TypeError):
+                pass
+
+        existing = conn.execute(
+            "SELECT id, path, status FROM chapters"
+            " WHERE series_id=? AND chapter_num=?",
+            (series_id, ch_num),
+        ).fetchone()
+        if existing and (existing["path"] or existing["status"] == "on_disk"):
+            if vol_id is not None:
+                assign_chapter_to_volume(conn, existing["id"], vol_id)
+            continue
+
+        chapter_id = upsert_chapter(
+            conn, series_id, ch_num,
+            source=source.key,
+            source_chapter_id=ch_info["chapter_id"],
+            title=ch_info.get("title"),
+            group_name=ch_info.get("group_name"),
+            publish_date=ch_info.get("publish_date"),
         )
 
         if vol_id is not None:
@@ -413,7 +362,7 @@ def _volume_cbz_comicinfo_xml(
     """ComicInfo for a merged volume CBZ.
 
     Kavita maps ``Number`` to one issue; omit it for omnibus archives. Avoid
-    putting ``ch.1-7``-style text in ``Title`` — combined with a filename that
+    putting ``ch.1-7``-style text in ``Title`` - combined with a filename that
     also contains ``ch.*``, Kavita may show duplicate pseudo-chapters. Put the
     span in ``Summary`` only and use a filename without ``ch.*`` (see
     ``volume_naming`` in settings).
@@ -513,7 +462,7 @@ def refresh_volume_comicinfo_embeds(series_row: dict, conn, settings: dict | Non
     meta        = get_series_metadata(conn, series_id, source_name) or {}
     language    = series_row.get("language", "en")
     manga_id    = series_row.get("source_id")
-    series_web  = f"https://mangadex.org/title/{manga_id}" if manga_id else None
+    series_web  = _get_source(source_name).get_web_url(manga_id) if manga_id else None
     series_title = (meta or {}).get("title") or os.path.basename(series_dir)
     label       = series_row.get("name", series_path)
 
@@ -713,10 +662,11 @@ def compact_series_volumes(series_row: dict, conn, settings: dict) -> tuple[int,
     series_dir  = os.path.join(MANGA_ROOT, series_path)
     manga_id    = series_row.get("source_id")
     source_name = series_row.get("source_name") or "mangadex"
+    source      = _get_source(source_name)
     label       = series_row.get("name") or os.path.basename(series_path)
 
     scan_disk_files(series_dir, series_id, conn)
-    if manga_id:
+    if manga_id and isinstance(source, MangaDexSource):
         _ensure_volume_cover_urls(conn, series_id, manga_id)
 
     meta = get_series_metadata(conn, series_id, source_name) or {}
@@ -724,7 +674,7 @@ def compact_series_volumes(series_row: dict, conn, settings: dict) -> tuple[int,
     if not vol_nums:
         return 0, []
 
-    series_web = f"https://mangadex.org/title/{manga_id}" if manga_id else None
+    series_web = source.get_web_url(manga_id) if manga_id else None
     _log(f"[{label}] compact into volumes: {len(vol_nums)} volume(s)…")
     _pg = _series_preferred_groups(series_row)
     merged, errors = _merge_volume_batch(
@@ -779,7 +729,7 @@ def _ensure_comicinfo_all(
         if not os.path.exists(cbz_path):
             continue
         vol_num = vol_num_by_vol_id.get(ch.get("volume_id")) if ch.get("volume_id") else None
-        # ``on_disk`` rows never carry trustworthy per-chapter source info —
+        # ``on_disk`` rows never carry trustworthy per-chapter source info -
         # the file got there outside the sync pipeline (user import, manual
         # rip, etc.). Use only series-level fields for ComicInfo so we do
         # not stamp foreign translator names / chapter titles / chapter URLs
@@ -873,21 +823,17 @@ def _run_fix_pass(series_dir: str):
         _fix.do_rename(fpath, new_name, issue_name, log_data, log_path)
 
 
+def _mdx_id_for_covers(series_row: dict) -> str | None:
+    """Return the MangaDex UUID for cover fetching: source_id for MDX series, mangadex_id companion for Suwayomi."""
+    if (series_row.get("source_name") or "mangadex") == "mangadex":
+        return series_row.get("source_id")
+    return series_row.get("mangadex_id")
+
+
 def _kavita_set_covers(client: KavitaClient, series_dir: str, manga_id: str):
     series_name = os.path.basename(series_dir)
     try:
-        data = _api_get("/cover", {
-            "manga[]": manga_id, "limit": 100, "order[volume]": "asc",
-        })
-        covers: dict[str, str] = {}
-        for item in data.get("data", []):
-            attr = item["attributes"]
-            vol  = attr.get("volume")
-            fname = attr.get("fileName")
-            if vol and fname:
-                covers[vol] = (
-                    f"https://uploads.mangadex.org/covers/{manga_id}/{fname}.512.jpg"
-                )
+        covers = MangaDexSource().get_volume_covers(manga_id)
         if not covers:
             return
         series = client.search_series(series_name)
@@ -925,8 +871,9 @@ def _sync_one_series(
     start_chapter = float(series_row.get("start_chapter") or 0)
     manga_id    = series_row.get("source_id")
     source_name = series_row.get("source_name") or "mangadex"
+    source      = _get_source(source_name)
     name        = series_row.get("name") or os.path.basename(series_path)
-    series_web  = f"https://mangadex.org/title/{manga_id}" if manga_id else None
+    series_web  = source.get_web_url(manga_id) if manga_id else None
     file_permission_mask = settings.get("file_permission_mask")
     _log(f"[{name}] checking for updates…")
 
@@ -936,12 +883,12 @@ def _sync_one_series(
     # Fetch & cache series metadata (7-day TTL)
     meta = get_series_metadata(conn, series_id, source_name)
     if is_metadata_stale(meta and meta.get("fetched_at")):
-        meta = _fetch_and_cache_meta(manga_id, series_id, source_name, language, conn)
+        meta = _fetch_and_cache_meta(source, manga_id, series_id, source_name, language, conn)
 
     # Linked-only (no download options chosen yet): refresh metadata+ComicInfo,
     # do not pull the chapter feed or queue downloads.
     if not series_row.get("sync_configured"):
-        _log(f"[{name}] sync not configured — skipping feed/download")
+        _log(f"[{name}] sync not configured - skipping feed/download")
         _ensure_comicinfo_all(
             series_id, series_dir, conn, meta, language,
             series_web=series_web, series_label=name,
@@ -953,7 +900,7 @@ def _sync_one_series(
     # Completed/cancelled series: no new chapters ever; skip feed polling.
     series_status = (meta.get("status") or "").lower()
     if series_status in ("completed", "cancelled"):
-        _log(f"[{name}] series is {series_status} — skipping feed")
+        _log(f"[{name}] series is {series_status} - skipping feed")
         _ensure_comicinfo_all(
             series_id, series_dir, conn, meta, language,
             series_web=series_web, series_label=name,
@@ -964,7 +911,7 @@ def _sync_one_series(
 
     # Sync chapter feed → DB
     try:
-        _sync_chapters_to_db(manga_id, language, prefs, series_id, conn)
+        _sync_chapters_to_db(source, manga_id, language, prefs, series_id, conn)
     except Exception as e:
         _log(f"[{name}] feed error: {e}")
         return False
@@ -995,51 +942,72 @@ def _sync_one_series(
             continue
 
         _log(f"[{name}] ch.{ch_row['chapter_num']}: downloading…")
-        before = _cbz_files_in(series_dir)
-        ok     = _mdx_download(ch_row, series_dir, file_format, ch_naming)
-        if ok:
-            fpath = _find_new_file(series_dir, before, ch_row["chapter_num"])
-            if fpath:
-                vol_num = None
-                if ch_row.get("volume_id"):
-                    vr = conn.execute(
-                        "SELECT volume_num FROM volumes WHERE id=?",
-                        (ch_row["volume_id"],),
-                    ).fetchone()
-                    if vr:
-                        vol_num = vr["volume_num"]
-                desired_stem = apply_naming_template(
-                    ch_naming,
-                    language=language,
-                    group=ch_row.get("group_name") or "",
-                    title=name,
-                    volume_num=vol_num,
-                    chapter_num=ch_row["chapter_num"],
-                    chapter_title=ch_row.get("title") or "",
-                )
-                if desired_stem:
-                    ext = os.path.splitext(fpath)[1]
-                    desired_path = os.path.join(series_dir, desired_stem + ext)
-                    if os.path.abspath(desired_path) != os.path.abspath(fpath):
-                        if not os.path.exists(desired_path):
-                            os.rename(fpath, desired_path)
-                            fpath = desired_path
-                        else:
-                            _log(f"[{name}] ch.{ch_row['chapter_num']}: naming target exists, keeping existing file")
-                            # Avoid duplicate archives when mdx emits a suffixed
-                            # filename but the normalized target already exists.
-                            with contextlib.suppress(OSError):
-                                os.remove(fpath)
-                            fpath = desired_path
-                rel = os.path.relpath(fpath, MANGA_ROOT)
-                apply_file_permission_mask(fpath, file_permission_mask)
-                mark_chapter_downloaded(conn, ch_row["id"], rel,
-                                        os.path.getsize(fpath))
-                downloaded += 1
+
+        vol_num = None
+        if ch_row.get("volume_id"):
+            vr = conn.execute(
+                "SELECT volume_num FROM volumes WHERE id=?",
+                (ch_row["volume_id"],),
+            ).fetchone()
+            if vr:
+                vol_num = vr["volume_num"]
+        desired_stem = apply_naming_template(
+            ch_naming,
+            language=language,
+            group=ch_row.get("group_name") or "",
+            title=name,
+            volume_num=vol_num,
+            chapter_num=ch_row["chapter_num"],
+            chapter_title=ch_row.get("title") or "",
+        )
+
+        if isinstance(source, SuwayomiSource):
+            # Suwayomi: we control the output path directly
+            ok = source.download_chapter(
+                ch_row["source_chapter_id"],
+                series_dir,
+                file_format,
+                desired_stem or f"ch.{ch_row['chapter_num']}",
+                delay=0.0,
+            )
+            if ok:
+                fpath = os.path.join(series_dir, f"{desired_stem or 'ch.' + str(ch_row['chapter_num'])}.{file_format}")
+                if os.path.exists(fpath):
+                    rel = os.path.relpath(fpath, MANGA_ROOT)
+                    apply_file_permission_mask(fpath, file_permission_mask)
+                    mark_chapter_downloaded(conn, ch_row["id"], rel, os.path.getsize(fpath))
+                    downloaded += 1
+                else:
+                    _log(f"[{name}] ch.{ch_row['chapter_num']}: file not found after download")
             else:
-                _log(f"[{name}] ch.{ch_row['chapter_num']}: file not found after download")
+                _log(f"[{name}] ch.{ch_row['chapter_num']}: failed")
         else:
-            _log(f"[{name}] ch.{ch_row['chapter_num']}: failed")
+            # MangaDex: mdx CLI writes its own filename, then we rename
+            before = _cbz_files_in(series_dir)
+            ok     = _mdx_download(ch_row, series_dir, file_format, ch_naming)
+            if ok:
+                fpath = _find_new_file(series_dir, before, ch_row["chapter_num"])
+                if fpath:
+                    if desired_stem:
+                        ext = os.path.splitext(fpath)[1]
+                        desired_path = os.path.join(series_dir, desired_stem + ext)
+                        if os.path.abspath(desired_path) != os.path.abspath(fpath):
+                            if not os.path.exists(desired_path):
+                                os.rename(fpath, desired_path)
+                                fpath = desired_path
+                            else:
+                                _log(f"[{name}] ch.{ch_row['chapter_num']}: naming target exists, keeping existing file")
+                                with contextlib.suppress(OSError):
+                                    os.remove(fpath)
+                                fpath = desired_path
+                    rel = os.path.relpath(fpath, MANGA_ROOT)
+                    apply_file_permission_mask(fpath, file_permission_mask)
+                    mark_chapter_downloaded(conn, ch_row["id"], rel, os.path.getsize(fpath))
+                    downloaded += 1
+                else:
+                    _log(f"[{name}] ch.{ch_row['chapter_num']}: file not found after download")
+            else:
+                _log(f"[{name}] ch.{ch_row['chapter_num']}: failed")
 
         time.sleep(delay)
 
@@ -1067,10 +1035,12 @@ def _sync_one_series(
 
     # Kavita covers
     if kavita_client and settings.get("auto_covers"):
-        _kavita_set_covers(kavita_client, series_dir, manga_id)
+        mdx_id_for_covers = _mdx_id_for_covers(series_row)
+        if mdx_id_for_covers:
+            _kavita_set_covers(kavita_client, series_dir, mdx_id_for_covers)
 
     update_source_sync_time(conn, series_id, source_name)
-    _log(f"[{name}] done — {downloaded}/{len(to_download)} downloaded")
+    _log(f"[{name}] done - {downloaded}/{len(to_download)} downloaded")
     return downloaded
 
 
@@ -1080,7 +1050,7 @@ def _sync_one_series(
 
 def _send_webhook(url: str, platform: str, items: list[tuple[str, int]]):
     lines = [
-        f"• {name} — {count} new chapter{'s' if count != 1 else ''}"
+        f"• {name} - {count} new chapter{'s' if count != 1 else ''}"
         for name, count in items
     ]
     text = "New chapters downloaded:\n" + "\n".join(lines)
@@ -1143,10 +1113,11 @@ def main(
 
     if covers_only:
         for s in series_list:
-            if s.get("source_id") and kavita_client:
+            mdx_id = _mdx_id_for_covers(s)
+            if mdx_id and kavita_client:
                 _kavita_set_covers(kavita_client,
                                    os.path.join(MANGA_ROOT, s["path"]),
-                                   s["source_id"])
+                                   mdx_id)
         conn.close()
         return
 
@@ -1170,7 +1141,7 @@ def main(
         merged, errs = compact_series_volumes(row, conn, settings)
         for e in errs:
             _log(f"[compact] {e}")
-        _log(f"[compact] finished — {merged} volume(s) merged")
+        _log(f"[compact] finished - {merged} volume(s) merged")
         conn.close()
         return
 
@@ -1247,13 +1218,14 @@ def main(
         )
         conn.commit()
         meta = get_series_metadata(conn, row["id"]) or {}
+        _src = _get_source(row.get("source_name") or "mangadex")
         _ensure_comicinfo_all(
             row["id"],
             series_dir,
             conn,
             meta,
             row.get("language", "en"),
-            series_web=(f"https://mangadex.org/title/{row['source_id']}" if row.get("source_id") else None),
+            series_web=(_src.get_web_url(row["source_id"]) if row.get("source_id") else None),
             series_label=row.get("name", row["path"]),
             force_overwrite=True,
             file_permission_mask=settings.get("file_permission_mask"),
@@ -1307,7 +1279,7 @@ def main(
         if wurl:
             _send_webhook(wurl, settings.get("webhook_platform", "generic"), downloads)
 
-    _log(f"[sync] completed — processed {processed} series")
+    _log(f"[sync] completed - processed {processed} series")
     conn.close()
 
 

@@ -1,17 +1,17 @@
 # mangadex-kavita-sync
 
-A containerised toolset that keeps a [Kavita](https://www.kavitareader.com/) manga library in sync with [MangaDex](https://mangadex.org/). Runs on a configurable schedule alongside your existing stack via built-in cron queueing, no manual downloads, no SSH.
+A containerised toolset that keeps a [Kavita](https://www.kavitareader.com/) manga library in sync with [MangaDex](https://mangadex.org/) - and now with **200+ additional sources** via [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server). Runs on a configurable schedule alongside your existing stack via built-in cron queueing, no manual downloads, no SSH.
 
-Includes a **web UI** (port `4649`) for managing series, triggering syncs, browsing logs, and configuring Kavita integration.
+Includes a **web UI** (port `4649`) for managing series, triggering syncs, browsing logs, and configuring all integrations.
 
 ---
 
 ## Features
 
 **manga-sync** - automatic chapter downloader
-- Polls the MangaDex API for new chapters on a schedule configured in the web UI
+- Polls MangaDex **and Suwayomi sources** for new chapters on a schedule configured in the web UI
 - Filters by translator/scanlation group per series
-- Downloads chapters as CBZ (or ZIP/CBR) via the [`mdx`](https://github.com/arimatakao/mdx) CLI
+- Downloads chapters as CBZ (or ZIP/CBR) via the [`mdx`](https://github.com/arimatakao/mdx) CLI (MangaDex) or direct page proxy (Suwayomi)
 - Supports volume mode - one file per volume instead of per chapter
 - Automatically adds volume labels (`vol.N ch.N`) once a volume is complete on disk
 - Skips back-catalogue on first run via a configurable `since` chapter
@@ -27,14 +27,22 @@ Includes a **web UI** (port `4649`) for managing series, triggering syncs, brows
 - Fetch volume cover art from MangaDex and push it to Kavita automatically
 - Configurable via the web UI - just enter your Kavita URL and API key
 
+**Suwayomi integration** *(new in v2.0)*
+- Connect any running [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server) instance
+- Browse and enable installed Mihon/Tachiyomi extension sources from the **Sources** page
+- Enabled sources are included alongside MangaDex in every "Add Series" search
+- Suwayomi sources can be used as the download backend for any tracked series
+- Optional username/password auth support; connection test built into Settings
+
 **Web UI** - dark-themed browser interface at port `4649`
-- Dashboard showing all tracked series with edit/remove controls
-- Add Series: search MangaDex by title or paste a URL, pick language and scanlation group
+- Dashboard showing all tracked series with source badges, edit/remove controls
+- **Add Series**: search MangaDex and all enabled Suwayomi sources simultaneously; results grouped by source
+- **Sources page**: browse Suwayomi extensions, toggle them on/off for search and sync
 - Sync page with live streaming output
 - Jobs page with durable queued/running/completed jobs and per-job logs
 - Fix Files page for interactive filename repair
 - Logs page showing sync history and rename/delete audit trail
-- Settings page for download format, file naming, sync schedule presets/custom cron, Kavita integration
+- Settings page for download format, file naming, sync schedule, Kavita integration, and Suwayomi connection
 
 ---
 
@@ -67,6 +75,27 @@ services:
 
 Then open `http://your-host:4649`, add series, and configure the sync schedule in **Settings**.
 
+### Optional: add Suwayomi for extra sources
+
+```yaml
+services:
+  suwayomi:
+    image: ghcr.io/suwayomi/suwayomi-server:latest
+    ports:
+      - "4567:4567"
+    volumes:
+      - /path/to/suwayomi-data:/home/suwayomi/.local/share/Tachidesk
+    restart: unless-stopped
+
+  manga-sync:
+    image: ghcr.io/pullaf/mangadex-kavita-sync:latest
+    # ... same as above
+```
+
+Then in **Settings → Suwayomi Integration** enter `http://suwayomi:4567`, hit **Test**, and go to **Sources** to enable whichever extensions you have installed.
+
+---
+
 ## Volumes
 
 | Mount | Purpose |
@@ -90,14 +119,15 @@ Then open `http://your-host:4649`, add series, and configure the sync schedule i
 |---|---|---|
 | `PUID` | `0` (root) | UID to run as. Set to your host user's UID so downloaded files are owned correctly. |
 | `PGID` | `0` (root) | GID to run as. |
-| `TZ` | — | Timezone for schedule display (e.g. `Europe/London`, `Asia/Tokyo`). |
+| `TZ` | - | Timezone for schedule display (e.g. `Europe/London`, `Asia/Tokyo`). |
 | `DEFAULT_LANGUAGE` | `en` | Preferred chapter language code used when adding new series (e.g. `it`, `fr`, `ja-ro`). |
 | `DATA_DIR` | `/data` | Base path for config and logs. |
 | `SYNC_LOG` | `$DATA_DIR/logs/sync.log` | Override log file location. |
 | `TELEMETRY` | `true` | Set to `false` to opt out of anonymous usage statistics. Can also be toggled in Settings → Privacy. |
 
-> Sync schedule is now persisted in app settings (SQLite) and edited from the web UI.
-> The container reads that value on boot and live-reloads cron when you change it in Settings.
+> Sync schedule and all integration settings (Kavita, Suwayomi) are persisted in SQLite and edited from the web UI.
+
+---
 
 ## Sync schedule
 
@@ -122,6 +152,8 @@ Sync operations run as durable background jobs:
 - Cancel queued/running jobs from the UI
 
 This includes scheduled syncs, which are enqueued by cron into the same queue.
+
+---
 
 ### Finding your PUID/PGID
 
@@ -166,11 +198,7 @@ Downloaded filenames use format codes from the `mdx` CLI. Configure them in Sett
 Default chapter pattern: `[%1 %2] %3 vol.%4 ch.%5`  
 Default volume pattern: `[%1 %2] %3 vol.%4`
 
----
-
-## Chapter-first workflow
-
-The current UI is tuned for chapter-based storage. Downloads are saved as chapter files, with volume numbers added to filenames when source metadata is available.
+> Suwayomi sources use the same naming patterns. `%2` (group) is populated from the scanlator field when available.
 
 ---
 
@@ -186,7 +214,7 @@ to:
 Series vol.5 ch.45.cbz
 ```
 
-Volume membership is determined by querying the MangaDex API, so it only triggers when the API reports a complete set.
+Volume membership is determined by querying the source API, so it only triggers when the API reports a complete set.
 
 ---
 
@@ -197,6 +225,19 @@ In the Settings page:
 2. Enter your API key (Kavita → User Settings → 3rd Party Clients)
 3. Enable **Auto library scan** to trigger a Kavita scan after every sync
 4. Enable **Auto set covers** to push MangaDex volume cover art to Kavita
+
+---
+
+## Suwayomi integration
+
+Suwayomi-Server acts as a proxy to Mihon/Tachiyomi extensions, giving access to hundreds of manga sources beyond MangaDex.
+
+1. Run a [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server) instance and install extensions via its own web UI
+2. In **Settings → Suwayomi Integration**, enter the Suwayomi URL (e.g. `http://suwayomi:4567`) and hit **Test**
+3. Go to **Sources** and toggle on the extensions you want to search and sync from
+4. **Add Series** will now show results from MangaDex and all your enabled sources side by side
+
+Suwayomi sources are identified internally as `suwayomi:<source-id>` and are stored per-series in the database, so each series remembers which source it was added from.
 
 ---
 

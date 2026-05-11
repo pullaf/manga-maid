@@ -1,0 +1,59 @@
+<div class="space-y-4">
+  <div class="flex items-start justify-between pb-3 gap-3" style="border-bottom:1px solid var(--border)">
+    <div>
+      <h3 class="font-semibold text-sm" style="font-family:'Syne',sans-serif;color:var(--text)">Link MangaDex companion</h3>
+      <p class="text-xs mt-1 leading-relaxed" style="color:var(--text-dim)">
+        Search and pick the matching MangaDex title. Used for cover art, volume metadata, and open-on-MangaDex. Downloads still come from your original source.
+      </p>
+    </div>
+    <button type="button" onclick="if (typeof closeModal === 'function') closeModal();"
+            class="text-2xl leading-none transition-colors shrink-0" style="color:var(--text-dim)">&times;</button>
+  </div>
+
+  <input type="text" id="mdx-companion-link-q" placeholder="Search MangaDex…"
+         autocomplete="off"
+         value="{{ series_name }}"
+         class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none"
+         hx-get="/api/search/mdx-companion"
+         hx-trigger="load, keyup changed delay:400ms"
+         hx-target="#mdx-companion-link-results"
+         hx-on::after-request="document.getElementById('mdx-companion-link-results').style.display = document.getElementById('mdx-companion-link-results').innerHTML.trim() ? 'block' : 'none'"
+         name="q">
+
+  <div id="mdx-companion-link-results"
+       class="rounded-lg overflow-hidden"
+       style="border:1px solid var(--border);background:var(--surface);max-height:240px;overflow-y:auto;display:none">
+  </div>
+
+  <p id="mdx-companion-link-status" class="text-xs hidden" style="color:var(--text-dim)"></p>
+</div>
+
+<script>
+(function() {
+  var seriesPath = {{ path | tojson }};
+
+  window.selectMdxCompanion = function(mangaId, title) {
+    var status = document.getElementById('mdx-companion-link-status');
+    status.textContent = 'Linking…';
+    status.classList.remove('hidden');
+    status.style.color = 'var(--text-dim)';
+    fetch('/api/series/' + seriesPath.split('/').map(encodeURIComponent).join('/') + '/mdx-companion', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mangadex_id: mangaId})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.ok) { window.location.reload(); }
+      else {
+        status.textContent = data.error || 'Failed';
+        status.style.color = 'var(--danger)';
+      }
+    })
+    .catch(function(e) {
+      status.textContent = String(e);
+      status.style.color = 'var(--danger)';
+    });
+  };
+})();
+</script>

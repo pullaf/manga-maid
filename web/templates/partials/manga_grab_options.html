@@ -14,7 +14,7 @@
   <div class="flex items-start justify-between pb-3 gap-3" style="border-bottom:1px solid var(--border)">
     <div>
       <h3 class="font-semibold text-sm" style="font-family:'Syne',sans-serif;color:var(--text)">
-        Sync settings — {{ folder_name }}
+        Sync settings - {{ folder_name }}
       </h3>
       <p class="text-xs mt-1.5 leading-relaxed" style="color:var(--text-dim)">
         Choose which language and scanlation groups to download from MangaDex, and where to start.
@@ -24,6 +24,8 @@
             onclick="if (typeof closeModal === 'function') closeModal();"
             class="text-2xl leading-none transition-colors shrink-0" style="color:var(--text-dim)">&times;</button>
   </div>
+
+  {% if is_mdx is not defined or is_mdx %}
 
   {% if lang_counts %}
   <div>
@@ -66,6 +68,8 @@
       {% include "partials/group_picker.html" %}
     </div>
   </div>
+
+  {% endif %}{# end is_mdx #}
 
   <div>
     <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Start from chapter ≥</label>

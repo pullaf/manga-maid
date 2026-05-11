@@ -1,9 +1,121 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="mb-8">
+
+<style>
+  #search-panel {
+    min-width: 0;
+    flex: 1 1 0%;
+  }
+  #setup-panel {
+    width: 380px;
+    flex-shrink: 0;
+    display: none;
+  }
+  #setup-panel.open {
+    display: block;
+  }
+  /* ── Mobile: bottom sheet ─────────────────────── */
+  @media (max-width: 900px) {
+    #add-series-layout { flex-direction: column !important; align-items: stretch !important; }
+    #setup-panel {
+      width: 100% !important;
+      position: fixed !important;
+      inset: auto 0 0 0 !important;
+      max-height: 85dvh;
+      overflow-y: auto;
+      border-radius: 18px 18px 0 0 !important;
+      border: none !important;
+      box-shadow: 0 -8px 40px rgba(0,0,0,.5);
+      z-index: 60;
+      transform: translateY(100%);
+      transition: transform .28s cubic-bezier(.32,.72,0,1);
+    }
+    #setup-panel.open {
+      display: block;
+      transform: translateY(0);
+    }
+    #sheet-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 59;
+      background: rgba(0,0,0,.5);
+      backdrop-filter: blur(3px);
+    }
+    #sheet-overlay.open { display: block; }
+    /* drag handle */
+    #setup-panel::before {
+      content: '';
+      display: block;
+      width: 36px;
+      height: 4px;
+      border-radius: 2px;
+      background: var(--border-hi);
+      margin: 10px auto 0;
+    }
+  }
+  @media (min-width: 901px) {
+    #sheet-overlay { display: none !important; }
+  }
+  .result-row {
+    display: grid;
+    grid-template-columns: 44px 1fr auto;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    cursor: pointer;
+    transition: background .13s, border-color .13s;
+    border-bottom: 1px solid var(--border);
+  }
+  .result-row:last-child { border-bottom: none; }
+  .result-row:hover { background: var(--surface-hover); }
+  .result-row.selected {
+    background: var(--accent-glow) !important;
+    border-left: 3px solid var(--accent);
+    padding-left: 11px;
+  }
+  .source-badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'Syne', sans-serif;
+    white-space: nowrap;
+  }
+  .source-badge-mdx  { background: rgba(249,115,22,.12); color: #fb923c; }
+  .source-badge-suw  { background: rgba(139,92,246,.12); color: var(--accent-light); }
+  .source-group-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px 4px;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--surface);
+  }
+  .source-group-header span {
+    font-size: 11px;
+    font-weight: 700;
+    font-family: 'Syne', sans-serif;
+    color: var(--text-dim);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .source-group-header hr {
+    flex: 1;
+    border: none;
+    border-top: 1px solid var(--border);
+  }
+</style>
+
+<div class="mb-6">
   <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Add Series</h1>
   <p class="text-sm mt-1" style="color:var(--text-muted)">
-    Search MangaDex, link a title for metadata and covers, then optionally set download language and groups.
+    Search across all enabled sources, pick a title, configure and add.
   </p>
 </div>
 
@@ -11,10 +123,10 @@
 <div class="max-w-lg">
   <div class="rounded-xl border p-10 text-center"
        style="background:var(--surface);border-color:rgba(251,191,36,.3)">
-    <div class="mb-4 text-4xl opacity-30">📁</div>
+    <div class="mb-4 text-3xl opacity-30">📁</div>
     <p class="font-semibold text-sm" style="color:#fbbf24;font-family:'Syne',sans-serif">Root folder required</p>
     <p class="text-xs mt-2 mb-6" style="color:var(--text-muted)">
-      You need at least one root folder before you can add or track series.
+      Add at least one root folder in Settings before tracking or syncing series.
     </p>
     <a href="/settings"
        class="inline-block text-xs font-semibold px-5 py-2.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition-colors"
@@ -24,261 +136,304 @@
   </div>
 </div>
 {% else %}
-<div class="max-w-lg">
-  <div class="rounded-xl border p-6" style="background:var(--surface);border-color:var(--border)">
 
-    <!-- Phase 1: pick manga -->
-    <div id="phase1">
-      <div class="mb-3">
-        <input type="text" id="url-input" placeholder="Paste MangaDex URL or UUID…"
-               class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none"
-               oninput="handleUrlPaste(this.value)">
-        <p id="url-status" class="text-xs mt-1.5 hidden"></p>
-      </div>
-      <div class="flex items-center gap-2 mb-3">
-        <div class="flex-1" style="border-top:1px solid var(--border-mid)"></div>
-        <span class="text-xs px-1" style="color:var(--text-dim)">or search</span>
-        <div class="flex-1" style="border-top:1px solid var(--border-mid)"></div>
-      </div>
-      <input type="text" id="search-input" placeholder="Search MangaDex…"
-             class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none mb-3"
-             hx-get="/api/search" hx-target="#search-results" hx-trigger="keyup changed delay:400ms" name="q">
-      <div id="search-results" class="space-y-2 max-h-64 overflow-y-auto"></div>
-    </div>
-
-    <!-- Phase 2: setup form (loaded via fetch) -->
-    <div id="phase2" class="hidden">
-      <div id="setup-loading" class="hidden flex-col items-center justify-center gap-3 py-10">
-        <div class="modal-spinner" role="status" aria-label="Loading"></div>
-        <p id="setup-loading-label" class="text-sm text-center" style="color:var(--text-muted);font-family:'Syne',sans-serif;white-space:pre-line">
-          Loading…
-        </p>
-      </div>
-      <div id="setup-form"></div>
-      <button type="button" onclick="resetToPhase1()"
-              class="mt-3 text-xs transition-colors" style="color:var(--text-dim)">← Pick a different manga</button>
-    </div>
-
-  </div>
+<!-- Search bar -->
+<div class="mb-4 space-y-2 max-w-2xl">
+  <input type="text" id="url-input" placeholder="Paste a MangaDex URL or UUID to link directly…"
+         class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none"
+         oninput="handleUrlPaste(this.value)">
+  <p id="url-status" class="text-xs hidden px-1"></p>
+  <input type="text" id="search-input" placeholder="Search MangaDex and enabled sources…"
+         class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none"
+         hx-get="/api/search" hx-target="#search-results" hx-trigger="keyup changed delay:400ms" name="q"
+         autocomplete="off">
 </div>
 
+<!-- Two-panel layout -->
+<div id="add-series-layout" class="flex gap-5 items-start">
+
+  <!-- Left: results -->
+  <div id="search-panel">
+    <div id="search-results-wrap" class="rounded-xl border overflow-hidden hidden"
+         style="background:var(--surface);border-color:var(--border)">
+      <div id="search-results"></div>
+    </div>
+    <div id="search-empty" class="rounded-xl border p-16 text-center"
+         style="background:var(--surface);border-color:var(--border)">
+      <div class="text-4xl mb-3 opacity-20">🔍</div>
+      <p class="text-sm font-medium" style="color:var(--text-muted);font-family:'Syne',sans-serif">Search to find a series</p>
+      <p class="text-xs mt-1" style="color:var(--text-dim)">Results from MangaDex and all enabled sources appear here.</p>
+    </div>
+    <div id="search-loading" class="hidden rounded-xl border p-12 flex items-center justify-center gap-3"
+         style="background:var(--surface);border-color:var(--border)">
+      <div class="modal-spinner"></div>
+      <span class="text-sm" style="color:var(--text-muted)">Searching…</span>
+    </div>
+  </div>
+
+  <!-- Mobile sheet overlay -->
+  <div id="sheet-overlay" onclick="closeSetupPanel()"></div>
+
+  <!-- Right: setup panel (desktop) / bottom sheet (mobile) -->
+  <div id="setup-panel" class="rounded-xl border sticky top-8"
+       style="background:var(--surface);border-color:var(--border)">
+    <div class="flex items-center justify-between px-5 py-3.5" style="border-bottom:1px solid var(--border)">
+      <span class="text-sm font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">Configure</span>
+      <button type="button" onclick="closeSetupPanel()"
+              class="text-xs px-2 py-1 rounded transition-colors" style="color:var(--text-dim)">✕</button>
+    </div>
+    <div id="setup-loading-inner" class="hidden flex-col items-center justify-center gap-3 py-12">
+      <div class="modal-spinner"></div>
+      <p id="setup-loading-label" class="text-sm text-center"
+         style="color:var(--text-muted);font-family:'Syne',sans-serif;white-space:pre-line">Loading…</p>
+    </div>
+    <div id="setup-form" class="p-5"></div>
+  </div>
+
+</div>
+{% endif %}
+
 <script>
-  const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
-  function apiSeriesUrl(relPath, suffix) {
-    const segs = relPath.split('/').filter(Boolean).map(encodeURIComponent).join('/');
-    return '/api/series/' + segs + (suffix || '');
-  }
+function apiSeriesUrl(relPath, suffix) {
+  return '/api/series/' + relPath.split('/').filter(Boolean).map(encodeURIComponent).join('/') + (suffix || '');
+}
 
-  function applyFolderSubOverrides(container) {
-    if (!container) return;
-    const params = new URLSearchParams(location.search);
-    const folder = params.get('folder');
-    const sub = params.get('sub');
-    if (folder) {
-      const titleInp = container.querySelector('[name=title]');
-      if (titleInp) {
-        titleInp.value = folder;
-        titleInp.readOnly = true;
-        titleInp.style.cssText += ';opacity:.6;cursor:not-allowed';
-      }
-    }
-    if (sub !== null) {
-      const subSelect = container.querySelector('[name=subfolder]');
-      if (subSelect) {
-        for (const opt of subSelect.options) {
-          if (opt.value === sub) { opt.selected = true; break; }
-        }
-        subSelect.disabled = true;
-        subSelect.style.cssText += ';opacity:.6;cursor:not-allowed';
-        const hidden = document.createElement('input');
-        hidden.type = 'hidden';
-        hidden.name = 'subfolder';
-        hidden.value = sub;
-        subSelect.closest('div').appendChild(hidden);
-      }
-    }
-  }
+/* ── Setup panel ─────────────────────────────── */
+function openSetupPanel() {
+  document.getElementById('setup-panel').classList.add('open');
+  document.getElementById('sheet-overlay').classList.add('open');
+}
+function closeSetupPanel() {
+  document.getElementById('setup-panel').classList.remove('open');
+  document.getElementById('sheet-overlay').classList.remove('open');
+  document.getElementById('setup-form').innerHTML = '';
+  document.querySelectorAll('.result-row.selected').forEach(r => r.classList.remove('selected'));
+}
 
-  function showSetupLoading(label) {
-    var el = document.getElementById('setup-loading');
-    var lbl = document.getElementById('setup-loading-label');
-    if (lbl) lbl.textContent = label || 'Loading…';
-    if (el) {
-      el.classList.remove('hidden');
-      el.classList.add('flex');
-    }
+function showSetupLoading(label) {
+  const el = document.getElementById('setup-loading-inner');
+  document.getElementById('setup-loading-label').textContent = label || 'Loading…';
+  el.classList.remove('hidden');
+  el.classList.add('flex');
+  document.getElementById('setup-form').innerHTML = '';
+}
+function hideSetupLoading() {
+  const el = document.getElementById('setup-loading-inner');
+  el.classList.add('hidden');
+  el.classList.remove('flex');
+}
+
+function applyFolderSubOverrides(container) {
+  if (!container) return;
+  const params = new URLSearchParams(location.search);
+  const folder = params.get('folder');
+  const sub = params.get('sub');
+  if (folder) {
+    const inp = container.querySelector('[name=title]');
+    if (inp) { inp.value = folder; inp.readOnly = true; inp.style.cssText += ';opacity:.6;cursor:not-allowed'; }
   }
-  function hideSetupLoading() {
-    var el = document.getElementById('setup-loading');
-    if (el) {
-      el.classList.add('hidden');
-      el.classList.remove('flex');
+  if (sub !== null) {
+    const sel = container.querySelector('[name=subfolder]');
+    if (sel) {
+      for (const opt of sel.options) { if (opt.value === sub) { opt.selected = true; break; } }
+      sel.disabled = true;
+      sel.style.cssText += ';opacity:.6;cursor:not-allowed';
+      const h = document.createElement('input');
+      h.type = 'hidden'; h.name = 'subfolder'; h.value = sub;
+      sel.closest('div').appendChild(h);
     }
   }
+}
 
-  async function loadSetup(mangaId) {
-    document.getElementById('phase1').classList.add('hidden');
-    document.getElementById('phase2').classList.remove('hidden');
-    showSetupLoading('Loading manga details…');
-    document.getElementById('setup-form').innerHTML = '';
+async function loadSetup(mangaId, rowEl) {
+  selectRow(rowEl);
+  openSetupPanel();
+  showSetupLoading('Loading manga details…');
+  const resp = await fetch(`/api/manga/${mangaId}/link-preview`);
+  hideSetupLoading();
+  const html = await resp.text();
+  document.getElementById('setup-form').innerHTML = html;
+  if (!resp.ok) return;
+  htmx.process(document.getElementById('setup-form'));
+  applyFolderSubOverrides(document.getElementById('setup-form'));
+}
 
-    const resp = await fetch(`/api/manga/${mangaId}/link-preview`);
+window.loadFullMangaSetup = async function(mangaId) {
+  showSetupLoading('Fetching scanlation groups from MangaDex…\nThis can take a few seconds.');
+  try {
+    const resp = await fetch(`/api/manga/${mangaId}/setup`);
     hideSetupLoading();
     const html = await resp.text();
     document.getElementById('setup-form').innerHTML = html;
     if (!resp.ok) return;
     htmx.process(document.getElementById('setup-form'));
-
     applyFolderSubOverrides(document.getElementById('setup-form'));
-  }
+    if (document.getElementById('group-picker-list')) { initGroupOrderUI(); syncPreferredGroupsFromPicker(); }
+  } catch (e) { hideSetupLoading(); throw e; }
+};
 
-  window.loadFullMangaSetup = async function(mangaId) {
-    showSetupLoading('Fetching scanlation groups from MangaDex…\nThis can take a few seconds.');
-    document.getElementById('setup-form').innerHTML = '';
-    try {
-      const resp = await fetch(`/api/manga/${mangaId}/setup`);
-      hideSetupLoading();
-      const html = await resp.text();
-      document.getElementById('setup-form').innerHTML = html;
-      if (!resp.ok) return;
-      htmx.process(document.getElementById('setup-form'));
-      applyFolderSubOverrides(document.getElementById('setup-form'));
-      if (document.getElementById('group-picker-list')) {
-        initGroupOrderUI();
-        syncPreferredGroupsFromPicker();
-      }
-    } catch (e) {
-      hideSetupLoading();
-      throw e;
-    }
-  };
-
-  window.linkMangaFromConfirm = async function(opts) {
-    opts = opts || {};
-    const form = document.getElementById('link-confirm-form');
-    if (!form) return;
-    const fd = new FormData(form);
-    fd.set('preferred_groups_json', '[]');
-    fd.set('start_chapter', '0');
-    fd.set('exclude_from_fix', 'false');
-    fd.set('merge_volumes_override', '');
-    try {
-      const res = await fetch('/api/series', {
-        method: 'POST',
-        body: fd,
-        headers: { 'Accept': 'application/json' },
-      });
-      const raw = await res.text();
-      let data = null;
-      try { data = JSON.parse(raw); } catch (_) {}
-      if (!res.ok) {
-        let msg = res.statusText;
-        if (data) {
-          const d = data.detail;
-          if (typeof d === 'string') msg = d;
-          else if (Array.isArray(d)) msg = d.map(function(x) { return x.msg || JSON.stringify(x); }).join('; ');
-          else if (d) msg = String(d);
-          else if (data.message) msg = data.message;
-        } else if (raw) msg = raw;
-        alert('Could not add series: ' + msg);
-        return;
-      }
-      if (!data || !data.path) {
-        alert('Unexpected response from server');
-        return;
-      }
-      if (opts.configureDownloads) {
-        await loadGrabOptionsAfterLink(data.path);
-      } else {
-        window.location.href = seriesDetailUrl(data.path);
-      }
-    } catch (e) {
-      alert('Could not add series: ' + e);
-    }
-  };
-
-  function seriesDetailUrl(relPath) {
-    // Percent-encode each segment so titles with reserved chars like ``&``
-    // (e.g. ``Yotsuba&!``) don't break the redirect target.
-    var segs = (relPath || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
-    return '/series/' + segs;
-  }
-
-  async function loadGrabOptionsAfterLink(relPath) {
-    showSetupLoading('Fetching scanlation groups from MangaDex…\nThis can take a few seconds.');
-    document.getElementById('setup-form').innerHTML = '';
-    const url = apiSeriesUrl(relPath, '/grab-options');
-    let resp;
-    try {
-      resp = await fetch(url);
-    } catch (e) {
-      hideSetupLoading();
-      window.location.href = seriesDetailUrl(relPath);
-      return;
-    }
+async function loadSuwayomiSetup(sourceId, mangaId, rowEl) {
+  selectRow(rowEl);
+  openSetupPanel();
+  showSetupLoading('Loading manga details…');
+  try {
+    const resp = await fetch(`/api/suwayomi/${encodeURIComponent(sourceId)}/${encodeURIComponent(mangaId)}/setup`);
     hideSetupLoading();
-    if (!resp.ok) {
-      window.location.href = seriesDetailUrl(relPath);
+    document.getElementById('setup-form').innerHTML = await resp.text();
+    if (!resp.ok) return;
+    htmx.process(document.getElementById('setup-form'));
+    applyFolderSubOverrides(document.getElementById('setup-form'));
+  } catch (e) {
+    hideSetupLoading();
+    document.getElementById('setup-form').innerHTML = `<p class="text-sm" style="color:var(--danger)">Could not load: ${e}</p>`;
+  }
+}
+
+function selectRow(rowEl) {
+  document.querySelectorAll('.result-row.selected').forEach(r => r.classList.remove('selected'));
+  if (rowEl) rowEl.classList.add('selected');
+}
+
+/* ── Search results click ─────────────────────── */
+document.getElementById('search-results').addEventListener('click', async function(e) {
+  const row = e.target.closest('.result-row');
+  if (!row) return;
+  const sourceKey = row.dataset.sourceKey || 'mangadex';
+  if (sourceKey.startsWith('suwayomi:')) {
+    await loadSuwayomiSetup(sourceKey.split(':')[1], row.dataset.id, row);
+  } else {
+    await loadSetup(row.dataset.id, row);
+  }
+});
+
+/* ── HTMX search state ───────────────────────── */
+document.getElementById('search-input').addEventListener('htmx:beforeRequest', function() {
+  document.getElementById('search-loading').classList.remove('hidden');
+  document.getElementById('search-loading').classList.add('flex');
+  document.getElementById('search-empty').classList.add('hidden');
+  document.getElementById('search-results-wrap').classList.add('hidden');
+});
+
+document.getElementById('search-input').addEventListener('htmx:afterRequest', function() {
+  document.getElementById('search-loading').classList.add('hidden');
+  document.getElementById('search-loading').classList.remove('flex');
+  const hasResults = document.getElementById('search-results').children.length > 0;
+  document.getElementById('search-results-wrap').classList.toggle('hidden', !hasResults);
+  document.getElementById('search-empty').classList.toggle('hidden', hasResults);
+});
+
+/* ── URL paste ───────────────────────────────── */
+async function handleUrlPaste(value) {
+  const status = document.getElementById('url-status');
+  const match = value.match(UUID_RE);
+  if (!match) { status.classList.add('hidden'); return; }
+  status.textContent = 'Found MangaDex UUID, loading…';
+  status.style.color = 'var(--text-dim)';
+  status.classList.remove('hidden');
+  try {
+    await loadSetup(match[0], null);
+    status.classList.add('hidden');
+  } catch(e) {
+    status.textContent = '✗ Could not load manga';
+    status.style.color = 'var(--danger)';
+  }
+}
+
+/* ── Link confirm (MDX quick-link flow) ──────── */
+window.linkMangaFromConfirm = async function(opts) {
+  opts = opts || {};
+  const form = document.getElementById('link-confirm-form');
+  if (!form) return;
+  const fd = new FormData(form);
+  fd.set('preferred_groups_json', '[]');
+  fd.set('start_chapter', '0');
+  fd.set('exclude_from_fix', 'false');
+  fd.set('merge_volumes_override', '');
+  try {
+    const res = await fetch('/api/series', { method: 'POST', body: fd, headers: { 'Accept': 'application/json' } });
+    const raw = await res.text();
+    let data = null;
+    try { data = JSON.parse(raw); } catch (_) {}
+    if (!res.ok) {
+      const d = data && data.detail;
+      const msg = (typeof d === 'string' ? d : Array.isArray(d) ? d.map(x => x.msg||JSON.stringify(x)).join('; ') : null) || (data && data.message) || raw || res.statusText;
+      alert('Could not add series: ' + msg);
       return;
     }
-    document.getElementById('setup-form').innerHTML = await resp.text();
-    htmx.process(document.getElementById('setup-form'));
-    if (document.getElementById('group-picker-list')) {
-      initGroupOrderUI();
-      syncPreferredGroupsFromPicker();
+    if (!data || !data.path) { alert('Unexpected response from server'); return; }
+    if (opts.configureDownloads) {
+      await loadGrabOptionsAfterLink(data.path);
+    } else {
+      window.location.href = seriesDetailUrl(data.path);
     }
-    const grabForm = document.getElementById('grab-options-form');
-    if (grabForm) {
-      grabForm.addEventListener('htmx:afterRequest', function handler(e) {
-        if (!e.detail || !e.detail.successful) return;
-        grabForm.removeEventListener('htmx:afterRequest', handler);
-        window.location.href = seriesDetailUrl(relPath);
-      });
-    }
+  } catch (e) { alert('Could not add series: ' + e); }
+};
+
+function seriesDetailUrl(relPath) {
+  return '/series/' + (relPath||'').split('/').filter(Boolean).map(encodeURIComponent).join('/');
+}
+
+async function loadGrabOptionsAfterLink(relPath) {
+  showSetupLoading('Fetching scanlation groups from MangaDex…\nThis can take a few seconds.');
+  let resp;
+  try { resp = await fetch(apiSeriesUrl(relPath, '/grab-options')); } catch (e) { hideSetupLoading(); window.location.href = seriesDetailUrl(relPath); return; }
+  hideSetupLoading();
+  if (!resp.ok) { window.location.href = seriesDetailUrl(relPath); return; }
+  document.getElementById('setup-form').innerHTML = await resp.text();
+  htmx.process(document.getElementById('setup-form'));
+  if (document.getElementById('group-picker-list')) { initGroupOrderUI(); syncPreferredGroupsFromPicker(); }
+  const grabForm = document.getElementById('grab-options-form');
+  if (grabForm) {
+    grabForm.addEventListener('htmx:afterRequest', function handler(e) {
+      if (!e.detail || !e.detail.successful) return;
+      grabForm.removeEventListener('htmx:afterRequest', handler);
+      window.location.href = seriesDetailUrl(relPath);
+    });
   }
+}
 
-  function resetToPhase1() {
-    document.getElementById('phase1').classList.remove('hidden');
-    document.getElementById('phase2').classList.add('hidden');
-    document.getElementById('setup-form').innerHTML = '';
-    document.getElementById('url-input').value = '';
-    document.getElementById('url-status').classList.add('hidden');
-    document.getElementById('search-results').innerHTML = '';
-  }
+/* ── MangaDex companion picker ───────────────── */
+function selectMdxCompanion(id, title) {
+  document.getElementById('mdx-companion-id').value = id;
+  document.getElementById('mdx-companion-selected-title').textContent = title;
+  document.getElementById('mdx-companion-selected').classList.remove('hidden');
+  document.getElementById('mdx-companion-selected').style.display = 'flex';
+  document.getElementById('mdx-companion-search-wrap').style.display = 'none';
+  document.getElementById('mdx-companion-results').style.display = 'none';
+}
+function clearMdxCompanion() {
+  document.getElementById('mdx-companion-id').value = '';
+  document.getElementById('mdx-companion-q').value = '';
+  document.getElementById('mdx-companion-results').innerHTML = '';
+  document.getElementById('mdx-companion-results').style.display = 'none';
+  document.getElementById('mdx-companion-selected').classList.add('hidden');
+  document.getElementById('mdx-companion-selected').style.display = '';
+  document.getElementById('mdx-companion-search-wrap').style.display = '';
+}
 
-  async function handleUrlPaste(value) {
-    const status = document.getElementById('url-status');
-    const match = value.match(UUID_RE);
-    if (!match) { status.classList.add('hidden'); return; }
-    status.textContent = 'Found UUID, loading…';
-    status.style.color = 'var(--text-dim)';
-    status.classList.remove('hidden');
-    try {
-      await loadSetup(match[0]);
-    } catch(e) {
-      status.textContent = '✗ Could not load manga';
-      status.style.color = 'var(--danger)';
-    }
-  }
-
-  document.getElementById('search-results').addEventListener('click', async function(e) {
-    const card = e.target.closest('.search-result');
-    if (!card) return;
-    await loadSetup(card.dataset.id);
-  });
-
-  (function() {
-    const q = new URLSearchParams(location.search).get('q');
-    if (!q) return;
-    const inp = document.getElementById('search-input');
-    const results = document.getElementById('search-results');
-    if (!inp) return;
-    inp.value = q;
-    fetch('/api/search?q=' + encodeURIComponent(q))
-      .then(r => r.text())
-      .then(html => { results.innerHTML = html; htmx.process(results); });
-  })();
+/* ── Pre-fill search from ?q= ───────────────── */
+(function() {
+  const q = new URLSearchParams(location.search).get('q');
+  if (!q) return;
+  const inp = document.getElementById('search-input');
+  if (!inp) return;
+  inp.value = q;
+  document.getElementById('search-empty').classList.add('hidden');
+  document.getElementById('search-loading').classList.remove('hidden');
+  document.getElementById('search-loading').classList.add('flex');
+  fetch('/api/search?q=' + encodeURIComponent(q))
+    .then(r => r.text())
+    .then(html => {
+      document.getElementById('search-results').innerHTML = html;
+      htmx.process(document.getElementById('search-results'));
+      document.getElementById('search-loading').classList.add('hidden');
+      document.getElementById('search-loading').classList.remove('flex');
+      const hasResults = document.getElementById('search-results').children.length > 0;
+      document.getElementById('search-results-wrap').classList.toggle('hidden', !hasResults);
+      document.getElementById('search-empty').classList.toggle('hidden', hasResults);
+    });
+})();
 </script>
-{% endif %}
 {% endblock %}

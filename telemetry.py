@@ -1,4 +1,4 @@
-"""Anonymous opt-out telemetry — pings a Cloudflare Worker with aggregate usage stats.
+"""Anonymous opt-out telemetry - pings a Cloudflare Worker with aggregate usage stats.
 
 Disable by setting TELEMETRY=false in the container environment.
 No personal data, no IPs stored. Instance ID is a random UUID generated once

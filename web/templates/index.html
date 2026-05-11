@@ -228,6 +228,33 @@
   .act-btn.danger { color: var(--danger); }
   .act-btn:hover  { background: var(--border-mid); }
   .act-btn:disabled { opacity: .45; cursor: wait; }
+  .source-tag {
+    font-size: 11px; font-weight: 500;
+    padding: 2px 8px; border-radius: 5px;
+    background: var(--surface-alt);
+    color: var(--text-dim);
+    font-family: 'DM Sans', sans-serif;
+  }
+  .sort-wrap {
+    position: relative; display: inline-flex; align-items: center;
+  }
+  .sort-wrap svg {
+    position: absolute; right: 9px; pointer-events: none;
+    color: var(--text-dim);
+  }
+  .sort-select {
+    height: 40px; box-sizing: border-box;
+    font-size: 12px; font-weight: 500;
+    padding: 0 28px 0 10px; border-radius: 7px;
+    border: 1px solid var(--border);
+    background: var(--surface-alt);
+    color: var(--text-muted);
+    font-family: 'DM Sans', sans-serif;
+    cursor: pointer; outline: none;
+    appearance: none; -webkit-appearance: none;
+  }
+  .sort-select:focus { border-color: var(--accent); }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ── Inline log strip ──────────────────────────────────── */
   .series-log {
@@ -272,6 +299,15 @@
     </p>
   </div>
   <div class="flex items-center gap-3">
+    <div class="sort-wrap">
+      <select id="sort-select" class="sort-select" onchange="setSort(this.value)" title="Sort order">
+        <option value="name">A – Z</option>
+        <option value="latest">Latest release</option>
+      </select>
+      <svg width="10" height="6" viewBox="0 0 10 6" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </div>
     <div class="view-toggle">
       <button id="btn-grid" onclick="setView('grid')" title="Grid view">
         <svg viewBox="0 0 14 14" fill="currentColor" width="13" height="13">
@@ -289,11 +325,11 @@
         </svg>
       </button>
     </div>
-    <a href="/jobs"
-       class="bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors"
-       style="font-family:'Syne',sans-serif;letter-spacing:.02em">
+    <button id="btn-sync-all" onclick="syncAll(this)"
+       class="bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold px-4 rounded-lg transition-colors"
+       style="font-family:'Syne',sans-serif;letter-spacing:.02em;height:40px;display:inline-flex;align-items:center;border:none;cursor:pointer">
       Sync All
-    </a>
+    </button>
   </div>
 </div>
 
@@ -311,7 +347,9 @@
   <div class="sc-grid series-item{% if not s.linked %} unlinked{% endif %}"
        data-path="{{ s.path }}"
        data-details-url="/series/{{ s.path }}"
-       data-has-cover="{{ 'yes' if s.cover_url else 'no' }}">
+       data-has-cover="{{ 'yes' if s.cover_url else 'no' }}"
+       data-sort-name="{{ s.name | lower }}"
+       data-sort-latest="{{ s.latest_chapter_at or '' }}">
     <div class="cover-wrap">
       {% if s.cover_url %}
       <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.name }}"
@@ -350,8 +388,12 @@
         <button class="act-btn accent" onclick="seriesSync(this)" data-path="{{ s.path }}">Sync</button>
         <a href="/series/{{ s.path }}" class="act-btn muted"
            style="text-decoration:none;display:inline-flex;align-items:center">Details</a>
+        {% if (s.source_name or '').startswith('suwayomi:') %}
+          <span class="source-tag">{{ source_labels.get(s.source_name, 'Source') }}</span>
+        {% else %}
         <a href="https://mangadex.org/title/{{ s.config.id }}" target="_blank" rel="noopener"
            class="act-btn muted" style="text-decoration:none;display:inline-flex;align-items:center" title="View on MangaDex">MangaDex ↗</a>
+        {% endif %}
         {% else %}
         <a href="/series?q={{ s.name | urlencode }}&folder={{ s.name | urlencode }}&sub={{ s.subfolder | urlencode }}" class="act-btn accent"
            style="text-decoration:none;display:inline-flex;align-items:center">Link →</a>
@@ -369,7 +411,9 @@
   <div class="sc-list series-item{% if not s.linked %} unlinked{% endif %}"
        data-path="{{ s.path }}"
        data-details-url="/series/{{ s.path }}"
-       data-has-cover="{{ 'yes' if s.cover_url else 'no' }}">
+       data-has-cover="{{ 'yes' if s.cover_url else 'no' }}"
+       data-sort-name="{{ s.name | lower }}"
+       data-sort-latest="{{ s.latest_chapter_at or '' }}">
     <div class="cover-wrap">
       {% if s.cover_url %}
       <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.name }}"
@@ -398,8 +442,12 @@
       <button class="act-btn accent" onclick="seriesSync(this)" data-path="{{ s.path }}">Sync</button>
       <a href="/series/{{ s.path }}" class="act-btn muted"
          style="text-decoration:none;display:inline-flex;align-items:center">Details</a>
+      {% if (s.source_name or '').startswith('suwayomi:') %}
+        <span class="source-tag">{{ source_labels.get(s.source_name, 'Source') }}</span>
+      {% else %}
       <a href="https://mangadex.org/title/{{ s.config.id }}" target="_blank" rel="noopener"
          class="act-btn muted" style="text-decoration:none;display:inline-flex;align-items:center" title="View on MangaDex">MangaDex ↗</a>
+      {% endif %}
       {% else %}
       <a href="/series?q={{ s.name | urlencode }}" class="act-btn accent"
          style="text-decoration:none;display:inline-flex;align-items:center">Link →</a>
@@ -426,11 +474,77 @@ function setView(v) {
   document.getElementById('btn-list').classList.toggle('active', !isGrid);
   localStorage.setItem('dash-view', v);
 }
+
+/* ── Sort ────────────────────────────────────────────── */
+function setSort(v) {
+  localStorage.setItem('dash-sort', v);
+  const sel = document.getElementById('sort-select');
+  if (sel) sel.value = v;
+  ['series-grid', 'series-list'].forEach(id => {
+    const container = document.getElementById(id);
+    if (!container) return;
+    const items = Array.from(container.querySelectorAll('.series-item'));
+    items.sort((a, b) => {
+      if (v === 'latest') {
+        const ta = a.dataset.sortLatest || '';
+        const tb = b.dataset.sortLatest || '';
+        if (!ta && !tb) return 0;
+        if (!ta) return 1;
+        if (!tb) return -1;
+        return tb.localeCompare(ta);
+      }
+      return (a.dataset.sortName || '').localeCompare(b.dataset.sortName || '');
+    });
+    items.forEach(el => container.appendChild(el));
+  });
+}
+
 (function() {
   if (!document.getElementById('series-grid')) return;
-  const saved = localStorage.getItem('dash-view') || 'grid';
-  setView(saved);
+  const savedView = localStorage.getItem('dash-view') || 'grid';
+  setView(savedView);
+  const savedSort = localStorage.getItem('dash-sort') || 'name';
+  setSort(savedSort);
 })();
+
+/* ── Sync All ────────────────────────────────────────── */
+const _syncSpinner = `<svg style="animation:spin .8s linear infinite;display:inline-block;vertical-align:middle;margin-right:5px" width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5" stroke-dasharray="14 8" stroke-linecap="round"/></svg>`;
+let _syncPollTimer = null;
+
+function _setSyncBusy(busy) {
+  const btn = document.getElementById('btn-sync-all');
+  if (!btn) return;
+  btn.disabled = busy;
+  btn.innerHTML = busy ? _syncSpinner + 'Syncing…' : 'Sync All';
+  btn.style.opacity = busy ? '0.7' : '';
+}
+
+function _pollSyncAll() {
+  clearTimeout(_syncPollTimer);
+  fetch('/api/jobs/active')
+    .then(r => r.json())
+    .then(d => {
+      const running = (d.jobs || []).some(j => j.job_type === 'sync_all');
+      _setSyncBusy(running);
+      if (running) _syncPollTimer = setTimeout(_pollSyncAll, 2000);
+    })
+    .catch(() => {});
+}
+
+async function syncAll(btn) {
+  _setSyncBusy(true);
+  try {
+    const r = await fetch('/api/jobs/sync-all', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok || !d.ok) throw new Error(d.detail || 'error');
+    _pollSyncAll();
+  } catch (e) {
+    _setSyncBusy(false);
+  }
+}
+
+// check on load in case a sync is already in progress
+_pollSyncAll();
 
 document.addEventListener('click', (e) => {
   const card = e.target.closest('.series-item');

@@ -2,6 +2,10 @@ import os
 import re
 import time
 from file_permissions import sanitize_file_permission_mask
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sources.suwayomi import SuwayomiClient
 
 # Settings are stored in SQLite (``app_config`` table under ``DATA_DIR/db/``).
 # ``CONFIG_PATH`` env still selects a legacy ``settings.json`` for one-time import
@@ -24,6 +28,10 @@ DEFAULTS = {
     "webhook_url":     "",
     "webhook_platform": "generic",  # generic | discord | ntfy
     "telemetry_enabled": True,
+    "suwayomi_url":      "",
+    "suwayomi_username": "",
+    "suwayomi_password": "",
+    "enabled_sources":   [],
 }
 
 
@@ -109,3 +117,17 @@ def save_settings(data: dict):
         write_stored_settings(conn, merged)
     finally:
         conn.close()
+
+
+def get_suwayomi_client() -> "SuwayomiClient | None":
+    """Return a SuwayomiClient if suwayomi_url is configured, else None."""
+    from sources.suwayomi import SuwayomiClient
+    settings = load_settings()
+    url = (settings.get("suwayomi_url") or "").strip()
+    if not url:
+        return None
+    return SuwayomiClient(
+        url,
+        settings.get("suwayomi_username", ""),
+        settings.get("suwayomi_password", ""),
+    )

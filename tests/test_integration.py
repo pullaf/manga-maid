@@ -1,4 +1,4 @@
-"""Integration tests — hit the real MangaDex API and invoke mdx.
+"""Integration tests - hit the real MangaDex API and invoke mdx.
 
 Run with:  pytest tests/test_integration.py --run-integration -v
 
@@ -31,7 +31,7 @@ def mdx():
     return path
 
 
-# One shared download dir per test session — avoids re-downloading the same
+# One shared download dir per test session - avoids re-downloading the same
 # files across multiple download tests.
 @pytest.fixture(scope="module")
 def dl_dir(tmp_path_factory):
@@ -39,7 +39,7 @@ def dl_dir(tmp_path_factory):
 
 
 # ---------------------------------------------------------------------------
-# MangaDex API — no mdx needed
+# MangaDex API - no mdx needed
 # ---------------------------------------------------------------------------
 
 class TestMangaDexAPI:
@@ -75,7 +75,7 @@ class TestMangaDexAPI:
         assert ch.ch_num == 15.5
 
     def test_chapters_after_returns_half_chapters(self):
-        # vol 1 has ch 5.1 and 5.2 — good float chapter test
+        # vol 1 has ch 5.1 and 5.2 - good float chapter test
         chapters = manga_sync.fetch_chapters_after(CONFIG, after=4)
         nums = {c.ch_num for c in chapters}
         assert 5.0 in nums
@@ -166,7 +166,7 @@ class TestVolumeDownload:
 
 
 # ---------------------------------------------------------------------------
-# Covers (API only — Kavita upload not tested without an instance)
+# Covers (API only - Kavita upload not tested without an instance)
 # ---------------------------------------------------------------------------
 
 class TestCovers:
@@ -178,7 +178,7 @@ class TestCovers:
         import urllib.request
         covers = manga_sync.fetch_volume_covers(MANGA_ID)
         url = covers["1"]
-        # Fetch only the first byte — CDN doesn't support HEAD
+        # Fetch only the first byte - CDN doesn't support HEAD
         req = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             assert resp.status in (200, 206)

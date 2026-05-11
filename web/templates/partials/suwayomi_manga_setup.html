@@ -1,0 +1,105 @@
+<form method="post" action="/api/series" class="space-y-5">
+  <input type="hidden" name="source_key"      value="{{ source_key }}">
+  <input type="hidden" name="manga_id"         value="{{ manga_id }}">
+  <input type="hidden" name="cover_filename"   value="">
+  <input type="hidden" name="language"         value="{{ lang }}">
+  <input type="hidden" name="preferred_groups_json" value="[]">
+
+  {% if existing_path %}
+  <div class="rounded-lg px-3 py-2.5 text-xs flex items-start gap-2"
+       style="background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.35);color:#f87171">
+    <span class="shrink-0 font-bold">!</span>
+    <span>Already in your library at <a href="/series/{{ existing_path }}" style="text-decoration:underline;color:#f87171">{{ existing_path }}</a>.</span>
+  </div>
+  {% endif %}
+
+  <!-- Manga header -->
+  <div class="flex gap-4 pb-4" style="border-bottom:1px solid var(--border)">
+    <img src="{{ cover_url }}" alt="" class="w-16 h-24 object-cover rounded-lg shrink-0 shadow-sm"
+         onerror="this.style.display='none'">
+    <div class="min-w-0">
+      <h3 class="font-semibold leading-tight" style="color:var(--text);font-family:'Syne',sans-serif">{{ title }}</h3>
+      <div class="flex items-center gap-2 mt-1.5 flex-wrap">
+        <span class="text-xs px-2 py-0.5 rounded-full font-semibold"
+              style="background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent-light);font-family:'Syne',sans-serif">
+          {{ source_name }}
+        </span>
+        <span class="text-xs" style="color:var(--text-dim)">{{ lang | upper }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Location + start chapter -->
+  <div class="grid grid-cols-2 gap-3">
+    <div>
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Location</label>
+      <select name="subfolder" class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+        {% if not subdirs %}<option value="">(root)</option>{% endif %}
+        {% for d in subdirs %}
+        <option value="{{ d }}" {% if loop.first %}selected{% endif %}>{{ d }}/</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Start from chapter ≥</label>
+      <input type="number" name="start_chapter" value="0" min="0" step="any" inputmode="decimal"
+             class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+    </div>
+  </div>
+
+  <div>
+    <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Folder name</label>
+    <input type="text" name="title" required value="{{ title }}"
+           class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+  </div>
+
+  <!-- Optional MangaDex enrichment: search-and-pick -->
+  <div>
+    <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">
+      MangaDex companion
+      <span class="font-normal" style="color:var(--text-dim)">(optional - enables covers and volume metadata)</span>
+    </label>
+
+    <!-- Hidden field that actually gets submitted -->
+    <input type="hidden" name="mangadex_id" id="mdx-companion-id">
+
+    <!-- Selected state: shows chosen title with a clear button -->
+    <div id="mdx-companion-selected" class="hidden items-center gap-2 mb-2">
+      <span class="text-sm flex-1 truncate" id="mdx-companion-selected-title" style="color:var(--text)"></span>
+      <button type="button" onclick="clearMdxCompanion()"
+              class="text-xs px-2 py-0.5 rounded" style="color:var(--danger);background:color-mix(in srgb,var(--danger) 10%,transparent)">
+        Clear
+      </button>
+    </div>
+
+    <!-- Search field (hidden once something is selected) -->
+    <div id="mdx-companion-search-wrap">
+      <input type="text" id="mdx-companion-q" placeholder="Search MangaDex to link…"
+             autocomplete="off"
+             class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none"
+             hx-get="/api/search/mdx-companion"
+             hx-trigger="keyup changed delay:400ms"
+             hx-target="#mdx-companion-results"
+             hx-on::after-request="document.getElementById('mdx-companion-results').style.display = document.getElementById('mdx-companion-results').innerHTML.trim() ? 'block' : 'none'"
+             name="q">
+      <!-- Results dropdown -->
+      <div id="mdx-companion-results"
+           class="mt-1 rounded-lg overflow-hidden"
+           style="border:1px solid var(--border);background:var(--surface);max-height:220px;overflow-y:auto;display:none">
+      </div>
+    </div>
+
+    <p class="text-xs mt-1.5" style="color:var(--text-dim)">
+      Search and pick the matching MangaDex title. Used only for cover art and volume count - downloads still come from {{ source_name }}.
+    </p>
+  </div>
+
+  <input type="hidden" name="exclude_from_fix" value="false">
+  <input type="hidden" name="merge_volumes_override" value="">
+
+  <button type="submit"
+          class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold py-2.5 rounded-lg transition-colors"
+          style="font-family:'Syne',sans-serif">
+    Add Series
+  </button>
+</form>

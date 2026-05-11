@@ -9,9 +9,36 @@ services:
       SYNC_CRON: "0 */6 * * *"   # every 6 hours — standard cron syntax
       DEFAULT_LANGUAGE: "en"
       TZ: "Europe/Rome"
+      # Set automatically when running --profile suwayomi
+      SUWAYOMI_URL: ${SUWAYOMI_URL:-}
     ports:
       - "4649:4649"
     volumes:
       - /mnt/storage/media/books/manga:/manga
       - /home/fabri/.local/share/manga-sync-data:/data
     restart: unless-stopped
+
+  # Optional: remove or comment out if you don't need extra sources
+  suwayomi:
+    image: ghcr.io/suwayomi/suwayomi-server:latest
+    environment:
+      TZ: ${TZ:-Europe/Rome}
+    ports:
+      - "4567:4567"
+    volumes:
+      - suwayomi-data:/root/.local/share/Tachidesk
+    restart: unless-stopped
+
+  # Optional: only needed for sources protected by Cloudflare (e.g. Comick)
+  # Configure its URL in Suwayomi → Settings → FlareSolverr: http://flaresolverr:8191
+  # flaresolverr:
+  #   image: ghcr.io/flaresolverr/flaresolverr:latest
+  #   environment:
+  #     TZ: ${TZ:-Europe/Rome}
+  #     LOG_LEVEL: warning
+  #   ports:
+  #     - "8191:8191"
+  #   restart: unless-stopped
+
+volumes:
+  suwayomi-data:

@@ -22,9 +22,6 @@ MANGA_ROOT = os.environ.get("MANGA_ROOT", "/manga")
 _MANGA_ROOT_REAL = os.path.realpath(MANGA_ROOT)
 DATA_DIR   = os.environ.get("DATA_DIR",   "/data")
 SYNC_LOG   = os.environ.get("SYNC_LOG",   "/data/logs/sync.log")
-MDEX_BASE  = "https://api.mangadex.org"
-MDEX_COVERS = "https://uploads.mangadex.org/covers"
-CONTENT_RATINGS = ["safe", "suggestive", "erotica", "pornographic"]
 
 # ISO-style codes aligned with MangaDex ``translatedLanguage`` (ComicInfo LanguageISO).
 _SERIES_LANGUAGE_CHOICES_BASE = [
@@ -100,6 +97,7 @@ from sync_config import (  # noqa: E402
     save_settings,
     sanitize_volume_naming,
     sanitize_sync_cron,
+    get_suwayomi_client,
 )
 from kavita import KavitaClient                        # noqa: E402
 import db as _db                                       # noqa: E402
@@ -111,6 +109,36 @@ from comicinfo import (                                # noqa: E402
 from comicinfo_defs import MANGA_VALUES, AGE_RATING_VALUES  # noqa: E402
 from file_permissions import sanitize_file_permission_mask   # noqa: E402
 from naming import apply_naming_template, format_num, floor_int_str  # noqa: E402
+from sources.mangadex import MangaDexSource, MDEX_COVERS              # noqa: E402
+
+_mdx = MangaDexSource()
+
+# ---------------------------------------------------------------------------
+# Suwayomi source cache (TTL 60 s)
+# ---------------------------------------------------------------------------
+_suwayomi_cache: dict = {"sources": [], "ts": 0.0}
+_SUWAYOMI_CACHE_TTL = 60.0
+
+
+def _get_suwayomi_sources() -> list[dict]:
+    import time as _time
+    now = _time.monotonic()
+    if now - _suwayomi_cache["ts"] > _SUWAYOMI_CACHE_TTL:
+        client = get_suwayomi_client()
+        if client:
+            try:
+                _suwayomi_cache["sources"] = client.list_sources()
+            except Exception:
+                _suwayomi_cache["sources"] = []
+        else:
+            _suwayomi_cache["sources"] = []
+        _suwayomi_cache["ts"] = now
+    return _suwayomi_cache["sources"]
+
+
+def _enabled_source_keys() -> set[str]:
+    """Return set of explicitly enabled Suwayomi source keys (empty = none)."""
+    return set(load_settings().get("enabled_sources") or [])
 
 
 @contextlib.asynccontextmanager
@@ -217,7 +245,7 @@ def _run_disk_reconcile(job_id: int, payload: dict | None = None) -> None:
 
     roots = [rf for rf in (load_settings().get("root_folders") or []) if rf is not None]
     if not roots:
-        _db.append_job_log(conn, job_id, "[reconcile] skipped — no root folders configured")
+        _db.append_job_log(conn, job_id, "[reconcile] skipped - no root folders configured")
         _db.append_job_log(conn, job_id, "[reconcile] done")
         return
 
@@ -380,52 +408,42 @@ def _cover_url(manga_id: str, filename: str) -> str:
 
 
 
-def _mdex_tankobon_volume_count_from_aggregate(agg) -> int:
-    """Buckets in MangaDex /aggregate.
-
-    Keys ``none`` and ``0`` are not numbered tankōbon volumes: ``0`` holds
-    specials/extras that often have no ``chapter`` number in the API, so they
-    should not inflate *volume* parity vs on-disk ``vol.N`` files.
-    """
-    if not agg:
-        return 0
-    vols = agg.get("volumes") or {}
-    return len([k for k in vols if k not in ("none", "0")])
-
-
-def _parse_last_volume(attr: dict | None) -> int:
-    """Parse ``attributes.lastVolume`` (canonical tankōbon count) into an int.
-
-    Empty / non-numeric values return 0 so callers fall back to aggregate.
-    """
-    if not attr:
-        return 0
-    raw = (attr.get("lastVolume") or "").strip()
-    if not raw:
-        return 0
-    try:
-        n = int(float(raw))
-        return n if n > 0 else 0
-    except (ValueError, TypeError):
-        return 0
-
-
 def _resolve_total_volumes(attr: dict | None, manga_id: str) -> int:
-    """Best-effort canonical tankōbon count for parity display.
+    """Best-effort canonical tankōbon count for parity display."""
+    return _mdx.resolve_total_volumes(attr, manga_id)
 
-    Prefers ``attributes.lastVolume`` (set for most completed manga); falls
-    back to ``/aggregate`` **without** a language filter — that bucket count
-    matches what MangaDex itself displays on the title page, instead of just
-    the volumes that happen to be translated to the user's chosen language.
-    """
-    n = _parse_last_volume(attr)
-    if n:
-        return n
-    try:
-        agg = _mdex_get(f"/manga/{manga_id}/aggregate", {})
-    except Exception:
-        return 0
-    return _mdex_tankobon_volume_count_from_aggregate(agg)
+
+def _fetch_mdx_aggregate(manga_id: str) -> dict:
+    """Fetch raw /aggregate response for a MangaDex manga."""
+    return _mdx._api_get(f"/manga/{manga_id}/aggregate", {}, timeout=15)
+
+
+def _apply_volume_mapping(conn, series_id: int, agg: dict) -> None:
+    """Map local chapters to MDX volume buckets using an /aggregate response."""
+    volumes_map = (agg or {}).get("volumes") or {}
+    for vol_key, vol_data in volumes_map.items():
+        if vol_key in ("none", "0"):
+            continue
+        try:
+            vol_num = float(vol_key)
+        except (ValueError, TypeError):
+            continue
+        vol_id = _db.upsert_volume(conn, series_id, vol_num)
+        for ch_key in (vol_data.get("chapters") or {}).keys():
+            try:
+                ch_num = float(ch_key)
+            except (ValueError, TypeError):
+                continue
+            ch_row = conn.execute(
+                "SELECT id FROM chapters WHERE series_id=? AND chapter_num=?",
+                (series_id, ch_num),
+            ).fetchone()
+            if ch_row:
+                conn.execute(
+                    "UPDATE chapters SET volume_id=? WHERE id=? AND (volume_id IS NULL OR volume_id != ?)",
+                    (vol_id, ch_row["id"], vol_id),
+                )
+    conn.commit()
 
 
 def _scan_settings_naming_issues(series_path: str | None = None) -> list[tuple[str, str, str]]:
@@ -480,7 +498,7 @@ def _scan_settings_naming_issues(series_path: str | None = None) -> list[tuple[s
         old_dir = os.path.dirname(old_path)
         stem, ext = os.path.splitext(old_name)
         # Files we did not download ourselves (status='on_disk') must be
-        # named with series-level info only — no per-chapter title/group
+        # named with series-level info only - no per-chapter title/group
         # leaking into the proposed filename.
         is_on_disk = row["chapter_status"] == "on_disk"
         new_stem = apply_naming_template(
@@ -679,100 +697,22 @@ def get_subdirs() -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# MangaDex API helpers
+# MangaDex API helpers (thin wrappers around MangaDexSource)
 # ---------------------------------------------------------------------------
 
-def _mdex_get(path: str, params: dict) -> dict:
-    url = f"{MDEX_BASE}{path}?" + parse.urlencode(params, doseq=True)
-    with urlrequest.urlopen(url, timeout=15) as resp:
-        return json.loads(resp.read())
-
-
 def mdex_search(query: str):
-    data = _mdex_get("/manga", {"title": query, "limit": 10,
-                                "includes[]": "cover_art", "order[relevance]": "desc"})
-    results = []
-    for item in data.get("data", []):
-        attr  = item["attributes"]
-        title = (attr.get("title") or {}).get("en") or \
-                next(iter((attr.get("title") or {}).values()), "Unknown")
-        cover_url = None
-        for rel in item.get("relationships", []):
-            if rel["type"] == "cover_art":
-                fname = (rel.get("attributes") or {}).get("fileName")
-                if fname:
-                    cover_url = _cover_url(item["id"], fname)
-        results.append({
-            "id": item["id"], "title": title, "cover_url": cover_url,
-            "status": attr.get("status", ""), "year": attr.get("year"),
-        })
-    return results
-
-
-def _lang_chapter_count(manga_id: str, lang: str) -> tuple[str, int]:
-    data = _mdex_get(f"/manga/{manga_id}/feed",
-                     {"translatedLanguage[]": lang, "limit": 0,
-                      "contentRating[]": CONTENT_RATINGS})
-    return lang, data.get("total", 0)
+    results = _mdx.search(query)
+    # Reshape to legacy dict format expected by existing templates
+    return [
+        {"id": r["manga_id"], "title": r["title"], "cover_url": r["thumbnail_url"],
+         "status": r["status"], "year": r["year"]}
+        for r in results
+    ]
 
 
 async def _fetch_groups(manga_id: str, language: str) -> dict:
-    loop   = asyncio.get_event_loop()
-    groups: dict[str, set] = {}
-    offset, limit = 0, 100
-    total  = 1
-    params = {"translatedLanguage[]": language, "limit": limit,
-              "includes[]": "scanlation_group", "order[chapter]": "asc",
-              "contentRating[]": CONTENT_RATINGS}
-
-    while offset < total and offset < 500:
-        params["offset"] = offset
-        try:
-            data = await loop.run_in_executor(
-                None, lambda p=dict(params): _mdex_get(f"/manga/{manga_id}/feed", p)
-            )
-        except Exception:
-            break
-        total = data.get("total", 0)
-        items = data.get("data", [])
-        for item in items:
-            ch_str = item["attributes"].get("chapter")
-            if not ch_str:
-                continue
-            try:
-                ch_num = float(ch_str)
-            except ValueError:
-                continue
-            for rel in item.get("relationships", []):
-                if rel["type"] == "scanlation_group":
-                    name = (rel.get("attributes") or {}).get("name") or "Unknown"
-                    groups.setdefault(name, set()).add(ch_num)
-        offset += len(items)
-        if not items:
-            break
-        await asyncio.sleep(0.2)
-
-    try:
-        def _agg():
-            return _mdex_get(f"/manga/{manga_id}/aggregate", {"translatedLanguage[]": language})
-        agg = await loop.run_in_executor(None, _agg)
-        canonical: set[float] = set()
-        for vol in agg.get("volumes", {}).values():
-            for ch_key in vol.get("chapters", {}).keys():
-                try:
-                    canonical.add(float(ch_key))
-                except ValueError:
-                    pass
-        total_unique = len(canonical)
-    except Exception:
-        total_unique = len(set().union(*groups.values())) if groups else 0
-
-    threshold = max(total_unique - 2, int(total_unique * 0.97)) if total_unique else 0
-    sorted_groups = sorted(
-        [(name, len(chs), len(chs) >= threshold > 0) for name, chs in groups.items()],
-        key=lambda x: x[1], reverse=True,
-    )
-    return {"groups": sorted_groups, "total_unique": total_unique}
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _mdx.get_groups, manga_id, language)
 
 
 # ---------------------------------------------------------------------------
@@ -883,11 +823,20 @@ async def dashboard(request: Request):
     loop   = asyncio.get_event_loop()
     series = await loop.run_in_executor(None, get_all_series)
     linked_count = sum(1 for s in series if s["linked"])
+    settings     = load_settings()
+    suwayomi_url = (settings.get("suwayomi_url") or "").strip().rstrip("/")
+    raw_sources  = _get_suwayomi_sources() if suwayomi_url else []
+    source_labels = {
+        f"suwayomi:{s['id']}": s.get("displayName") or s.get("name") or f"suwayomi:{s['id']}"
+        for s in raw_sources
+    }
     return templates.TemplateResponse(request=request, name="index.html",
         context={"series": series, "active": "dashboard",
                  "no_root_folders": _no_rf(),
                  "linked_count": linked_count,
-                 "unlinked_count": len(series) - linked_count})
+                 "unlinked_count": len(series) - linked_count,
+                 "suwayomi_url": suwayomi_url,
+                 "source_labels": source_labels})
 
 
 @app.get("/series", response_class=HTMLResponse)
@@ -909,13 +858,17 @@ async def series_details_page(request: Request, path: str):
         or not row.get("authors")
         or not row.get("artists")
         or not row.get("tags")
+        or not row.get("year")
     )
-    if row.get("source_id"):
+    is_suwayomi = (row.get("source_name") or "").startswith("suwayomi:")
+    # For Suwayomi series use the MDX companion UUID (if set) for metadata; skip otherwise
+    mdx_lookup_id = row.get("mangadex_id") if is_suwayomi else row.get("source_id")
+    if mdx_lookup_id:
         loop = asyncio.get_event_loop()
         try:
             if needs_meta:
                 data = await loop.run_in_executor(
-                    None, lambda: _mdex_get(f"/manga/{row['source_id']}", {"includes[]": ["author", "artist", "cover_art"]})
+                    None, lambda: _mdx._api_get(f"/manga/{mdx_lookup_id}", {"includes[]": ["author", "artist", "cover_art"]}, timeout=15)
                 )
                 attr = data["data"]["attributes"]
                 desc_map = attr.get("description") or {}
@@ -936,7 +889,7 @@ async def series_details_page(request: Request, path: str):
                     elif rtype == "artist":
                         artists.append(rname)
                 total_vols = await loop.run_in_executor(
-                    None, lambda: _resolve_total_volumes(attr, row["source_id"])
+                    None, lambda: _resolve_total_volumes(attr, mdx_lookup_id)
                 )
                 _db.upsert_series_metadata(
                     conn, row["id"], row.get("source_name") or "mangadex",
@@ -952,7 +905,7 @@ async def series_details_page(request: Request, path: str):
                 row = _db.get_series_by_path(conn, path) or row
             else:
                 total_vols = await loop.run_in_executor(
-                    None, lambda: _resolve_total_volumes(None, row["source_id"])
+                    None, lambda: _resolve_total_volumes(None, mdx_lookup_id)
                 )
                 stored = row.get("total_volumes")
                 if stored is None or int(stored) != int(total_vols):
@@ -961,6 +914,11 @@ async def series_details_page(request: Request, path: str):
                         total_volumes=total_vols,
                     )
                     row = _db.get_series_by_path(conn, path) or row
+            if is_suwayomi:
+                agg = await loop.run_in_executor(
+                    None, lambda: _fetch_mdx_aggregate(mdx_lookup_id)
+                )
+                _apply_volume_mapping(conn, row["id"], agg)
         except Exception:
             pass
 
@@ -1016,6 +974,13 @@ async def series_details_page(request: Request, path: str):
 
     compact_volume_count = len(_db.get_volumes_needing_compact(conn, row["id"]))
 
+    settings     = load_settings()
+    suwayomi_url = (settings.get("suwayomi_url") or "").strip().rstrip("/")
+    raw_sources  = _get_suwayomi_sources() if suwayomi_url else []
+    source_labels = {
+        f"suwayomi:{s['id']}": s.get("displayName") or s.get("name") or f"suwayomi:{s['id']}"
+        for s in raw_sources
+    }
     return templates.TemplateResponse(
         request=request,
         name="series_detail.html",
@@ -1034,6 +999,8 @@ async def series_details_page(request: Request, path: str):
             "comicinfo_manga_values": MANGA_VALUES,
             "comicinfo_age_rating_values": AGE_RATING_VALUES,
             "no_root_folders": _no_rf(),
+            "suwayomi_url": suwayomi_url,
+            "source_labels": source_labels,
         },
     )
 
@@ -1086,6 +1053,9 @@ async def save_settings_endpoint(
     file_permission_mask: str = Form("664"),
     webhook_url:       str = Form(""),
     webhook_platform:  str = Form("generic"),
+    suwayomi_url:      str = Form(""),
+    suwayomi_username: str = Form(""),
+    suwayomi_password: str = Form(""),
 ):
     try:
         root_folders = json.loads(root_folders_json)
@@ -1101,22 +1071,30 @@ async def save_settings_endpoint(
     before = load_settings()
     normalized_sync_cron = sanitize_sync_cron(sync_cron)
     platform = webhook_platform if webhook_platform in ("discord", "ntfy", "generic") else "generic"
+    # Preserve existing suwayomi_password if the field was left blank
+    stored_pw = before.get("suwayomi_password", "")
+    effective_pw = suwayomi_password.strip() if suwayomi_password.strip() else stored_pw
     save_settings({
-        "root_folders":   seen,
-        "file_format":    file_format,
-        "chapter_naming": chapter_naming,
-        "volume_naming": sanitize_volume_naming(volume_naming.strip() or "[%1 %2] %3 vol.%4"),
-        "download_delay": download_delay,
-        "sync_cron":      normalized_sync_cron,
-        "merge_volumes":  merge_volumes == "true",
-        "auto_scan":      auto_scan == "true",
-        "auto_covers":    auto_covers == "true",
-        "kavita_url":     kavita_url.strip(),
-        "kavita_api_key": kavita_api_key.strip(),
+        "root_folders":      seen,
+        "file_format":       file_format,
+        "chapter_naming":    chapter_naming,
+        "volume_naming":     sanitize_volume_naming(volume_naming.strip() or "[%1 %2] %3 vol.%4"),
+        "download_delay":    download_delay,
+        "sync_cron":         normalized_sync_cron,
+        "merge_volumes":     merge_volumes == "true",
+        "auto_scan":         auto_scan == "true",
+        "auto_covers":       auto_covers == "true",
+        "kavita_url":        kavita_url.strip(),
+        "kavita_api_key":    kavita_api_key.strip(),
         "file_permission_mask": sanitize_file_permission_mask(file_permission_mask),
-        "webhook_url":    webhook_url.strip(),
-        "webhook_platform": platform,
+        "webhook_url":       webhook_url.strip(),
+        "webhook_platform":  platform,
+        "suwayomi_url":      suwayomi_url.strip(),
+        "suwayomi_username": suwayomi_username.strip(),
+        "suwayomi_password": effective_pw,
     })
+    # Bust Suwayomi cache so new URL takes effect immediately
+    _suwayomi_cache["ts"] = 0.0
     if sanitize_sync_cron(before.get("sync_cron")) != normalized_sync_cron:
         try:
             _write_runtime_crontab(normalized_sync_cron)
@@ -1138,7 +1116,7 @@ async def test_webhook(request: Request):
     if not url:
         return JSONResponse({"ok": False, "error": "No webhook URL configured"})
     ch = "chapter" if count == 1 else "chapters"
-    text = f"New chapters downloaded:\n• {title} — {count} new {ch}"
+    text = f"New chapters downloaded:\n• {title} - {count} new {ch}"
     try:
         from urllib import request as _urllib_request
         import json as _json
@@ -1195,6 +1173,81 @@ async def test_kavita(request: Request):
         return JSONResponse({"ok": False, "error": str(e)})
 
 
+@app.post("/api/settings/test-suwayomi")
+async def test_suwayomi(request: Request):
+    body = await request.json()
+    url  = (body.get("suwayomi_url") or "").strip()
+    user = body.get("suwayomi_username", "")
+    pw   = body.get("suwayomi_password", "")
+    if not url:
+        return JSONResponse({"ok": False, "error": "No Suwayomi URL configured"})
+    from sources.suwayomi import SuwayomiClient
+    client = SuwayomiClient(url, user, pw)
+    loop = asyncio.get_event_loop()
+    try:
+        sources = await loop.run_in_executor(None, client.list_sources)
+        return JSONResponse({"ok": True, "source_count": len(sources), "error": None})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)})
+
+
+@app.get("/sources", response_class=HTMLResponse)
+async def sources_page(request: Request):
+    settings      = load_settings()
+    suwayomi_url  = (settings.get("suwayomi_url") or "").strip()
+    enabled       = _enabled_source_keys()
+    sources: list[dict] = []
+    if suwayomi_url:
+        loop = asyncio.get_event_loop()
+        raw  = await loop.run_in_executor(None, _get_suwayomi_sources)
+        for s in raw:
+            key = f"suwayomi:{s['id']}"
+            sources.append({
+                "key":      key,
+                "id":       str(s["id"]),
+                "name":     s.get("displayName") or s.get("name", ""),
+                "lang":     (s.get("lang") or "").upper(),
+                "icon_url": s.get("iconUrl"),
+                "enabled":  key in enabled,
+            })
+        sources.sort(key=lambda x: (not x["enabled"], x["name"].lower()))
+    return templates.TemplateResponse(request=request, name="sources.html",
+        context={"active": "sources", "no_root_folders": _no_rf(),
+                 "suwayomi_url": suwayomi_url, "sources": sources})
+
+
+@app.get("/api/sources")
+async def api_sources():
+    enabled = _enabled_source_keys()
+    loop    = asyncio.get_event_loop()
+    raw     = await loop.run_in_executor(None, _get_suwayomi_sources)
+    out = [{"key": "mangadex", "name": "MangaDex", "builtin": True, "enabled": True, "lang": "MUL"}]
+    for s in raw:
+        key = f"suwayomi:{s['id']}"
+        out.append({"key": key, "name": s.get("displayName") or s.get("name", ""),
+                    "lang": (s.get("lang") or "").upper(),
+                    "builtin": False, "enabled": key in enabled})
+    return JSONResponse(out)
+
+
+@app.post("/api/sources/{source_id}/enable")
+async def enable_source(source_id: str):
+    key = f"suwayomi:{source_id}"
+    s = load_settings()
+    enabled = list(set(s.get("enabled_sources") or []) | {key})
+    save_settings({"enabled_sources": enabled})
+    return JSONResponse({"ok": True, "key": key})
+
+
+@app.post("/api/sources/{source_id}/disable")
+async def disable_source(source_id: str):
+    key = f"suwayomi:{source_id}"
+    s = load_settings()
+    enabled = [k for k in (s.get("enabled_sources") or []) if k != key]
+    save_settings({"enabled_sources": enabled})
+    return JSONResponse({"ok": True, "key": key})
+
+
 @app.get("/fix", response_class=HTMLResponse)
 async def fix_page(request: Request, series: str = ""):
     conn = _get_conn()
@@ -1247,15 +1300,84 @@ async def logs_page(request: Request):
 # API - search & manga info
 # ---------------------------------------------------------------------------
 
+def _friendly_search_error(exc: Exception) -> str:
+    """Convert raw source search exceptions into a readable one-liner."""
+    msg = str(exc)
+    # Suwayomi GQL errors look like: "Suwayomi GQL error: [{'message': '...'}]"
+    import re as _re
+    m = _re.search(r"GQL error.*?'message':\s*'([^']+)'", msg)
+    if m:
+        return m.group(1)
+    # Strip leading "Suwayomi GQL error: " prefix if present
+    msg = _re.sub(r"^Suwayomi GQL error:\s*", "", msg).strip()
+    # Truncate very long messages
+    return msg[:120] + ("…" if len(msg) > 120 else "")
+
+
 @app.get("/api/search", response_class=HTMLResponse)
 async def search(request: Request, q: str = ""):
     if len(q) < 2:
         return HTMLResponse("")
-    try:
-        results = mdex_search(q)
-    except Exception as e:
-        return HTMLResponse(f'<p class="text-red-500 text-sm">Search failed: {e}</p>')
+    loop   = asyncio.get_event_loop()
+    groups: list[dict] = []
+
+    async def _search_mdx():
+        try:
+            res = await loop.run_in_executor(None, lambda: _mdx.search(q))
+            return {"source_key": "mangadex", "source_name": "MangaDex", "error": None,
+                    "results": [{"id": r["manga_id"], "title": r["title"],
+                                 "cover_url": r["thumbnail_url"], "status": r["status"],
+                                 "year": r["year"], "source_key": "mangadex"} for r in res]}
+        except Exception as exc:
+            return {"source_key": "mangadex", "source_name": "MangaDex",
+                    "error": _friendly_search_error(exc), "results": []}
+
+    async def _search_suwayomi(src: dict, client):
+        key = f"suwayomi:{src['id']}"
+        try:
+            mangas, _ = await loop.run_in_executor(
+                None, lambda: client.fetch_source_manga(str(src["id"]), q)
+            )
+            return {"source_key": key,
+                    "source_name": src.get("displayName") or src.get("name", key),
+                    "error": None,
+                    "results": [{"id": str(m["id"]), "title": m.get("title", ""),
+                                 "cover_url": f"/api/proxy/suwayomi/thumbnail/{m['id']}",
+                                 "status": None, "year": None, "source_key": key}
+                                for m in mangas]}
+        except Exception as exc:
+            return {"source_key": key,
+                    "source_name": src.get("displayName") or src.get("name", key),
+                    "error": _friendly_search_error(exc), "results": []}
+
+    tasks = [_search_mdx()]
+    enabled = _enabled_source_keys()
+    if enabled:
+        client = get_suwayomi_client()
+        if client:
+            raw_sources = await loop.run_in_executor(None, _get_suwayomi_sources)
+            for src in raw_sources:
+                if f"suwayomi:{src['id']}" in enabled:
+                    tasks.append(_search_suwayomi(src, client))
+
+    results_list = await asyncio.gather(*tasks)
+    groups = [g for g in results_list if g["results"] or g["error"]]
+
     return templates.TemplateResponse(request=request, name="partials/search_results.html",
+        context={"groups": groups, "multi_source": len(groups) > 1})
+
+
+@app.get("/api/search/mdx-companion", response_class=HTMLResponse)
+async def search_mdx_companion(request: Request, q: str = ""):
+    """MangaDex-only search for the companion-link picker in the Suwayomi setup form."""
+    if len(q) < 2:
+        return HTMLResponse("")
+    loop = asyncio.get_event_loop()
+    try:
+        results = await loop.run_in_executor(None, lambda: _mdx.search(q))
+    except Exception as e:
+        return HTMLResponse(f'<p class="text-xs px-2 py-1" style="color:var(--danger)">Search failed: {e}</p>')
+    return templates.TemplateResponse(request=request, name="partials/mdx_companion_results.html",
         context={"results": results})
 
 
@@ -1264,7 +1386,7 @@ async def get_manga_setup(request: Request, manga_id: str):
     loop = asyncio.get_event_loop()
     try:
         data = await loop.run_in_executor(
-            None, lambda: _mdex_get(f"/manga/{manga_id}", {"includes[]": "cover_art"})
+            None, lambda: _mdx._api_get(f"/manga/{manga_id}", {"includes[]": "cover_art"}, timeout=15)
         )
     except Exception as e:
         return HTMLResponse(f'<p class="text-red-500 text-sm">Could not load manga: {e}</p>')
@@ -1287,7 +1409,7 @@ async def get_manga_setup(request: Request, manga_id: str):
 
     lang_counts: dict[str, int] = {}
     if available_langs:
-        tasks   = [loop.run_in_executor(None, _lang_chapter_count, manga_id, lang)
+        tasks   = [loop.run_in_executor(None, _mdx.get_lang_chapter_count, manga_id, lang)
                    for lang in available_langs[:10]]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for r in results:
@@ -1297,11 +1419,16 @@ async def get_manga_setup(request: Request, manga_id: str):
     default_lang = next(iter(lang_counts), "en")
     groups_data  = await _fetch_groups(manga_id, default_lang)
 
+    existing = _get_conn().execute(
+        "SELECT s.path FROM series s JOIN series_sources ss ON s.id = ss.series_id "
+        "WHERE ss.source = 'mangadex' AND ss.source_id = ?", (manga_id,)
+    ).fetchone()
     return templates.TemplateResponse(request=request, name="partials/manga_setup.html",
         context={"manga_id": manga_id, "title": title, "status": status, "year": year,
                  "cover_url": cover_url, "cover_filename": cover_filename or "",
                  "lang_counts": lang_counts, "default_lang": default_lang,
-                 "subdirs": get_subdirs(), **groups_data})
+                 "subdirs": get_subdirs(), "existing_path": existing["path"] if existing else None,
+                 **groups_data})
 
 
 @app.get("/api/manga/{manga_id}/link-preview", response_class=HTMLResponse)
@@ -1310,7 +1437,7 @@ async def get_manga_link_preview(request: Request, manga_id: str):
     loop = asyncio.get_event_loop()
     try:
         data = await loop.run_in_executor(
-            None, lambda: _mdex_get(f"/manga/{manga_id}", {"includes[]": "cover_art"})
+            None, lambda: _mdx._api_get(f"/manga/{manga_id}", {"includes[]": "cover_art"}, timeout=15)
         )
     except Exception as e:
         return HTMLResponse(f'<p class="text-red-500 text-sm">Could not load manga: {e}</p>')
@@ -1335,6 +1462,10 @@ async def get_manga_link_preview(request: Request, manga_id: str):
 
     default_lang = _pick_default_series_language(available_langs)
 
+    existing = _get_conn().execute(
+        "SELECT s.path FROM series s JOIN series_sources ss ON s.id = ss.series_id "
+        "WHERE ss.source = 'mangadex' AND ss.source_id = ?", (manga_id,)
+    ).fetchone()
     return templates.TemplateResponse(request=request, name="partials/manga_link_confirm.html",
         context={
             "manga_id": manga_id,
@@ -1347,6 +1478,7 @@ async def get_manga_link_preview(request: Request, manga_id: str):
             "default_lang": default_lang,
             "series_language_choices": _series_language_choices(default_lang, available_langs),
             "subdirs": get_subdirs(),
+            "existing_path": existing["path"] if existing else None,
         })
 
 
@@ -1355,12 +1487,12 @@ async def get_manga_langs(manga_id: str):
     loop = asyncio.get_event_loop()
     try:
         data = await loop.run_in_executor(
-            None, lambda: _mdex_get(f"/manga/{manga_id}", {})
+            None, lambda: _mdx._api_get(f"/manga/{manga_id}", {}, timeout=15)
         )
     except Exception as e:
         raise HTTPException(502, str(e))
     available_langs = data["data"]["attributes"].get("availableTranslatedLanguages") or []
-    tasks   = [loop.run_in_executor(None, _lang_chapter_count, manga_id, lang)
+    tasks   = [loop.run_in_executor(None, _mdx.get_lang_chapter_count, manga_id, lang)
                for lang in available_langs[:10]]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     counts  = sorted(
@@ -1380,6 +1512,81 @@ async def get_manga_groups(request: Request, manga_id: str, language: str = "en"
 # ---------------------------------------------------------------------------
 # API - cover proxy
 # ---------------------------------------------------------------------------
+
+@app.get("/api/suwayomi/{source_id}/{manga_id}/setup", response_class=HTMLResponse)
+async def suwayomi_manga_setup(request: Request, source_id: str, manga_id: str):
+    client = get_suwayomi_client()
+    if not client:
+        return HTMLResponse('<p class="text-red-500 text-sm">Suwayomi not configured.</p>')
+    loop = asyncio.get_event_loop()
+    try:
+        manga = await loop.run_in_executor(None, lambda: client.fetch_manga(int(manga_id)))
+    except Exception as e:
+        return HTMLResponse(f'<p class="text-red-500 text-sm">Could not load manga: {e}</p>')
+
+    raw_sources = await loop.run_in_executor(None, _get_suwayomi_sources)
+    src_info    = next((s for s in raw_sources if str(s["id"]) == source_id), {})
+    source_name = src_info.get("displayName") or src_info.get("name") or f"Suwayomi:{source_id}"
+    lang        = (src_info.get("lang") or "unknown").lower()
+    source_key  = f"suwayomi:{source_id}"
+    cover_url   = f"/api/proxy/suwayomi/thumbnail/{manga_id}"
+
+    existing = _get_conn().execute(
+        "SELECT s.path FROM series s JOIN series_sources ss ON s.id = ss.series_id "
+        "WHERE ss.source = ? AND ss.source_id = ?", (source_key, manga_id)
+    ).fetchone()
+    return templates.TemplateResponse(request=request, name="partials/suwayomi_manga_setup.html",
+        context={"manga_id": manga_id, "source_key": source_key, "source_name": source_name,
+                 "lang": lang, "cover_url": cover_url, "title": manga.get("title", ""),
+                 "subdirs": get_subdirs(), "existing_path": existing["path"] if existing else None})
+
+
+@app.get("/api/proxy/suwayomi/icon/{source_id}")
+async def proxy_suwayomi_icon(source_id: str):
+    cache_key = f"suw-icon:{source_id}"
+    if cache_key not in _cover_cache:
+        raw_sources = _get_suwayomi_sources()
+        src = next((s for s in raw_sources if str(s["id"]) == source_id), {})
+        icon_url = src.get("iconUrl") or ""
+        if not icon_url:
+            raise HTTPException(404)
+        client = get_suwayomi_client()
+        if not client:
+            raise HTTPException(503)
+        loop = asyncio.get_event_loop()
+        try:
+            # iconUrl is a relative path on Suwayomi
+            path = icon_url if icon_url.startswith("/") else f"/{icon_url}"
+            data = await loop.run_in_executor(None, lambda: client.download_page(path))
+        except Exception:
+            raise HTTPException(404)
+        if len(_cover_cache) >= _COVER_CACHE_MAX:
+            _cover_cache.pop(next(iter(_cover_cache)))
+        _cover_cache[cache_key] = data
+    return Response(_cover_cache[cache_key], media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/api/proxy/suwayomi/thumbnail/{manga_id}")
+async def proxy_suwayomi_thumbnail(manga_id: str):
+    cache_key = f"suw:{manga_id}"
+    if cache_key not in _cover_cache:
+        client = get_suwayomi_client()
+        if not client:
+            raise HTTPException(503, "Suwayomi not configured")
+        loop = asyncio.get_event_loop()
+        try:
+            data = await loop.run_in_executor(
+                None, lambda: client.download_page(f"/api/v1/manga/{manga_id}/thumbnail")
+            )
+        except Exception:
+            raise HTTPException(404)
+        if len(_cover_cache) >= _COVER_CACHE_MAX:
+            _cover_cache.pop(next(iter(_cover_cache)))
+        _cover_cache[cache_key] = data
+    return Response(_cover_cache[cache_key], media_type="image/jpeg",
+                    headers={"Cache-Control": "public, max-age=3600"})
+
 
 @app.get("/api/proxy/cover/{manga_id}/{filename}")
 async def proxy_cover(manga_id: str, filename: str):
@@ -1433,13 +1640,42 @@ async def add_series(
     cover_filename: str   = Form(""),
     exclude_from_fix: str = Form("false"),
     merge_volumes_override: str = Form(""),
+    source_key:     str   = Form("mangadex"),
+    mangadex_id:    str   = Form(""),
 ):
     _require_root_folders()
     parts      = [p for p in [subfolder.strip("/"), title] if p]
     series_dir = os.path.join(MANGA_ROOT, *parts)
     _require_under_manga_root(series_dir)
-    os.makedirs(series_dir, exist_ok=True)
     rel_path   = os.path.relpath(series_dir, MANGA_ROOT)
+
+    actual_source = source_key if source_key.startswith("suwayomi:") else "mangadex"
+    mdx_id = mangadex_id.strip() or (manga_id if actual_source == "mangadex" else None)
+
+    if manga_id:
+        conn = _get_conn()
+        dup = conn.execute(
+            "SELECT s.path FROM series s JOIN series_sources ss ON s.id = ss.series_id "
+            "WHERE ss.source = ? AND ss.source_id = ?", (actual_source, manga_id)
+        ).fetchone()
+        if dup:
+            raise HTTPException(
+                409,
+                f"Already tracked at '{dup['path']}' - open it from your library instead."
+            )
+        ex = conn.execute(
+            "SELECT ss.source, ss.source_id FROM series s "
+            "LEFT JOIN series_sources ss ON s.id = ss.series_id "
+            "WHERE s.path = ? AND ss.source_id IS NOT NULL",
+            (rel_path,)
+        ).fetchone()
+        if ex and not (ex["source"] == actual_source and ex["source_id"] == manga_id):
+            raise HTTPException(
+                409,
+                f"Folder '{rel_path}' already belongs to a different series - choose a different folder name."
+            )
+
+    os.makedirs(series_dir, exist_ok=True)
 
     try:
         start_f = float(start_chapter) if start_chapter else 0.0
@@ -1460,13 +1696,14 @@ async def add_series(
         title=title,
         language=language,
         start_chapter=start_f,
-        source="mangadex" if manga_id else None,
+        source=actual_source if manga_id else None,
         source_id=manga_id or None,
         cover_filename=cover_filename.strip() or None,
         exclude_from_fix=excl,
         merge_volumes_override=merge_ov,
         preferred_groups_json=preferred_groups_json.strip() or None,
         sync_configured=sync_conf,
+        mangadex_id=mdx_id or None,
     ))
     if link_only:
         return JSONResponse({"ok": True, "path": rel_path}, status_code=201)
@@ -1495,7 +1732,7 @@ async def series_cover(path: str):
     loop = asyncio.get_event_loop()
     try:
         data = await loop.run_in_executor(
-            None, lambda: _mdex_get(f"/manga/{manga_id}", {"includes[]": "cover_art"})
+            None, lambda: _mdx._api_get(f"/manga/{manga_id}", {"includes[]": "cover_art"}, timeout=15)
         )
     except Exception as e:
         raise HTTPException(502, str(e))
@@ -1556,7 +1793,7 @@ async def series_chapter_gaps(path: str):
     try:
         agg = await loop.run_in_executor(
             None,
-            lambda: _mdex_get(f"/manga/{manga_id}/aggregate", {"translatedLanguage[]": language}),
+            lambda: lambda: _mdx._api_get(f"/manga/{manga_id}/aggregate", {"translatedLanguage[]": language}, timeout=15),
         )
     except Exception as e:
         return JSONResponse({"mode": "error", "error": str(e)})
@@ -1599,6 +1836,35 @@ async def delete_series(path: str):
     return HTMLResponse("")
 
 
+class MdxCompanionBody(BaseModel):
+    mangadex_id: str = ""
+
+
+@app.put("/api/series/{path:path}/mdx-companion")
+async def set_mdx_companion(path: str, body: MdxCompanionBody):
+    conn = _get_conn()
+    row = _db.get_series_by_path(conn, path)
+    if not row:
+        raise HTTPException(404, "Series not found")
+    mdx_id = body.mangadex_id.strip() or None
+    conn.execute(
+        "UPDATE series SET mangadex_id = ?, updated_at = ? WHERE path = ?",
+        (mdx_id, _db._now(), path)
+    )
+    conn.commit()
+    return JSONResponse({"ok": True, "mangadex_id": mdx_id})
+
+
+@app.get("/api/series/{path:path}/mdx-companion-search", response_class=HTMLResponse)
+async def mdx_companion_search_form(request: Request, path: str):
+    conn = _get_conn()
+    row = _db.get_series_by_path(conn, path)
+    if not row:
+        raise HTTPException(404, "Series not found")
+    return templates.TemplateResponse(request=request, name="partials/mdx_companion_link.html",
+        context={"path": path, "series_name": row.get("title") or path.split("/")[-1]})
+
+
 @app.get("/api/series/{path:path}/edit", response_class=HTMLResponse)
 async def edit_series_form(request: Request, path: str):
     """General settings: location, folder name, series language, exclude-from-fix.
@@ -1615,7 +1881,10 @@ async def edit_series_form(request: Request, path: str):
     subfolder   = "/".join(parts[:-1])
 
     prefs = row.get("preferred_groups") or []
-    manga_id = row["config"].get("id", "") or ""
+    source_name = row.get("source_name") or "mangadex"
+    is_mdx = source_name == "mangadex"
+    # For non-MDX series, pass empty manga_id so update_series doesn't clobber the Suwayomi source
+    manga_id = (row["config"].get("id", "") or "") if is_mdx else ""
     lang_norm = (row.get("language") or "en").strip().lower()
 
     return templates.TemplateResponse(request=request, name="partials/series_edit_general.html",
@@ -1627,7 +1896,7 @@ async def edit_series_form(request: Request, path: str):
             "series_language_choices": _series_language_choices(row.get("language")),
             "current_preferred_groups_json": json.dumps(prefs, ensure_ascii=False),
             "current_start":       row.get("start_chapter", 0),
-            "current_cover_filename": row["config"].get("cover_filename", ""),
+            "current_cover_filename": (row.get("config") or {}).get("cover_filename", ""),
             "exclude_from_fix":    bool(row.get("exclude_from_fix")),
             "folder_name":         folder_name,
             "subfolder":           subfolder,
@@ -1643,22 +1912,47 @@ async def get_grab_options_form(request: Request, path: str):
     if not row:
         raise HTTPException(404, "Series not found")
 
-    manga_id = (row.get("config") or {}).get("id") or row.get("source_id")
+    source_name = row.get("source_name") or "mangadex"
+    is_mdx      = source_name == "mangadex"
+    manga_id    = (row.get("config") or {}).get("id") or row.get("source_id")
+    cur_lang    = row.get("language") or "en"
+    prefs       = row.get("preferred_groups") or []
+    parts       = path.split("/")
+    folder_name = parts[-1]
+    subfolder   = "/".join(parts[:-1])
+    cover_fn    = (row.get("config") or {}).get("cover_filename") or ""
+
+    if not is_mdx:
+        return templates.TemplateResponse(request=request, name="partials/manga_grab_options.html",
+            context={
+                "path": path,
+                "manga_id": "",
+                "folder_name": folder_name,
+                "subfolder": subfolder,
+                "cover_filename": cover_fn,
+                "current_lang": cur_lang,
+                "lang_counts": {},
+                "current_start": row.get("start_chapter", 0),
+                "exclude_from_fix": bool(row.get("exclude_from_fix")),
+                "current_preferred_groups_json": json.dumps(prefs, ensure_ascii=False),
+                "is_mdx": False,
+                "groups": [],
+                "total_unique": 0,
+            })
+
     if not manga_id:
         raise HTTPException(400, "Series is not linked to MangaDex")
 
     loop = asyncio.get_event_loop()
-    cur_lang = row.get("language") or "en"
-
     lang_counts: dict[str, int] = {}
     try:
         data = await loop.run_in_executor(
-            None, lambda: _mdex_get(f"/manga/{manga_id}", {})
+            None, lambda: _mdx._api_get(f"/manga/{manga_id}", {}, timeout=15)
         )
         available_langs = data["data"]["attributes"].get("availableTranslatedLanguages") or []
         if available_langs:
             tasks = [
-                loop.run_in_executor(None, _lang_chapter_count, manga_id, lang)
+                loop.run_in_executor(None, _mdx.get_lang_chapter_count, manga_id, lang)
                 for lang in available_langs[:10]
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -1671,24 +1965,19 @@ async def get_grab_options_form(request: Request, path: str):
 
     groups_data = await _fetch_groups(manga_id, cur_lang)
 
-    parts       = path.split("/")
-    folder_name = parts[-1]
-    subfolder   = "/".join(parts[:-1])
-
-    prefs = row.get("preferred_groups") or []
-
     return templates.TemplateResponse(request=request, name="partials/manga_grab_options.html",
         context={
             "path": path,
             "manga_id": manga_id,
             "folder_name": folder_name,
             "subfolder": subfolder,
-            "cover_filename": row["config"].get("cover_filename") or "",
+            "cover_filename": cover_fn,
             "current_lang": cur_lang,
             "lang_counts": lang_counts,
             "current_start": row.get("start_chapter", 0),
             "exclude_from_fix": bool(row.get("exclude_from_fix")),
             "current_preferred_groups_json": json.dumps(prefs, ensure_ascii=False),
+            "is_mdx": True,
             **groups_data,
         })
 

@@ -21,6 +21,7 @@ ENV APP_VERSION=${APP_VERSION}
 
 COPY entrypoint.sh /entrypoint.sh
 COPY manga-fix.py manga-sync.py manga-fix.sh sync_config.py kavita.py db.py comicinfo.py comicinfo_defs.py cron_enqueue_sync.py file_permissions.py naming.py telemetry.py /app/
+COPY sources/ /app/sources/
 COPY web/ /app/web/
 
 RUN chmod +x /entrypoint.sh && mkdir -p /data/config /data/logs

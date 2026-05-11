@@ -1,19 +1,51 @@
-{% for r in results %}
-<div class="flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors search-result"
-     style="border-color:var(--border-mid);background:var(--surface)"
-     data-id="{{ r.id }}" data-title="{{ r.title }}">
+{% for group in groups %}
+{% if multi_source %}
+<div class="source-group-header">
+  <span>{{ group.source_name }}</span>
+  <hr>
+</div>
+{% endif %}
+{% if group.error %}
+<div class="flex items-start gap-2 px-4 py-2 mx-2 my-1 rounded-lg text-xs" style="background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)">
+  <svg viewBox="0 0 16 16" fill="currentColor" style="width:13px;height:13px;flex-shrink:0;margin-top:1px">
+    <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 3.5a.75.75 0 0 1 .75.75v3a.75.75 0 0 1-1.5 0v-3A.75.75 0 0 1 8 4.5zm0 6.5a.875.875 0 1 1 0-1.75A.875.875 0 0 1 8 11z"/>
+  </svg>
+  <span>{{ group.error }}</span>
+</div>
+{% endif %}
+{% for r in group.results %}
+<div class="result-row"
+     data-id="{{ r.id }}" data-source-key="{{ r.source_key }}">
   {% if r.cover_url %}
-  <img src="{{ r.cover_url }}" class="w-10 h-14 object-cover rounded shrink-0" loading="lazy">
+  <img src="{{ r.cover_url }}" alt="" loading="lazy"
+       style="width:44px;height:62px;object-fit:cover;border-radius:6px;flex-shrink:0"
+       onerror="this.style.display='none';this.nextElementSibling.style.display=''">
+  <div style="width:44px;height:62px;border-radius:6px;flex-shrink:0;background:var(--surface-alt);display:none"></div>
   {% else %}
-  <div class="w-10 h-14 rounded shrink-0" style="background:var(--surface-alt)"></div>
+  <div style="width:44px;height:62px;border-radius:6px;flex-shrink:0;background:var(--surface-alt)"></div>
   {% endif %}
-  <div class="min-w-0">
-    <div class="font-medium text-sm truncate" style="color:var(--text)">{{ r.title }}</div>
-    <div class="text-xs mt-0.5" style="color:var(--text-dim)">
-      {{ r.status }}{% if r.year %} · {{ r.year }}{% endif %}
+  <div style="min-width:0">
+    <div class="text-sm font-semibold truncate" style="color:var(--text);font-family:'Syne',sans-serif">{{ r.title }}</div>
+    <div class="flex items-center gap-2 mt-1 flex-wrap">
+      {% if multi_source %}
+      <span class="source-badge {{ 'source-badge-mdx' if r.source_key == 'mangadex' else 'source-badge-suw' }}">
+        {{ group.source_name }}
+      </span>
+      {% endif %}
+      {% if r.status %}
+      <span class="text-xs" style="color:var(--text-dim)">{{ r.status }}</span>
+      {% endif %}
+      {% if r.year %}
+      <span class="text-xs" style="color:var(--text-dim)">· {{ r.year }}</span>
+      {% endif %}
     </div>
   </div>
+  <svg viewBox="0 0 6 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+       style="width:6px;height:10px;flex-shrink:0;color:var(--text-dim)">
+    <polyline points="1,1 5,5 1,9"/>
+  </svg>
 </div>
+{% endfor %}
 {% else %}
-<p class="text-sm text-center py-4" style="color:var(--text-dim)">No results found.</p>
+<div class="px-4 py-10 text-center text-sm" style="color:var(--text-dim)">No results found.</div>
 {% endfor %}

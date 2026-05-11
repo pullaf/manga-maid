@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""manga-fix — find and fix Kavita-incompatible manga filenames."""
+"""manga-fix - find and fix Kavita-incompatible manga filenames."""
 
 import argparse
 import json
@@ -79,11 +79,11 @@ def scan_duplicates(directory):
     """Return list of dup groups.
 
     Each group dict:
-      keep_path    — absolute path of the file to keep
-      keep_name    — target basename (version suffix stripped)
-      needs_rename — True when keep_path already carries a (N) suffix
-      delete_paths — list of paths to remove
-      sizes        — {path: int} for all files in the group
+      keep_path    - absolute path of the file to keep
+      keep_name    - target basename (version suffix stripped)
+      needs_rename - True when keep_path already carries a (N) suffix
+      delete_paths - list of paths to remove
+      sizes        - {path: int} for all files in the group
     """
     groups = []
     for root, dirs, files in os.walk(directory):
@@ -108,7 +108,7 @@ def scan_duplicates(directory):
         for key, versioned in ver_files.items():
             base = base_files.get(key)
             if not base and len(versioned) < 2:
-                continue  # lone (1) file with no base — skip
+                continue  # lone (1) file with no base - skip
 
             all_files = ([base] if base else []) + versioned
             sizes = {p: os.path.getsize(p) for p in all_files}
@@ -339,7 +339,7 @@ def move_group_mode(manga_dir, log_data, log_path, auto):
     if n_moved:
         print(f"  {n_moved:4d}  will have group tag moved to end")
     if n_dropped:
-        print(f"  {n_dropped:4d}  have no group name — brackets dropped entirely")
+        print(f"  {n_dropped:4d}  have no group name - brackets dropped entirely")
 
     # Show one example of each transformation type
     print("\nExamples:")

@@ -1,4 +1,4 @@
-"""Tests for manga-sync.py — imported as manga_sync via conftest."""
+"""Tests for manga-sync.py - imported as manga_sync via conftest."""
 from unittest.mock import MagicMock, patch
 
 import manga_sync
@@ -71,7 +71,8 @@ def test_fetch_volume_covers():
             {"attributes": {"volume": "3", "fileName": "cover3.jpg"}},
         ]
     }
-    with patch.object(manga_sync, "_api_get", return_value=mock_data):
+    from sources.mangadex import MangaDexSource
+    with patch.object(MangaDexSource, "_api_get", return_value=mock_data):
         covers = manga_sync.fetch_volume_covers("manga-id")
     assert covers["1"] == "https://uploads.mangadex.org/covers/manga-id/cover1.jpg.512.jpg"
     assert covers["2"] == "https://uploads.mangadex.org/covers/manga-id/cover2.jpg.512.jpg"
@@ -85,7 +86,8 @@ def test_fetch_volume_covers_skips_null_volume():
             {"attributes": {"volume": "1", "fileName": "real.jpg"}},
         ]
     }
-    with patch.object(manga_sync, "_api_get", return_value=mock_data):
+    from sources.mangadex import MangaDexSource
+    with patch.object(MangaDexSource, "_api_get", return_value=mock_data):
         covers = manga_sync.fetch_volume_covers("manga-id")
     assert None not in covers
     assert "1" in covers
@@ -97,7 +99,8 @@ def test_fetch_volume_covers_skips_missing_filename():
             {"attributes": {"volume": "1", "fileName": None}},
         ]
     }
-    with patch.object(manga_sync, "_api_get", return_value=mock_data):
+    from sources.mangadex import MangaDexSource
+    with patch.object(MangaDexSource, "_api_get", return_value=mock_data):
         covers = manga_sync.fetch_volume_covers("manga-id")
     assert covers == {}
 
@@ -147,3 +150,45 @@ def test_rotate_log_noop_when_small(tmp_path, monkeypatch):
 def test_rotate_log_handles_missing_file(tmp_path, monkeypatch):
     monkeypatch.setattr(manga_sync, "SYNC_LOG", str(tmp_path / "nonexistent.log"))
     manga_sync._rotate_log()  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# sources/suwayomi - _parse_chapter_name
+# ---------------------------------------------------------------------------
+
+def test_parse_chapter_name_full():
+    from sources.suwayomi import _parse_chapter_name
+    vol, ch, title = _parse_chapter_name("Vol.2 Ch.14.5 - Some Title", 14.5)
+    assert vol == 2.0
+    assert ch == 14.5
+    assert title == "Some Title"
+
+
+def test_parse_chapter_name_no_volume():
+    from sources.suwayomi import _parse_chapter_name
+    vol, ch, title = _parse_chapter_name("Ch.1 - First Chapter", 1.0)
+    assert vol is None
+    assert ch == 1.0
+    assert title == "First Chapter"
+
+
+def test_parse_chapter_name_no_title():
+    from sources.suwayomi import _parse_chapter_name
+    vol, ch, title = _parse_chapter_name("Vol.3", 7.0)
+    assert vol == 3.0
+    assert ch == 7.0
+    assert title is None
+
+
+def test_parse_chapter_name_empty():
+    from sources.suwayomi import _parse_chapter_name
+    vol, ch, title = _parse_chapter_name("", 5.0)
+    assert vol is None
+    assert ch == 5.0
+    assert title is None
+
+
+def test_parse_chapter_name_negative_ch_num():
+    from sources.suwayomi import _parse_chapter_name
+    _, ch, _ = _parse_chapter_name("Ch.1 - Prologue", -1.0)
+    assert ch is None

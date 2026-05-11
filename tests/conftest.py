@@ -27,7 +27,7 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line(
-        "markers", "integration: hits real MangaDex API or invokes mdx — skip by default"
+        "markers", "integration: hits real MangaDex API or invokes mdx - skip by default"
     )
 
 

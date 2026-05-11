@@ -1,4 +1,4 @@
-"""Database layer — schema, migration, and CRUD for manga-kavita-sync."""
+"""Database layer - schema, migration, and CRUD for manga-kavita-sync."""
 import json
 import os
 import re
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS series (
     -- ``start_chapter``: download chapters where chapter_num >= this value.
     -- 0 means "download everything". Replaced the old ``since`` column whose
     -- semantics were "skip chapters <= since" (download where chapter_num >
-    -- since) — the new ``>=`` form lets users type the first chapter they
+    -- since) - the new ``>=`` form lets users type the first chapter they
     -- actually want (e.g. 105 for Yotsuba) instead of guessing 104.999...
     start_chapter            REAL    NOT NULL DEFAULT 0,
     exclude_from_fix         INTEGER NOT NULL DEFAULT 0,
@@ -194,6 +194,19 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE series ADD COLUMN sync_configured INTEGER NOT NULL DEFAULT 1"
         )
+    if "mangadex_id" not in cols:
+        conn.execute("ALTER TABLE series ADD COLUMN mangadex_id TEXT")
+        # Back-fill for existing MDX-primary series: source_id IS the MDX UUID
+        conn.execute(
+            """
+            UPDATE series SET mangadex_id = (
+                SELECT source_id FROM series_sources
+                WHERE series_sources.series_id = series.id
+                  AND series_sources.source = 'mangadex'
+                LIMIT 1
+            ) WHERE mangadex_id IS NULL
+            """
+        )
 
     # ``since`` (skip <= N) → ``start_chapter`` (download where >= N). Convert
     # the value so the resulting download set is unchanged: 0 stays 0; any
@@ -216,7 +229,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     # as ``downloaded`` by older builds, which leaked feed metadata
     # (group_name, language, etc.) into ComicInfo for user-placed files. Tag
     # those rows as ``on_disk`` so series-level data drives ComicInfo. Rows
-    # with ``source_chapter_id`` set are left alone — they may be real mdx
+    # with ``source_chapter_id`` set are left alone - they may be real mdx
     # downloads. Use the ``Reset chapter metadata`` UI to clear ambiguous
     # cases (e.g. linked-only-for-covers like Yotsuba).
     conn.execute(
@@ -228,6 +241,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
           AND status != 'on_disk'
         """
     )
+
+    ch_cols = {row[1] for row in conn.execute("PRAGMA table_info(chapters)")}
+    if "created_at" not in ch_cols:
+        conn.execute("ALTER TABLE chapters ADD COLUMN created_at TEXT")
 
 
 def _migrate_preferred_groups_json(conn: sqlite3.Connection) -> None:
@@ -255,7 +272,7 @@ def init_db(data_dir: str = None) -> sqlite3.Connection:
 
 
 # ---------------------------------------------------------------------------
-# App settings (web UI / sync) — stored in SQLite under ``/data/db/``
+# App settings (web UI / sync) - stored in SQLite under ``/data/db/``
 # ---------------------------------------------------------------------------
 
 def legacy_settings_json_path(data_dir: str = None) -> str:
@@ -544,8 +561,10 @@ def get_all_series(conn: sqlite3.Connection) -> list[dict]:
             s.id, s.title, s.path, s.language, s.preferred_group,
             s.preferred_groups_json, s.start_chapter,
             s.exclude_from_fix, s.merge_volumes_override, s.sync_configured,
+            s.updated_at,
             ss.source  AS source_name,
             ss.source_id,
+            (SELECT MAX(c.created_at) FROM chapters c WHERE c.series_id = s.id) AS latest_chapter_at,
             sm.description, sm.tags, sm.authors, sm.artists,
             sm.year, sm.status, sm.content_rating, sm.total_volumes, sm.cover_filename,
             (SELECT COUNT(*) FROM chapters c
@@ -643,6 +662,7 @@ def insert_series(
     start_chapter: float,
     source: str | None = None,
     source_id: str | None = None,
+    mangadex_id: str | None = None,
     cover_filename: str | None = None,
     exclude_from_fix: int = 0,
     merge_volumes_override: int | None = None,
@@ -652,13 +672,15 @@ def insert_series(
 ) -> int:
     now = _now()
     pj, pg = normalize_preferred_groups_storage(preferred_groups_json, preferred_group)
+    # For MDX-primary series the MDX UUID and the source_id are the same thing.
+    effective_mdx_id = mangadex_id or (source_id if source == "mangadex" else None)
     conn.execute("""
         INSERT INTO series (
             title, path, language, preferred_group, preferred_groups_json, start_chapter,
-            exclude_from_fix, merge_volumes_override, sync_configured,
+            exclude_from_fix, merge_volumes_override, sync_configured, mangadex_id,
             created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(path) DO UPDATE SET
             title                 = excluded.title,
             language              = excluded.language,
@@ -666,11 +688,12 @@ def insert_series(
             preferred_groups_json = excluded.preferred_groups_json,
             start_chapter         = excluded.start_chapter,
             sync_configured       = excluded.sync_configured,
+            mangadex_id           = COALESCE(excluded.mangadex_id, series.mangadex_id),
             updated_at            = excluded.updated_at
     """, (
         title, path, language, pg, pj, start_chapter,
         exclude_from_fix, merge_volumes_override, int(bool(sync_configured)),
-        now, now,
+        effective_mdx_id, now, now,
     ))
 
     series_id = conn.execute(
@@ -705,6 +728,7 @@ def update_series(
     start_chapter: float,
     source: str | None = None,
     source_id: str | None = None,
+    mangadex_id: str | None = None,
     cover_filename: str | None = None,
     exclude_from_fix: int = 0,
     merge_volumes_override: int | None = None,
@@ -714,18 +738,20 @@ def update_series(
 ) -> bool:
     now = _now()
     pj, pg = normalize_preferred_groups_storage(preferred_groups_json, preferred_group)
+    effective_mdx_id = mangadex_id or (source_id if source == "mangadex" else None)
     if sync_configured is None:
         cur = conn.execute("""
             UPDATE series
             SET path=?, title=?, language=?, preferred_group=?, preferred_groups_json=?,
                 start_chapter=?,
                 exclude_from_fix=?, merge_volumes_override=?,
+                mangadex_id=COALESCE(?, mangadex_id),
                 updated_at=?
             WHERE path=?
         """, (
             new_path, title, language, pg, pj, start_chapter,
             exclude_from_fix, merge_volumes_override,
-            now, old_path,
+            effective_mdx_id, now, old_path,
         ))
     else:
         cur = conn.execute("""
@@ -734,13 +760,14 @@ def update_series(
                 start_chapter=?,
                 exclude_from_fix=?, merge_volumes_override=?,
                 sync_configured=?,
+                mangadex_id=COALESCE(?, mangadex_id),
                 updated_at=?
             WHERE path=?
         """, (
             new_path, title, language, pg, pj, start_chapter,
             exclude_from_fix, merge_volumes_override,
             int(bool(sync_configured)),
-            now, old_path,
+            effective_mdx_id, now, old_path,
         ))
     if cur.rowcount == 0:
         return False
@@ -1008,6 +1035,7 @@ def upsert_chapter(
 
     base["series_id"]   = series_id
     base["chapter_num"] = chapter_num
+    base["created_at"]  = _now()
     cols = ", ".join(base.keys())
     phs  = ", ".join("?" * len(base))
     cur  = conn.execute(
@@ -1217,10 +1245,10 @@ def scan_disk_files(
                 conn.execute(
                     """
                     INSERT INTO chapters
-                        (series_id, volume_id, chapter_num, path, file_size, status)
-                    VALUES (?, ?, ?, ?, ?, 'on_disk')
+                        (series_id, volume_id, chapter_num, path, file_size, status, created_at)
+                    VALUES (?, ?, ?, ?, ?, 'on_disk', ?)
                     """,
-                    (series_id, vol_id, ch_num, rel_path, size),
+                    (series_id, vol_id, ch_num, rel_path, size, now),
                 )
 
     # Null-out records for files that no longer exist

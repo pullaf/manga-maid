@@ -1,4 +1,4 @@
-"""Tests for kavita.py — all HTTP calls are mocked."""
+"""Tests for kavita.py - all HTTP calls are mocked."""
 from unittest.mock import MagicMock, patch
 from urllib import error as urlerror
 
