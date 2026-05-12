@@ -63,6 +63,7 @@
     </div>
   </div>
 
+  <p id="series-edit-general-error" class="hidden text-xs font-mono whitespace-pre-wrap mt-1" style="color:#f87171"></p>
   <button type="submit"
           class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold py-2.5 rounded-lg transition-colors"
           style="font-family:'Syne',sans-serif">
@@ -85,9 +86,29 @@ function toggleEditGeneralExclude(btn) {
   if (!form || form.dataset.bound === '1') return;
   form.dataset.bound = '1';
   form.addEventListener('htmx:afterRequest', function(e) {
-    if (!e.detail || !e.detail.successful) return;
-    if (typeof closeModal === 'function') closeModal();
-    window.location.reload();
+    if (!e.detail) return;
+    var errEl = document.getElementById('series-edit-general-error');
+    if (e.detail.successful) {
+      if (typeof closeModal === 'function') closeModal();
+      window.location.reload();
+      return;
+    }
+    var msg = 'Save failed';
+    var xhr = e.detail.xhr;
+    if (xhr) {
+      try {
+        var data = JSON.parse(xhr.responseText);
+        msg = data.detail || data.error || msg;
+        if (typeof msg !== 'string') msg = JSON.stringify(msg);
+      } catch (_) {
+        msg = xhr.responseText || ('HTTP ' + xhr.status);
+      }
+    }
+    if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
+  });
+  form.addEventListener('submit', function() {
+    var errEl = document.getElementById('series-edit-general-error');
+    if (errEl) errEl.classList.add('hidden');
   });
 })();
 </script>

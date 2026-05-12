@@ -294,8 +294,16 @@
 <div class="mb-6 flex items-center justify-between gap-3">
   <div>
     <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Dashboard</h1>
-    <p class="text-sm mt-0.5" style="color:var(--text-muted)">
-      {{ linked_count }} linked{% if unlinked_count %} · <span style="color:#fbbf24">{{ unlinked_count }} local</span>{% endif %}
+    <p class="text-sm mt-0.5 flex items-center gap-2 flex-wrap" style="color:var(--text-muted)">
+      <span>{{ linked_count }} linked{% if unlinked_count %} · <span style="color:#fbbf24">{{ unlinked_count }} local</span>{% endif %}</span>
+      {% if ignored_series %}
+      <button type="button" id="btn-show-ignored-header"
+              onclick="toggleIgnoredSection()"
+              class="text-xs px-2 py-0.5 rounded border transition-colors"
+              style="border-color:var(--border-mid);color:var(--text-dim);background:none;cursor:pointer">
+        {{ ignored_series | length }} not managed
+      </button>
+      {% endif %}
     </p>
   </div>
   <div class="flex items-center gap-3">
@@ -458,10 +466,89 @@
   {% endfor %}
 </div>
 
+{% if ignored_series %}
+<div class="mt-8" id="ignored-section">
+  <button type="button" id="btn-show-ignored"
+          onclick="toggleIgnoredSection()"
+          class="flex items-center gap-2 text-xs font-medium transition-colors"
+          style="color:var(--text-dim);background:none;border:none;cursor:pointer;padding:0">
+    <svg id="ignored-chevron" width="12" height="12" viewBox="0 0 12 12" fill="none"
+         style="transition:transform .15s;transform:rotate(-90deg)">
+      <path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    Not managed · {{ ignored_series | length }}
+  </button>
+
+  <div id="ignored-grid" class="hidden mt-4" style="display:none">
+    <!-- card layout -->
+    <div id="ignored-grid-cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:18px">
+      {% for s in ignored_series %}
+      <div class="sc-grid unlinked" style="opacity:.55;border-color:rgba(251,191,36,.15)">
+        <div class="cover-wrap">
+          {% if s.cover_url %}
+          <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.name }}"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+          <div class="cover-placeholder" style="display:none;font-size:22px">{{ s.name[0].upper() }}</div>
+          {% else %}
+          <div class="cover-placeholder" style="font-size:32px">{{ s.name[0].upper() }}</div>
+          {% endif %}
+          <div class="cover-overlay"></div>
+          <a href="/series/{{ s.path }}" class="cover-title" style="text-decoration:none">{{ s.name }}</a>
+        </div>
+        <div class="card-body">
+          <div class="card-meta">
+            <span class="badge-local" style="background:rgba(148,163,184,.1);color:var(--text-dim);border-color:rgba(148,163,184,.2)">IGNORED</span>
+          </div>
+          <div class="card-actions mt-2">
+            <a href="/series/{{ s.path }}" class="act-btn muted"
+               style="text-decoration:none;display:inline-flex;align-items:center">Details</a>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <!-- list layout -->
+    <div id="ignored-list-rows" style="display:none;flex-direction:column;gap:1px;border-radius:14px;overflow:hidden;border:1px solid var(--border)">
+      {% for s in ignored_series %}
+      <div class="sc-list unlinked" style="opacity:.65">
+        <div class="cover-wrap">
+          {% if s.cover_url %}
+          <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.name }}"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+          <div class="cover-placeholder" style="display:none;font-size:13px">{{ s.name[0].upper() }}</div>
+          {% else %}
+          <div class="cover-placeholder" style="font-size:18px">{{ s.name[0].upper() }}</div>
+          {% endif %}
+        </div>
+        <a href="/series/{{ s.path }}" class="list-name" title="{{ s.name }}" style="text-decoration:none">{{ s.name }}</a>
+        <div class="list-meta">
+          <span class="badge-local" style="background:rgba(148,163,184,.1);color:var(--text-dim);border-color:rgba(148,163,184,.2)">IGNORED</span>
+        </div>
+        <div class="list-actions">
+          <a href="/series/{{ s.path }}" class="act-btn muted"
+             style="text-decoration:none;display:inline-flex;align-items:center">Details</a>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
 {% endif %}
 {% endif %}
 
 <script>
+function toggleIgnoredSection() {
+  var grid = document.getElementById('ignored-grid');
+  var chevron = document.getElementById('ignored-chevron');
+  var headerBtn = document.getElementById('btn-show-ignored-header');
+  if (!grid) return;
+  var hidden = grid.style.display === 'none' || grid.classList.contains('hidden');
+  grid.style.display = hidden ? '' : 'none';
+  grid.classList.toggle('hidden', !hidden);
+  if (chevron) chevron.style.transform = hidden ? 'rotate(0deg)' : 'rotate(-90deg)';
+  if (headerBtn) headerBtn.style.opacity = hidden ? '1' : '0.5';
+}
 /* ── View toggle ─────────────────────────────────────── */
 function setView(v) {
   const grid = document.getElementById('series-grid');
@@ -472,6 +559,11 @@ function setView(v) {
   list.style.display = isGrid ? 'none' : '';
   document.getElementById('btn-grid').classList.toggle('active', isGrid);
   document.getElementById('btn-list').classList.toggle('active', !isGrid);
+  // keep ignored section in sync with chosen layout
+  const igCards = document.getElementById('ignored-grid-cards');
+  const igRows  = document.getElementById('ignored-list-rows');
+  if (igCards) igCards.style.display = isGrid ? 'grid' : 'none';
+  if (igRows)  igRows.style.display  = isGrid ? 'none' : 'flex';
   localStorage.setItem('dash-view', v);
 }
 
