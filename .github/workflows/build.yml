@@ -44,8 +44,11 @@ jobs:
           BASE="ghcr.io/pullaf/mangadex-kavita-sync"
           if [[ "$VERSION" == "dev" ]]; then
             echo "value=${BASE}:dev" >> "$GITHUB_OUTPUT"
+          elif [[ "$VERSION" == *-beta* ]]; then
+            # Beta pre-release: tag bare, v-prefixed, and floating :beta
+            echo "value=${BASE}:${VERSION},${BASE}:v${VERSION},${BASE}:beta" >> "$GITHUB_OUTPUT"
           elif [[ "$VERSION" == *-* ]]; then
-            # Pre-release: tag both bare and v-prefixed so it matches the GH release name
+            # Other pre-release: tag bare and v-prefixed
             echo "value=${BASE}:${VERSION},${BASE}:v${VERSION}" >> "$GITHUB_OUTPUT"
           else
             echo "value=${BASE}:${VERSION},${BASE}:latest" >> "$GITHUB_OUTPUT"
