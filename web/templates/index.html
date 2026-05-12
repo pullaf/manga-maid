@@ -294,8 +294,16 @@
 <div class="mb-6 flex items-center justify-between gap-3">
   <div>
     <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Dashboard</h1>
-    <p class="text-sm mt-0.5" style="color:var(--text-muted)">
-      {{ linked_count }} linked{% if unlinked_count %} · <span style="color:#fbbf24">{{ unlinked_count }} local</span>{% endif %}{% if ignored_series %} · <span style="color:var(--text-dim)">{{ ignored_series | length }} not managed</span>{% endif %}
+    <p class="text-sm mt-0.5 flex items-center gap-2 flex-wrap" style="color:var(--text-muted)">
+      <span>{{ linked_count }} linked{% if unlinked_count %} · <span style="color:#fbbf24">{{ unlinked_count }} local</span>{% endif %}</span>
+      {% if ignored_series %}
+      <button type="button" id="btn-show-ignored-header"
+              onclick="toggleIgnoredSection()"
+              class="text-xs px-2 py-0.5 rounded border transition-colors"
+              style="border-color:var(--border-mid);color:var(--text-dim);background:none;cursor:pointer">
+        {{ ignored_series | length }} not managed
+      </button>
+      {% endif %}
     </p>
   </div>
   <div class="flex items-center gap-3">
@@ -508,12 +516,13 @@
 function toggleIgnoredSection() {
   var grid = document.getElementById('ignored-grid');
   var chevron = document.getElementById('ignored-chevron');
-  var btn = document.getElementById('btn-show-ignored');
+  var headerBtn = document.getElementById('btn-show-ignored-header');
   if (!grid) return;
   var hidden = grid.style.display === 'none' || grid.classList.contains('hidden');
   grid.style.display = hidden ? '' : 'none';
   grid.classList.toggle('hidden', !hidden);
   if (chevron) chevron.style.transform = hidden ? 'rotate(0deg)' : 'rotate(-90deg)';
+  if (headerBtn) headerBtn.style.opacity = hidden ? '1' : '0.5';
 }
 /* ── View toggle ─────────────────────────────────────── */
 function setView(v) {

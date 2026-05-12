@@ -601,7 +601,7 @@ def get_all_series(conn: sqlite3.Connection) -> list[dict]:
             s.id, s.title, s.path, s.language, s.preferred_group,
             s.preferred_groups_json, s.start_chapter,
             s.exclude_from_fix, s.merge_volumes_override, s.sync_configured,
-            s.updated_at,
+            s.ignored, s.updated_at,
             ss.source  AS source_name,
             ss.source_id,
             (SELECT MAX(c.created_at) FROM chapters c WHERE c.series_id = s.id) AS latest_chapter_at,
