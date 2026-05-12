@@ -480,7 +480,8 @@
   </button>
 
   <div id="ignored-grid" class="hidden mt-4" style="display:none">
-    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:18px">
+    <!-- card layout -->
+    <div id="ignored-grid-cards" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:18px">
       {% for s in ignored_series %}
       <div class="sc-grid unlinked" style="opacity:.55;border-color:rgba(251,191,36,.15)">
         <div class="cover-wrap">
@@ -502,6 +503,30 @@
             <a href="/series/{{ s.path }}" class="act-btn muted"
                style="text-decoration:none;display:inline-flex;align-items:center">Details</a>
           </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <!-- list layout -->
+    <div id="ignored-list-rows" style="display:none;flex-direction:column;gap:1px;border-radius:14px;overflow:hidden;border:1px solid var(--border)">
+      {% for s in ignored_series %}
+      <div class="sc-list unlinked" style="opacity:.65">
+        <div class="cover-wrap">
+          {% if s.cover_url %}
+          <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.name }}"
+               onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+          <div class="cover-placeholder" style="display:none;font-size:13px">{{ s.name[0].upper() }}</div>
+          {% else %}
+          <div class="cover-placeholder" style="font-size:18px">{{ s.name[0].upper() }}</div>
+          {% endif %}
+        </div>
+        <a href="/series/{{ s.path }}" class="list-name" title="{{ s.name }}" style="text-decoration:none">{{ s.name }}</a>
+        <div class="list-meta">
+          <span class="badge-local" style="background:rgba(148,163,184,.1);color:var(--text-dim);border-color:rgba(148,163,184,.2)">IGNORED</span>
+        </div>
+        <div class="list-actions">
+          <a href="/series/{{ s.path }}" class="act-btn muted"
+             style="text-decoration:none;display:inline-flex;align-items:center">Details</a>
         </div>
       </div>
       {% endfor %}
@@ -534,6 +559,11 @@ function setView(v) {
   list.style.display = isGrid ? 'none' : '';
   document.getElementById('btn-grid').classList.toggle('active', isGrid);
   document.getElementById('btn-list').classList.toggle('active', !isGrid);
+  // keep ignored section in sync with chosen layout
+  const igCards = document.getElementById('ignored-grid-cards');
+  const igRows  = document.getElementById('ignored-list-rows');
+  if (igCards) igCards.style.display = isGrid ? 'grid' : 'none';
+  if (igRows)  igRows.style.display  = isGrid ? 'none' : 'flex';
   localStorage.setItem('dash-view', v);
 }
 
