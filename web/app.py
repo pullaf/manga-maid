@@ -1831,40 +1831,6 @@ async def series_chapter_gaps(path: str):
     })
 
 
-@app.delete("/api/series/{path:path}", response_class=HTMLResponse)
-async def delete_series(path: str, and_folder: bool = Query(False)):
-    _require_root_folders()
-    conn = _get_conn()
-    if not _db.get_series_by_path(conn, path):
-        raise HTTPException(404, "Series not found")
-    if and_folder:
-        series_dir = os.path.join(MANGA_ROOT, path)
-        _require_under_manga_root(series_dir)
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, lambda: _db.unlink_series(conn, path))
-    _db.increment_usage(conn, "series_deletes" if and_folder else "source_unlinks")
-    if and_folder:
-        series_dir = os.path.join(MANGA_ROOT, path)
-        if os.path.isdir(series_dir):
-            shutil.rmtree(series_dir)
-    return HTMLResponse("")
-
-
-@app.delete("/api/series/{path:path}/with-folder", response_class=JSONResponse)
-async def delete_series_with_folder(path: str):
-    _require_root_folders()
-    conn = _get_conn()
-    if not _db.get_series_by_path(conn, path):
-        raise HTTPException(404, "Series not found")
-    series_dir = os.path.join(MANGA_ROOT, path)
-    _require_under_manga_root(series_dir)
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, lambda: _db.delete_series(conn, path))
-    if os.path.isdir(series_dir):
-        await loop.run_in_executor(None, lambda: shutil.rmtree(series_dir))
-    return JSONResponse({"ok": True})
-
-
 class SyncPausedBody(BaseModel):
     paused: bool
 
@@ -1897,6 +1863,40 @@ async def unignore_series(path: str):
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, lambda: _db.set_series_ignored(conn, path, False))
     return JSONResponse({"ok": True})
+
+
+@app.delete("/api/series/{path:path}/with-folder", response_class=JSONResponse)
+async def delete_series_with_folder(path: str):
+    _require_root_folders()
+    conn = _get_conn()
+    if not _db.get_series_by_path(conn, path):
+        raise HTTPException(404, "Series not found")
+    series_dir = os.path.join(MANGA_ROOT, path)
+    _require_under_manga_root(series_dir)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: _db.delete_series(conn, path))
+    if os.path.isdir(series_dir):
+        await loop.run_in_executor(None, lambda: shutil.rmtree(series_dir))
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/series/{path:path}", response_class=HTMLResponse)
+async def delete_series(path: str, and_folder: bool = Query(False)):
+    _require_root_folders()
+    conn = _get_conn()
+    if not _db.get_series_by_path(conn, path):
+        raise HTTPException(404, "Series not found")
+    if and_folder:
+        series_dir = os.path.join(MANGA_ROOT, path)
+        _require_under_manga_root(series_dir)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: _db.unlink_series(conn, path))
+    _db.increment_usage(conn, "series_deletes" if and_folder else "source_unlinks")
+    if and_folder:
+        series_dir = os.path.join(MANGA_ROOT, path)
+        if os.path.isdir(series_dir):
+            shutil.rmtree(series_dir)
+    return HTMLResponse("")
 
 
 class MdxCompanionBody(BaseModel):

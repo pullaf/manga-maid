@@ -444,8 +444,7 @@
           Cancel
         </button>
         <button type="button" id="confirm-modal-ok"
-                class="text-xs px-3 py-2 rounded-lg font-semibold transition-colors"
-                style="background:rgba(248,113,113,.15);border:1px solid rgba(248,113,113,.5);color:#f87171">
+                class="text-xs px-3 py-2 rounded-lg font-semibold transition-colors">
           Confirm
         </button>
       </div>
@@ -761,7 +760,7 @@
         r(!!ok);
       }
     }
-    window.appConfirm = function(message) {
+    window.appConfirm = function(message, danger) {
       var modal = document.getElementById('confirm-modal');
       var text = document.getElementById('confirm-modal-text');
       var okBtn = document.getElementById('confirm-modal-ok');
@@ -770,6 +769,11 @@
         return Promise.resolve(false);
       }
       text.textContent = String(message || 'Are you sure?');
+      if (danger === false) {
+        okBtn.style.cssText = 'background:var(--accent);border:1px solid var(--accent);color:#fff';
+      } else {
+        okBtn.style.cssText = 'background:rgba(248,113,113,.15);border:1px solid rgba(248,113,113,.5);color:#f87171';
+      }
       modal.classList.remove('hidden');
       okBtn.focus();
       return new Promise(function(resolve) {

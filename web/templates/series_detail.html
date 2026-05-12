@@ -722,7 +722,7 @@ async function toggleIgnored(ignore) {
   var msg = ignore
     ? 'Stop managing "{{ series.name }}"? It will be hidden from the dashboard and excluded from all automatic sync and Fix Files jobs. Files and source link stay on disk.'
     : 'Resume managing "{{ series.name }}"? It will reappear on the dashboard and be included in automatic jobs.';
-  var ok = await window.appConfirm(msg);
+  var ok = await window.appConfirm(msg, ignore);
   if (!ok) return;
   try {
     var resp = await fetch(seriesDetailApiUrl(path, '/ignore'), {
