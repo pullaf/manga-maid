@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS series (
     exclude_from_fix         INTEGER NOT NULL DEFAULT 0,
     merge_volumes_override   INTEGER,
     sync_configured          INTEGER NOT NULL DEFAULT 1,
+    sync_paused              INTEGER NOT NULL DEFAULT 0,
     created_at               TEXT    NOT NULL,
     updated_at               TEXT    NOT NULL
 );
@@ -193,6 +194,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     if "sync_configured" not in cols:
         conn.execute(
             "ALTER TABLE series ADD COLUMN sync_configured INTEGER NOT NULL DEFAULT 1"
+        )
+    if "sync_paused" not in cols:
+        conn.execute(
+            "ALTER TABLE series ADD COLUMN sync_paused INTEGER NOT NULL DEFAULT 0"
         )
     if "mangadex_id" not in cols:
         conn.execute("ALTER TABLE series ADD COLUMN mangadex_id TEXT")
@@ -560,7 +565,7 @@ def get_all_series(conn: sqlite3.Connection) -> list[dict]:
         SELECT
             s.id, s.title, s.path, s.language, s.preferred_group,
             s.preferred_groups_json, s.start_chapter,
-            s.exclude_from_fix, s.merge_volumes_override, s.sync_configured,
+            s.exclude_from_fix, s.merge_volumes_override, s.sync_configured, s.sync_paused,
             s.updated_at,
             ss.source  AS source_name,
             ss.source_id,
@@ -853,6 +858,15 @@ def delete_series(conn: sqlite3.Connection, path: str) -> bool:
     conn.execute("DELETE FROM series WHERE id=?", (row["id"],))
     conn.commit()
     return True
+
+
+def set_sync_paused(conn: sqlite3.Connection, path: str, paused: bool) -> bool:
+    cur = conn.execute(
+        "UPDATE series SET sync_paused=?, updated_at=? WHERE path=?",
+        (1 if paused else 0, _now(), path),
+    )
+    conn.commit()
+    return cur.rowcount > 0
 
 # ---------------------------------------------------------------------------
 # Sources

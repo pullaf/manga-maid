@@ -1836,6 +1836,34 @@ async def delete_series(path: str):
     return HTMLResponse("")
 
 
+@app.delete("/api/series/{path:path}/with-folder", response_class=JSONResponse)
+async def delete_series_with_folder(path: str):
+    _require_root_folders()
+    conn = _get_conn()
+    if not _db.get_series_by_path(conn, path):
+        raise HTTPException(404, "Series not found")
+    series_dir = os.path.join(MANGA_ROOT, path)
+    _require_under_manga_root(series_dir)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: _db.delete_series(conn, path))
+    if os.path.isdir(series_dir):
+        await loop.run_in_executor(None, lambda: shutil.rmtree(series_dir))
+    return JSONResponse({"ok": True})
+
+
+class SyncPausedBody(BaseModel):
+    paused: bool
+
+
+@app.post("/api/series/{path:path}/sync-pause", response_class=JSONResponse)
+async def set_series_sync_pause(path: str, body: SyncPausedBody):
+    conn = _get_conn()
+    if not _db.get_series_by_path(conn, path):
+        raise HTTPException(404, "Series not found")
+    _db.set_sync_paused(conn, path, body.paused)
+    return JSONResponse({"ok": True, "sync_paused": body.paused})
+
+
 class MdxCompanionBody(BaseModel):
     mangadex_id: str = ""
 
@@ -1934,6 +1962,7 @@ async def get_grab_options_form(request: Request, path: str):
                 "lang_counts": {},
                 "current_start": row.get("start_chapter", 0),
                 "exclude_from_fix": bool(row.get("exclude_from_fix")),
+                "sync_paused": bool(row.get("sync_paused")),
                 "current_preferred_groups_json": json.dumps(prefs, ensure_ascii=False),
                 "is_mdx": False,
                 "groups": [],
@@ -1976,6 +2005,7 @@ async def get_grab_options_form(request: Request, path: str):
             "lang_counts": lang_counts,
             "current_start": row.get("start_chapter", 0),
             "exclude_from_fix": bool(row.get("exclude_from_fix")),
+            "sync_paused": bool(row.get("sync_paused")),
             "current_preferred_groups_json": json.dumps(prefs, ensure_ascii=False),
             "is_mdx": True,
             **groups_data,

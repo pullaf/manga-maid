@@ -45,7 +45,8 @@ jobs:
           if [[ "$VERSION" == "dev" ]]; then
             echo "value=${BASE}:dev" >> "$GITHUB_OUTPUT"
           elif [[ "$VERSION" == *-* ]]; then
-            echo "value=${BASE}:${VERSION}" >> "$GITHUB_OUTPUT"
+            # Pre-release: tag both bare and v-prefixed so it matches the GH release name
+            echo "value=${BASE}:${VERSION},${BASE}:v${VERSION}" >> "$GITHUB_OUTPUT"
           else
             echo "value=${BASE}:${VERSION},${BASE}:latest" >> "$GITHUB_OUTPUT"
           fi

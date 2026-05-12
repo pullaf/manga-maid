@@ -57,17 +57,17 @@
 </div>
 
 <div class="grid gap-4 lg:grid-cols-2">
-  <div class="rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
+  <div class="rounded-xl border p-4 min-w-0" style="background:var(--surface);border-color:var(--border)">
     <h2 class="text-sm font-semibold mb-2" style="font-family:'Syne',sans-serif;color:var(--text)">Queue</h2>
-    <div id="jobs-list" class="space-y-2 max-h-[560px] overflow-y-auto"></div>
+    <div id="jobs-list" class="space-y-2 max-h-[560px] overflow-y-auto overflow-x-hidden"></div>
   </div>
-  <div class="rounded-xl border p-4" style="background:var(--surface);border-color:var(--border)">
+  <div class="rounded-xl border p-4 min-w-0" style="background:var(--surface);border-color:var(--border)">
     <div class="flex items-center justify-between gap-2 mb-2">
       <h2 class="text-sm font-semibold" style="font-family:'Syne',sans-serif;color:var(--text)">Console</h2>
       <span id="job-console-status" class="text-xs" style="color:var(--text-dim)"></span>
     </div>
-    <div id="job-console" class="font-mono text-xs rounded-lg p-3 max-h-[560px] overflow-y-auto"
-         style="background:#090910;border:1px solid var(--border);color:#c4c0dd;min-height:220px"></div>
+    <div id="job-console" class="font-mono text-xs rounded-lg p-3 max-h-[560px] overflow-y-auto overflow-x-hidden"
+         style="background:#090910;border:1px solid var(--border);color:#c4c0dd;min-height:220px;white-space:pre-wrap;overflow-wrap:break-word"></div>
   </div>
 </div>
 
@@ -120,9 +120,9 @@ function renderSection(title, jobs) {
       '<span class="text-xs truncate" style="color:var(--text)">#' + j.id + ' · ' + (j.display_name || j.job_type) + '</span>' +
       statusBadge(j.status) +
       '</div>' +
-      '<div class="text-[11px] mt-1 flex items-center justify-between gap-2" style="color:var(--text-dim)">' +
-      '<span>created ' + (j.created_at || '-') + '</span>' +
-      '<span>' + (j.series_path_snapshot || j.job_type || '-') + '</span>' +
+      '<div class="text-[11px] mt-1 flex items-center justify-between gap-2 min-w-0" style="color:var(--text-dim)">' +
+      '<span class="shrink-0">created ' + (j.created_at || '-') + '</span>' +
+      '<span class="truncate text-right">' + (j.series_path_snapshot || j.job_type || '-') + '</span>' +
       '</div>' +
       '</button>' +
       (canCancel ? '<button type="button" onclick="cancelJob(' + j.id + ')" class="text-[11px] px-2 py-1 rounded border shrink-0 mt-0.5" style="border-color:rgba(248,113,113,.35);color:#f87171;background:rgba(248,113,113,.08)">Cancel</button>' : '') +

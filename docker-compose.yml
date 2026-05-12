@@ -26,7 +26,7 @@ services:
     ports:
       - "4567:4567"
     volumes:
-      - suwayomi-data:/root/.local/share/Tachidesk
+      - suwayomi-data:/home/suwayomi/.local/share/Tachidesk
     restart: unless-stopped
 
   # Optional: only needed for sources protected by Cloudflare (e.g. Comick)

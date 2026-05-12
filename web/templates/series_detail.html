@@ -158,6 +158,8 @@
               hx-delete="/api/series/{{ series.path }}"
               hx-swap="none"
               hx-confirm="Unlink '{{ series.name }}' from its source? Local files stay on disk.">Unlink from source</button>
+      <button type="button" class="detail-act-btn detail-act-btn--danger"
+              onclick="openDeleteSeriesFolderModal()">Delete series &amp; folder…</button>
     </div>
     <div id="detail-action-log" class="detail-action-log hidden mt-3"></div>
   </div>
@@ -202,10 +204,25 @@
             </span>
           </div>
           <div style="color:var(--text-muted)">Start from chapter ≥ <span style="color:var(--text)">{{ series.start_chapter or 0 }}</span></div>
-          {% if series.config.status in ("completed", "cancelled") %}
-          <div class="rounded-lg px-2.5 py-2 border text-xs mt-1"
+          {% if series.sync_paused %}
+          <div class="rounded-lg px-2.5 py-2 border text-xs mt-1 flex items-center justify-between gap-2"
+               style="border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.07);color:#fbbf24">
+            <span>Sync paused</span>
+            <button type="button" onclick="setSyncPaused(false)"
+                    class="shrink-0 text-xs px-2.5 py-1 rounded-lg border font-semibold transition-colors"
+                    style="border-color:rgba(251,191,36,.5);color:#fbbf24;background:transparent">
+              Resume
+            </button>
+          </div>
+          {% elif series.config.status in ("completed", "cancelled") %}
+          <div class="rounded-lg px-2.5 py-2 border text-xs mt-1 flex items-center justify-between gap-2"
                style="border-color:rgba(52,211,153,.3);background:rgba(52,211,153,.06);color:var(--text-dim)">
-            Auto-sync paused - series is {{ series.config.status }}
+            <span>Series is {{ series.config.status }} — pause sync?</span>
+            <button type="button" onclick="setSyncPaused(true)"
+                    class="shrink-0 text-xs px-2.5 py-1 rounded-lg border font-semibold transition-colors"
+                    style="border-color:rgba(52,211,153,.4);color:#34d399;background:transparent">
+              Pause
+            </button>
           </div>
           {% endif %}
         </div>
@@ -337,6 +354,47 @@
     {% else %}
     <p class="text-sm" style="color:var(--text-dim)">No chapter files tracked yet.</p>
     {% endif %}
+  </div>
+</div>
+
+<div id="delete-series-folder-modal" class="hidden fixed inset-0 z-[60] flex items-center justify-center p-4">
+  <div class="absolute inset-0" style="background:rgba(0,0,0,.72);backdrop-filter:blur(4px)" aria-hidden="true"></div>
+  <div class="relative w-full max-w-md rounded-2xl border p-6 shadow-2xl"
+       style="background:var(--surface);border-color:rgba(248,113,113,.5);box-shadow:0 24px 64px rgba(0,0,0,.7)"
+       role="dialog" aria-modal="true" aria-labelledby="dsf-title">
+    <h2 id="dsf-title" class="text-base font-semibold" style="font-family:'Syne',sans-serif;color:#f87171">
+      ⚠ Permanently delete series and folder?
+    </h2>
+    <p class="text-sm mt-3 leading-relaxed" style="color:var(--text-muted)">
+      This will <strong style="color:#f87171">permanently delete</strong> the folder
+      <code id="dsf-path" class="text-xs px-1.5 py-0.5 rounded" style="background:var(--surface-alt);color:var(--text)"></code>
+      and <strong style="color:#f87171">ALL its contents</strong> from disk.
+      The series will also be removed from the database.
+    </p>
+    <p class="text-sm mt-2 font-semibold" style="color:#f87171">This cannot be undone.</p>
+    <div class="mt-4">
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">
+        Type <code id="dsf-confirm-hint" class="text-xs px-1 py-0.5 rounded" style="background:var(--surface-alt);color:var(--text)"></code> to confirm
+      </label>
+      <input id="dsf-confirm-input" type="text" autocomplete="off" spellcheck="false"
+             class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none"
+             style="border-color:rgba(248,113,113,.5);background:var(--surface-alt)"
+             oninput="updateDsfButton()">
+    </div>
+    <p id="dsf-status" class="text-xs mt-3 min-h-[1.25em] font-mono whitespace-pre-wrap" style="color:#f87171"></p>
+    <div class="flex justify-end gap-2 mt-5">
+      <button type="button" onclick="closeDeleteSeriesFolderModal()"
+              class="text-xs px-3 py-2 rounded-lg border transition-colors"
+              style="border-color:var(--border-mid);color:var(--text-muted)">
+        Cancel
+      </button>
+      <button type="button" id="dsf-confirm-btn" disabled
+              class="text-xs px-3 py-2 rounded-lg font-semibold transition-colors"
+              style="background:rgba(248,113,113,.15);border:1px solid rgba(248,113,113,.5);color:#f87171;opacity:.4;cursor:not-allowed"
+              onclick="confirmDeleteSeriesFolder()">
+        Delete permanently
+      </button>
+    </div>
   </div>
 </div>
 
@@ -991,5 +1049,85 @@ document.addEventListener('keydown', function(e) {
   closeGapModal();
   e.stopPropagation();
 }, true);
+
+// --- Delete series + folder ---
+(function() {
+  var _seriesName = {{ series.name | tojson }};
+  var _seriesPath = {{ series.path | tojson }};
+
+  window.openDeleteSeriesFolderModal = function() {
+    document.getElementById('dsf-path').textContent = _seriesPath;
+    document.getElementById('dsf-confirm-hint').textContent = _seriesName;
+    document.getElementById('dsf-confirm-input').value = '';
+    document.getElementById('dsf-status').textContent = '';
+    updateDsfButton();
+    document.getElementById('delete-series-folder-modal').classList.remove('hidden');
+    document.getElementById('dsf-confirm-input').focus();
+  };
+
+  window.closeDeleteSeriesFolderModal = function() {
+    document.getElementById('delete-series-folder-modal').classList.add('hidden');
+  };
+
+  window.updateDsfButton = function() {
+    var val = (document.getElementById('dsf-confirm-input').value || '').trim();
+    var btn = document.getElementById('dsf-confirm-btn');
+    var ok = val === _seriesName;
+    btn.disabled = !ok;
+    btn.style.opacity = ok ? '1' : '.4';
+    btn.style.cursor  = ok ? 'pointer' : 'not-allowed';
+  };
+
+  window.confirmDeleteSeriesFolder = async function() {
+    var btn = document.getElementById('dsf-confirm-btn');
+    var statusEl = document.getElementById('dsf-status');
+    btn.disabled = true;
+    btn.style.opacity = '.4';
+    statusEl.textContent = 'Deleting…';
+    try {
+      var resp = await fetch(
+        '/api/series/' + _seriesPath.split('/').map(encodeURIComponent).join('/') + '/with-folder',
+        { method: 'DELETE' }
+      );
+      if (!resp.ok) {
+        var data = await resp.json().catch(function(){return {};});
+        statusEl.textContent = (data.detail || data.error || 'Request failed (HTTP ' + resp.status + ')');
+        btn.disabled = false; btn.style.opacity = '1';
+        return;
+      }
+      window.location.href = '/';
+    } catch (e) {
+      statusEl.textContent = String(e);
+      btn.disabled = false; btn.style.opacity = '1';
+    }
+  };
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape') return;
+    var m = document.getElementById('delete-series-folder-modal');
+    if (!m || m.classList.contains('hidden')) return;
+    closeDeleteSeriesFolderModal();
+    e.stopPropagation();
+  }, true);
+})();
+
+// --- Sync pause / resume ---
+(function() {
+  var _seriesPath = {{ series.path | tojson }};
+
+  window.setSyncPaused = async function(paused) {
+    try {
+      var resp = await fetch(
+        '/api/series/' + _seriesPath.split('/').map(encodeURIComponent).join('/') + '/sync-pause',
+        {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({paused: paused})
+        }
+      );
+      if (resp.ok) { window.location.reload(); }
+    } catch (e) { console.error(e); }
+  };
+})();
 </script>
 {% endblock %}

@@ -897,10 +897,9 @@ def _sync_one_series(
         update_source_sync_time(conn, series_id, source_name)
         return 0
 
-    # Completed/cancelled series: no new chapters ever; skip feed polling.
-    series_status = (meta.get("status") or "").lower()
-    if series_status in ("completed", "cancelled"):
-        _log(f"[{name}] series is {series_status} - skipping feed")
+    # User-paused: skip feed polling until manually resumed.
+    if series_row.get("sync_paused"):
+        _log(f"[{name}] sync paused - skipping feed")
         _ensure_comicinfo_all(
             series_id, series_dir, conn, meta, language,
             series_web=series_web, series_label=name,
