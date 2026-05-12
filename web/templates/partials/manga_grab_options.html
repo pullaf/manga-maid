@@ -87,6 +87,7 @@
     {% endfor %}
   </div>
 
+  <p id="grab-options-error" class="hidden text-xs font-mono whitespace-pre-wrap" style="color:#f87171"></p>
   <div class="flex flex-col gap-2">
     <button type="submit"
             class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold py-2.5 rounded-lg transition-colors"
@@ -99,6 +100,19 @@
             style="border-color:var(--border-mid);color:var(--text-muted);background:transparent">
       Cancel
     </button>
+    <div style="border-top:1px solid var(--border);margin-top:4px;padding-top:8px">
+      <button type="button"
+              class="w-full text-center text-xs font-medium py-2 rounded-lg transition-colors"
+              style="color:#f87171;background:rgba(248,113,113,.06);border:1px solid rgba(248,113,113,.25)"
+              onclick="grabOptionsUnlink(this)"
+              data-series-path="{{ path }}"
+              title="Removes the source connection. Series becomes local-only — files stay on disk.">
+        Remove source link
+      </button>
+      <p class="text-xs mt-1.5 text-center" style="color:var(--text-dim)">
+        Disconnects MangaDex/source. Files and folder stay on disk.
+      </p>
+    </div>
   </div>
 </form>
 
@@ -129,8 +143,52 @@ function grabOptionsCancel() {
   if (!form || form.dataset.bound === '1') return;
   form.dataset.bound = '1';
   form.addEventListener('htmx:afterRequest', function(e) {
-    if (!e.detail || !e.detail.successful) return;
-    window.location.href = _grabOptionsRedirectUrl();
+    if (!e.detail) return;
+    var errEl = document.getElementById('grab-options-error');
+    if (e.detail.successful) {
+      window.location.href = _grabOptionsRedirectUrl();
+      return;
+    }
+    var msg = 'Save failed';
+    var xhr = e.detail.xhr;
+    if (xhr) {
+      try {
+        var data = JSON.parse(xhr.responseText);
+        msg = data.detail || data.error || msg;
+        if (typeof msg !== 'string') msg = JSON.stringify(msg);
+      } catch (_) {
+        msg = xhr.responseText || ('HTTP ' + xhr.status);
+      }
+    }
+    if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
+  });
+  form.addEventListener('submit', function() {
+    var errEl = document.getElementById('grab-options-error');
+    if (errEl) errEl.classList.add('hidden');
   });
 })();
+
+async function grabOptionsUnlink(btn) {
+  var path = btn.dataset.seriesPath;
+  var ok = await window.appConfirm(
+    'Remove the source link for this series? It will become local-only — files stay on disk and the folder is untouched. You can re-link it later.'
+  );
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    var resp = await fetch('/api/series/' + path.split('/').map(encodeURIComponent).join('/'), {
+      method: 'DELETE'
+    });
+    if (resp.ok) { window.location.reload(); return; }
+    var data = await resp.json().catch(function() { return {}; });
+    var msg = data.detail || data.error || ('Request failed (HTTP ' + resp.status + ')');
+    var errEl = document.getElementById('grab-options-error');
+    if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); }
+    btn.disabled = false;
+  } catch (e) {
+    var errEl = document.getElementById('grab-options-error');
+    if (errEl) { errEl.textContent = String(e); errEl.classList.remove('hidden'); }
+    btn.disabled = false;
+  }
+}
 </script>

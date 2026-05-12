@@ -12,7 +12,7 @@ from urllib import parse, request as urlrequest
 
 from urllib.parse import quote_plus
 
-from fastapi import FastAPI, Form, HTTPException, Request, Response
+from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -485,6 +485,7 @@ def _scan_settings_naming_issues(series_path: str | None = None) -> list[tuple[s
         LEFT JOIN volumes v ON v.id = c.volume_id
         WHERE c.path IS NOT NULL
           AND COALESCE(s.exclude_from_fix, 0) = 0
+          AND COALESCE(s.ignored, 0) = 0
     """
     chapter_params: list[str] = []
     if series_scope:
@@ -533,6 +534,7 @@ def _scan_settings_naming_issues(series_path: str | None = None) -> list[tuple[s
         JOIN series s ON s.id = v.series_id
         WHERE v.path IS NOT NULL
           AND COALESCE(s.exclude_from_fix, 0) = 0
+          AND COALESCE(s.ignored, 0) = 0
     """
     volume_params: list[str] = []
     if series_scope:
@@ -573,7 +575,7 @@ def _scan_settings_naming_issues(series_path: str | None = None) -> list[tuple[s
 
 def _exclude_fix_series_paths(conn) -> set[str]:
     rows = conn.execute(
-        "SELECT path FROM series WHERE COALESCE(exclude_from_fix, 0) != 0"
+        "SELECT path FROM series WHERE COALESCE(exclude_from_fix, 0) != 0 OR COALESCE(ignored, 0) != 0"
     ).fetchall()
     return {r["path"] for r in rows}
 
@@ -820,8 +822,10 @@ def _validate_comicinfo_fields(fields: dict[str, str]) -> None:
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    loop   = asyncio.get_event_loop()
-    series = await loop.run_in_executor(None, get_all_series)
+    loop      = asyncio.get_event_loop()
+    all_s     = await loop.run_in_executor(None, get_all_series)
+    series         = [s for s in all_s if not s.get("ignored")]
+    ignored_series = [s for s in all_s if s.get("ignored")]
     linked_count = sum(1 for s in series if s["linked"])
     settings     = load_settings()
     suwayomi_url = (settings.get("suwayomi_url") or "").strip().rstrip("/")
@@ -831,7 +835,8 @@ async def dashboard(request: Request):
         for s in raw_sources
     }
     return templates.TemplateResponse(request=request, name="index.html",
-        context={"series": series, "active": "dashboard",
+        context={"series": series, "ignored_series": ignored_series,
+                 "active": "dashboard",
                  "no_root_folders": _no_rf(),
                  "linked_count": linked_count,
                  "unlinked_count": len(series) - linked_count,
@@ -1705,6 +1710,7 @@ async def add_series(
         sync_configured=sync_conf,
         mangadex_id=mdx_id or None,
     ))
+    _db.increment_usage(conn, "source_links")
     if link_only:
         return JSONResponse({"ok": True, "path": rel_path}, status_code=201)
     target = f"/series/{parse.quote(rel_path, safe='/')}"
@@ -1826,14 +1832,43 @@ async def series_chapter_gaps(path: str):
 
 
 @app.delete("/api/series/{path:path}", response_class=HTMLResponse)
-async def delete_series(path: str):
+async def delete_series(path: str, and_folder: bool = Query(False)):
     _require_root_folders()
     conn = _get_conn()
     if not _db.get_series_by_path(conn, path):
         raise HTTPException(404, "Series not found")
+    if and_folder:
+        series_dir = os.path.join(MANGA_ROOT, path)
+        _require_under_manga_root(series_dir)
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, lambda: _db.unlink_series(conn, path))
+    _db.increment_usage(conn, "series_deletes" if and_folder else "source_unlinks")
+    if and_folder:
+        series_dir = os.path.join(MANGA_ROOT, path)
+        if os.path.isdir(series_dir):
+            shutil.rmtree(series_dir)
     return HTMLResponse("")
+
+
+@app.post("/api/series/{path:path}/ignore")
+async def ignore_series(path: str):
+    conn = _get_conn()
+    if not _db.get_series_by_path(conn, path):
+        raise HTTPException(404, "Series not found")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: _db.set_series_ignored(conn, path, True))
+    _db.increment_usage(conn, "series_ignores")
+    return JSONResponse({"ok": True})
+
+
+@app.delete("/api/series/{path:path}/ignore")
+async def unignore_series(path: str):
+    conn = _get_conn()
+    if not _db.get_series_by_path(conn, path):
+        raise HTTPException(404, "Series not found")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: _db.set_series_ignored(conn, path, False))
+    return JSONResponse({"ok": True})
 
 
 class MdxCompanionBody(BaseModel):
@@ -2056,6 +2091,7 @@ async def enqueue_sync_all():
         queue_key=JOB_QUEUE_KEY,
         payload={},
     )
+    _db.increment_usage(conn, "syncs_all")
     return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id)), "deduped": False})
 
 
@@ -2094,6 +2130,7 @@ async def enqueue_sync_series(path: str):
         series_path_snapshot=path,
         payload={"series_path": path},
     )
+    _db.increment_usage(conn, "syncs_manual")
     return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id)), "deduped": False})
 
 
@@ -2518,6 +2555,8 @@ async def series_delete_files(path: str, body: DeleteSeriesFilesBody):
 
     series_dir = os.path.join(MANGA_ROOT, path)
     _db.scan_disk_files(series_dir, series_id, conn)
+    if deleted:
+        _db.increment_usage(conn, "file_deletes", len(deleted))
     return JSONResponse(
         {
             "ok": len(errors) == 0,
@@ -2599,6 +2638,7 @@ async def update_chapter_comicinfo(path: str, chapter_id: int, body: ComicInfoUp
     if not ok:
         raise HTTPException(500, "Could not write ComicInfo.xml")
     _db.mark_chapter_comicinfo(conn, int(r["id"]))
+    _db.increment_usage(conn, "comicinfo_edits")
     return JSONResponse({"ok": True, "xml": xml})
 
 
@@ -2667,6 +2707,7 @@ async def update_volume_comicinfo(path: str, volume_id: int, body: ComicInfoUpda
     if not ok:
         raise HTTPException(500, "Could not write ComicInfo.xml")
     _db.mark_volume_comicinfo(conn, int(r["id"]))
+    _db.increment_usage(conn, "comicinfo_edits")
     return JSONResponse({"ok": True, "xml": xml})
 
 

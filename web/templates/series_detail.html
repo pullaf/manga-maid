@@ -3,13 +3,15 @@
 <style>
   .action-group {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 8px;
     align-items: center;
     padding: 8px;
     border-radius: 12px;
     border: 1px solid var(--border);
     background: color-mix(in srgb, var(--surface-alt) 78%, transparent);
+    overflow: visible;
+    position: relative;
   }
   .detail-act-btn {
     font-size: 12px;
@@ -95,6 +97,77 @@
     background: rgba(248,113,113,.1);
     color: #f87171;
   }
+  /* Priority+ action bar */
+  .action-group {
+    flex-wrap: nowrap;
+    overflow: visible;
+    position: relative;
+  }
+  #action-bar-primary {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: nowrap;
+  }
+  .action-bar-more {
+    flex-shrink: 0;
+    position: relative;
+  }
+  .action-bar-dropdown {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    min-width: 216px;
+    background: var(--surface);
+    border: 1px solid var(--border-mid);
+    border-radius: 12px;
+    box-shadow: 0 8px 36px rgba(0,0,0,.45);
+    z-index: 300;
+    padding: 5px;
+    transform-origin: top right;
+    animation: dropdownIn .12s ease;
+  }
+  @keyframes dropdownIn {
+    from { opacity: 0; transform: scale(.96) translateY(-4px); }
+    to   { opacity: 1; transform: scale(1)  translateY(0); }
+  }
+  .action-bar-dropdown.open { display: block; }
+  .dropdown-item {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    text-align: left;
+    padding: 7px 11px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    font-family: 'DM Sans', sans-serif;
+    letter-spacing: .01em;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--text-muted);
+    transition: background .1s, color .1s;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .dropdown-item:hover { background: var(--border); color: var(--text); }
+  .dropdown-item--accent { color: #c4b5fd; }
+  .dropdown-item--accent:hover { color: #a78bfa; background: rgba(139,92,246,.12); }
+  .dropdown-item--warn { color: #f87171; }
+  .dropdown-item--warn:hover { background: rgba(248,113,113,.1); color: #f87171; }
+  .dropdown-item--danger { color: #f87171; }
+  .dropdown-item--danger:hover { background: rgba(248,113,113,.1); color: #f87171; }
+  .dropdown-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 4px 2px;
+  }
+  #action-bar-dynamic:not(:empty) { padding-bottom: 4px; margin-bottom: 0; }
 </style>
 
 <div class="mb-6 flex items-start justify-between gap-3">
@@ -109,55 +182,101 @@
 {% set _parts = series.path.split('/') %}
 {% set _sub = '/'.join(_parts[:-1]) %}
 
+{% if series.ignored %}
+<div class="mb-4 rounded-xl border px-4 py-3 flex items-start justify-between gap-3"
+     style="background:rgba(251,191,36,.07);border-color:rgba(251,191,36,.3)">
+  <div>
+    <p class="text-sm font-semibold" style="color:#fbbf24;font-family:'Syne',sans-serif">Not being managed</p>
+    <p class="text-xs mt-0.5 leading-relaxed" style="color:var(--text-muted)">
+      This series is excluded from all automatic sync and Fix Files jobs. Files stay on disk.
+    </p>
+  </div>
+  <button type="button" id="btn-resume-management"
+          class="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg border transition-colors"
+          style="border-color:rgba(251,191,36,.45);color:#fbbf24;background:rgba(251,191,36,.1)"
+          onclick="toggleIgnored(false)">
+    Resume management
+  </button>
+</div>
+{% endif %}
+
 <div style="margin-bottom:24px">
   <div id="detail-actions" data-series-path="{{ series.path }}">
     {% set _is_suwayomi = (series.source_name or '').__contains__('suwayomi') %}
     {% set _mdx_uuid = series.mangadex_id if _is_suwayomi else series.config.id %}
     <div class="action-group">
-      {% if series.linked %}
-      <button type="button" class="detail-act-btn detail-act-btn--accent" onclick="detailSeriesSync(this)" data-path="{{ series.path }}">Sync now</button>
-      <button type="button" class="detail-act-btn detail-act-btn--muted" onclick="detailSeriesCovers(this)" data-path="{{ series.path }}">Push Kavita covers</button>
-      <button type="button" class="detail-act-btn detail-act-btn--muted" onclick="detailSeriesRegenerateComicInfo(this)" data-path="{{ series.path }}">Regenerate ComicInfo</button>
-      <button type="button" class="detail-act-btn detail-act-btn--warn"
-              onclick="detailSeriesResetSourceMetadata(this)"
-              data-path="{{ series.path }}"
-              title="Drop per-chapter source metadata for files already on disk. Series-level info stays.">Treat files as local</button>
-      {% if _mdx_uuid %}
-      <a href="https://mangadex.org/title/{{ _mdx_uuid }}" target="_blank" rel="noopener"
-         class="detail-act-btn detail-act-btn--muted" title="Open on MangaDex">Open MangaDex ↗</a>
-      {% elif _is_suwayomi %}
-      <span class="detail-act-btn detail-act-btn--muted" style="cursor:default">{{ source_labels.get(series.source_name, 'Source') }}</span>
-      {% endif %}
-      {% if _is_suwayomi %}
-        {% if series.mangadex_id %}
-        <button type="button" class="detail-act-btn detail-act-btn--muted"
-                onclick="unlinkMdxCompanion(this)" data-path="{{ series.path }}">Unlink MangaDex companion</button>
-        {% else %}
-        <button type="button" class="detail-act-btn detail-act-btn--muted"
-                hx-get="/api/series/{{ series.path }}/mdx-companion-search"
-                hx-target="#modal-body"
-                hx-swap="innerHTML">Link MangaDex companion</button>
+      {# ── primary bar: auto-collapse buttons ── #}
+      <div id="action-bar-primary">
+        {% if series.linked %}
+        <button type="button" class="detail-act-btn detail-act-btn--accent" data-overflow="auto"
+                onclick="detailSeriesSync(this)" data-path="{{ series.path }}">Sync now</button>
+        {% if _mdx_uuid %}
+        <a href="https://mangadex.org/title/{{ _mdx_uuid }}" target="_blank" rel="noopener"
+           class="detail-act-btn detail-act-btn--muted" data-overflow="auto">Open MangaDex ↗</a>
         {% endif %}
-      {% endif %}
-      {% else %}
-      <a href="/series?q={{ series.name | urlencode }}&folder={{ series.name | urlencode }}&sub={{ _sub | urlencode }}"
-         class="detail-act-btn detail-act-btn--accent">Link to source</a>
-      {% endif %}
-      <a href="/fix?series={{ series.path | urlencode }}" class="detail-act-btn detail-act-btn--muted">Fix filenames</a>
-      <button type="button" class="detail-act-btn detail-act-btn--muted"
-              hx-get="/api/series/{{ series.path }}/edit"
-              hx-target="#modal-body"
-              hx-swap="innerHTML">Edit settings</button>
-      {% if series.linked and series.sync_configured %}
-      <button type="button" class="detail-act-btn detail-act-btn--muted"
-              hx-get="/api/series/{{ series.path }}/grab-options"
-              hx-target="#modal-body"
-              hx-swap="innerHTML">Edit sync settings</button>
-      {% endif %}
-      <button type="button" id="btn-detail-remove-series" class="detail-act-btn detail-act-btn--danger ml-auto"
-              hx-delete="/api/series/{{ series.path }}"
-              hx-swap="none"
-              hx-confirm="Unlink '{{ series.name }}' from its source? Local files stay on disk.">Unlink from source</button>
+        {% if series.sync_configured %}
+        <button type="button" class="detail-act-btn detail-act-btn--muted" data-overflow="auto"
+                hx-get="/api/series/{{ series.path }}/grab-options"
+                hx-target="#modal-body"
+                hx-swap="innerHTML">Edit sync settings</button>
+        {% endif %}
+        <button type="button" class="detail-act-btn detail-act-btn--muted" data-overflow="auto"
+                onclick="closeMoreDropdown()"
+                hx-get="/api/series/{{ series.path }}/edit"
+                hx-target="#modal-body"
+                hx-swap="innerHTML">Edit settings</button>
+        {% else %}
+        <a href="/series?q={{ series.name | urlencode }}&folder={{ series.name | urlencode }}&sub={{ _sub | urlencode }}"
+           class="detail-act-btn detail-act-btn--accent" data-overflow="auto">Link to source</a>
+        {% endif %}
+      </div>
+
+      {# ── More button + dropdown (always visible) ── #}
+      <div class="action-bar-more">
+        <button type="button" class="detail-act-btn detail-act-btn--muted" id="action-bar-more-btn"
+                aria-haspopup="true" aria-expanded="false">More …</button>
+        <div class="action-bar-dropdown" id="action-bar-dropdown" role="menu">
+          {# dynamic section: populated by JS with collapsed auto-buttons #}
+          <div id="action-bar-dynamic"></div>
+          <div id="action-bar-dynamic-divider" class="dropdown-divider" style="display:none"></div>
+          {# static always-hidden items #}
+          {% if series.linked %}
+          <button type="button" class="dropdown-item"
+                  onclick="detailSeriesCovers(this)" data-path="{{ series.path }}">Push Kavita covers</button>
+          <button type="button" class="dropdown-item"
+                  onclick="detailSeriesRegenerateComicInfo(this)" data-path="{{ series.path }}">Regenerate ComicInfo</button>
+          {% endif %}
+          <a href="/fix?series={{ series.path | urlencode }}" class="dropdown-item">Fix filenames</a>
+          {% if _is_suwayomi %}
+          {% if series.mangadex_id %}
+          <button type="button" class="dropdown-item dropdown-item--warn"
+                  onclick="unlinkMdxCompanion(this)" data-path="{{ series.path }}">Unlink MangaDex companion</button>
+          {% else %}
+          <button type="button" class="dropdown-item"
+                  onclick="closeMoreDropdown()"
+                  hx-get="/api/series/{{ series.path }}/mdx-companion-search"
+                  hx-target="#modal-body"
+                  hx-swap="innerHTML">Link MangaDex companion</button>
+          {% endif %}
+          {% endif %}
+          {% if series.linked %}
+          <button type="button" class="dropdown-item dropdown-item--warn"
+                  onclick="detailSeriesResetSourceMetadata(this)" data-path="{{ series.path }}"
+                  title="Strips chapter-level source data (title, scanlator, URL) from every tracked file. ComicInfo is regenerated from series-level info only. The source link stays.">Detach source metadata from files</button>
+          {% endif %}
+          <div class="dropdown-divider"></div>
+          {% if series.ignored %}
+          <button type="button" class="dropdown-item dropdown-item--accent"
+                  onclick="toggleIgnored(false)">Resume management</button>
+          {% else %}
+          <button type="button" class="dropdown-item"
+                  onclick="toggleIgnored(true)"
+                  title="Hides from dashboard and excludes from all automatic sync and Fix Files jobs. Source link and files stay on disk.">Don't manage this series</button>
+          {% endif %}
+          <button type="button" class="dropdown-item dropdown-item--danger"
+                  onclick="openDeleteSeriesFolderModal()">Delete series &amp; all files…</button>
+        </div>
+      </div>
     </div>
     <div id="detail-action-log" class="detail-action-log hidden mt-3"></div>
   </div>
@@ -436,6 +555,137 @@
 <script>
 function seriesDetailApiUrl(path, suffix) {
   return '/api/series/' + path.split('/').map(encodeURIComponent).join('/') + suffix;
+}
+
+// ── Priority+ action bar ──────────────────────────────────────────────────
+(function() {
+  var primaryBar   = document.getElementById('action-bar-primary');
+  var moreBtn      = document.getElementById('action-bar-more-btn');
+  var dropdown     = document.getElementById('action-bar-dropdown');
+  var dynamicArea  = document.getElementById('action-bar-dynamic');
+  var dynamicDiv   = document.getElementById('action-bar-dynamic-divider');
+  if (!primaryBar || !moreBtn || !dropdown) return;
+
+  var autoBtns = Array.prototype.slice.call(primaryBar.querySelectorAll('[data-overflow="auto"]'));
+  // Cache natural widths before any hiding occurs
+  var naturalWidths = autoBtns.map(function(b) { return b.getBoundingClientRect().width; });
+
+  function recalc() {
+    // Restore all so we can measure the available space accurately
+    autoBtns.forEach(function(b) { b.style.display = ''; });
+    dynamicArea.innerHTML = '';
+    dynamicDiv.style.display = 'none';
+
+    var gap = 8;
+    var available = primaryBar.clientWidth;
+    var used = 0;
+    var collapseFrom = autoBtns.length;
+
+    for (var i = 0; i < autoBtns.length; i++) {
+      var w = (naturalWidths[i] || autoBtns[i].getBoundingClientRect().width) + gap;
+      if (used + w > available + 1) { // +1 for rounding tolerance
+        collapseFrom = i;
+        break;
+      }
+      used += w;
+    }
+
+    for (var j = collapseFrom; j < autoBtns.length; j++) {
+      var src = autoBtns[j];
+      src.style.display = 'none';
+
+      // Build a dropdown proxy item
+      var isLink = src.tagName === 'A';
+      var proxy = document.createElement(isLink ? 'a' : 'button');
+      if (!isLink) proxy.type = 'button';
+      if (isLink && src.href) { proxy.href = src.href; proxy.target = src.target || ''; proxy.rel = src.rel || ''; }
+      proxy.className = 'dropdown-item';
+      if (src.classList.contains('detail-act-btn--accent')) proxy.classList.add('dropdown-item--accent');
+      proxy.textContent = (src.textContent || src.innerText || '').trim();
+
+      if (!isLink) {
+        (function(orig) {
+          proxy.addEventListener('click', function() { orig.click(); });
+        })(src);
+      }
+
+      dynamicArea.appendChild(proxy);
+    }
+
+    if (dynamicArea.children.length > 0) dynamicDiv.style.display = 'block';
+    // Update naturalWidths for any we hadn't measured yet
+    autoBtns.forEach(function(b, i) {
+      if (!naturalWidths[i]) naturalWidths[i] = b.getBoundingClientRect().width;
+    });
+  }
+
+  // More button toggle
+  window.closeMoreDropdown = function() {
+    dropdown.classList.remove('open');
+    moreBtn.setAttribute('aria-expanded', 'false');
+  };
+
+  moreBtn.addEventListener('click', function(e) {
+    e.stopPropagation();
+    var isOpen = dropdown.classList.contains('open');
+    if (isOpen) {
+      closeMoreDropdown();
+    } else {
+      dropdown.classList.add('open');
+      moreBtn.setAttribute('aria-expanded', 'true');
+    }
+  });
+
+  document.addEventListener('click', function(e) {
+    if (!dropdown.contains(e.target) && e.target !== moreBtn) closeMoreDropdown();
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeMoreDropdown();
+  });
+
+  // Close dropdown when any item inside it is clicked
+  dropdown.addEventListener('click', function(e) {
+    var item = e.target.closest('.dropdown-item');
+    if (item) closeMoreDropdown();
+  });
+
+  var ro = new ResizeObserver(function() { recalc(); });
+  ro.observe(primaryBar);
+  recalc();
+})();
+
+async function toggleIgnored(ignore) {
+  var path = document.getElementById('detail-actions').dataset.seriesPath;
+  var msg = ignore
+    ? 'Stop managing "{{ series.name }}"? It will be hidden from the dashboard and excluded from all automatic sync and Fix Files jobs. Files and source link stay on disk.'
+    : 'Resume managing "{{ series.name }}"? It will reappear on the dashboard and be included in automatic jobs.';
+  var ok = await window.appConfirm(msg);
+  if (!ok) return;
+  try {
+    var resp = await fetch(seriesDetailApiUrl(path, '/ignore'), {
+      method: ignore ? 'POST' : 'DELETE'
+    });
+    if (resp.ok) window.location.reload();
+  } catch (e) {}
+}
+
+async function openDeleteSeriesFolderModal() {
+  var path = document.getElementById('detail-actions').dataset.seriesPath;
+  var name = {{ series.name | tojson }};
+  var ok = await window.appConfirm('Delete "' + name + '" and its entire folder from disk? All downloaded files will be permanently removed. This cannot be undone.');
+  if (!ok) return;
+  var log = document.getElementById('detail-action-log');
+  if (log) { log.textContent = 'Deleting…'; log.classList.remove('hidden'); }
+  try {
+    var resp = await fetch(seriesDetailApiUrl(path, '?and_folder=true'), { method: 'DELETE' });
+    if (resp.ok) { window.location.href = '/'; return; }
+    var data = await resp.json().catch(function() { return {}; });
+    var msg = data.detail || data.error || ('Delete failed (HTTP ' + resp.status + ')');
+    if (typeof msg !== 'string') msg = JSON.stringify(msg);
+    if (log) log.textContent = msg;
+  } catch (e) {
+    if (log) { log.textContent = String(e); log.classList.remove('hidden'); }
+  }
 }
 
 async function unlinkMdxCompanion(btn) {

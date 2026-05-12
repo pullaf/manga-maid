@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS series (
     exclude_from_fix         INTEGER NOT NULL DEFAULT 0,
     merge_volumes_override   INTEGER,
     sync_configured          INTEGER NOT NULL DEFAULT 1,
+    ignored                  INTEGER NOT NULL DEFAULT 0,
     created_at               TEXT    NOT NULL,
     updated_at               TEXT    NOT NULL
 );
@@ -153,7 +154,8 @@ CREATE INDEX IF NOT EXISTS idx_job_logs_job_seq
 
 CREATE TABLE IF NOT EXISTS app_config (
     id              INTEGER PRIMARY KEY CHECK (id = 1),
-    settings_json   TEXT    NOT NULL DEFAULT '{}'
+    settings_json   TEXT    NOT NULL DEFAULT '{}',
+    usage_json      TEXT    NOT NULL DEFAULT '{}'
 );
 """
 
@@ -193,6 +195,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     if "sync_configured" not in cols:
         conn.execute(
             "ALTER TABLE series ADD COLUMN sync_configured INTEGER NOT NULL DEFAULT 1"
+        )
+    if "ignored" not in cols:
+        conn.execute(
+            "ALTER TABLE series ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0"
         )
     if "mangadex_id" not in cols:
         conn.execute("ALTER TABLE series ADD COLUMN mangadex_id TEXT")
@@ -245,6 +251,12 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     ch_cols = {row[1] for row in conn.execute("PRAGMA table_info(chapters)")}
     if "created_at" not in ch_cols:
         conn.execute("ALTER TABLE chapters ADD COLUMN created_at TEXT")
+
+    ac_cols = {row[1] for row in conn.execute("PRAGMA table_info(app_config)")}
+    if "usage_json" not in ac_cols:
+        conn.execute(
+            "ALTER TABLE app_config ADD COLUMN usage_json TEXT NOT NULL DEFAULT '{}'"
+        )
 
 
 def _migrate_preferred_groups_json(conn: sqlite3.Connection) -> None:
@@ -351,6 +363,34 @@ def write_stored_settings(conn: sqlite3.Connection, settings: dict) -> None:
         (json.dumps(s, indent=2),),
     )
     conn.commit()
+
+
+def increment_usage(conn: sqlite3.Connection, key: str, amount: int = 1) -> None:
+    """Bump a lifetime action counter by ``amount`` (default 1)."""
+    row = conn.execute("SELECT usage_json FROM app_config WHERE id=1").fetchone()
+    data: dict = {}
+    if row:
+        try:
+            data = json.loads(row["usage_json"] or "{}") or {}
+        except json.JSONDecodeError:
+            pass
+    data[key] = data.get(key, 0) + amount
+    conn.execute(
+        "UPDATE app_config SET usage_json=? WHERE id=1",
+        (json.dumps(data),),
+    )
+    conn.commit()
+
+
+def get_usage(conn: sqlite3.Connection) -> dict:
+    """Return the current usage counters dict."""
+    row = conn.execute("SELECT usage_json FROM app_config WHERE id=1").fetchone()
+    if not row:
+        return {}
+    try:
+        return json.loads(row["usage_json"] or "{}") or {}
+    except json.JSONDecodeError:
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -853,6 +893,15 @@ def delete_series(conn: sqlite3.Connection, path: str) -> bool:
     conn.execute("DELETE FROM series WHERE id=?", (row["id"],))
     conn.commit()
     return True
+
+
+def set_series_ignored(conn: sqlite3.Connection, path: str, ignored: bool) -> bool:
+    cur = conn.execute(
+        "UPDATE series SET ignored=?, updated_at=? WHERE path=?",
+        (1 if ignored else 0, _now(), path),
+    )
+    conn.commit()
+    return cur.rowcount > 0
 
 # ---------------------------------------------------------------------------
 # Sources

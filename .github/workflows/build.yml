@@ -45,7 +45,7 @@ jobs:
           if [[ "$VERSION" == "dev" ]]; then
             echo "value=${BASE}:dev" >> "$GITHUB_OUTPUT"
           elif [[ "$VERSION" == *-* ]]; then
-            echo "value=${BASE}:${VERSION}" >> "$GITHUB_OUTPUT"
+            echo "value=${BASE}:${VERSION},${BASE}:beta" >> "$GITHUB_OUTPUT"
           else
             echo "value=${BASE}:${VERSION},${BASE}:latest" >> "$GITHUB_OUTPUT"
           fi
@@ -76,6 +76,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
-            --generate-notes
+          VERSION="${{ github.ref_name }}"
+          PRERELEASE_FLAG=""
+          [[ "$VERSION" == *-* ]] && PRERELEASE_FLAG="--prerelease"
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --generate-notes \
+            $PRERELEASE_FLAG
