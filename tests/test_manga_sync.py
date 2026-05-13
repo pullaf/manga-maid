@@ -1,4 +1,5 @@
 """Tests for manga-sync.py - imported as manga_sync via conftest."""
+import os
 from unittest.mock import MagicMock, patch
 
 import manga_sync
@@ -105,6 +106,27 @@ def test_fetch_volume_covers_skips_missing_filename():
     assert covers == {}
 
 
+def test_fetch_volume_covers_paginates():
+    """Volume N can sit on page 2 when the title has >100 cover entries."""
+    first = [
+        {"attributes": {"volume": str(i), "fileName": f"c{i}.jpg"}}
+        for i in range(1, 101)
+    ]
+    page1 = {"data": first, "total": 101}
+    page2 = {
+        "data": [{"attributes": {"volume": "101", "fileName": "v101.jpg"}}],
+        "total": 101,
+    }
+    from sources.mangadex import MangaDexSource
+    with patch.object(MangaDexSource, "_api_get", side_effect=[page1, page2]) as m, patch(
+        "sources.mangadex.time.sleep"
+    ):
+        covers = manga_sync.fetch_volume_covers("mid")
+    assert m.call_count == 2
+    assert "101" in covers
+    assert "1" in covers
+
+
 # ---------------------------------------------------------------------------
 # _series_preferred_groups
 # ---------------------------------------------------------------------------
@@ -192,3 +214,138 @@ def test_parse_chapter_name_negative_ch_num():
     from sources.suwayomi import _parse_chapter_name
     _, ch, _ = _parse_chapter_name("Ch.1 - Prologue", -1.0)
     assert ch is None
+
+
+def test_stem_shows_volume_num_when_present():
+    assert manga_sync._stem_shows_volume_num(
+        "Yancha Gal vol.1 ch.1 (Sugoi Gyaru Scans!)", 1
+    )
+    assert manga_sync._stem_shows_volume_num("Title Vol.17 ch.208", 17)
+    assert not manga_sync._stem_shows_volume_num("Title ch.208", 17)
+    assert not manga_sync._stem_shows_volume_num("Title vol.2 ch.1", 1)
+
+
+def test_stem_declares_any_volume():
+    assert manga_sync._stem_declares_any_volume(
+        "Yancha Gal no Anjou-san vol.17 ch.209 (Sho Habby Scans)"
+    )
+    assert manga_sync._stem_declares_any_volume("Title Vol.3 ch.1")
+    assert not manga_sync._stem_declares_any_volume("Title ch.1")
+
+
+def test_normalize_volume_cover_key():
+    assert manga_sync._normalize_volume_cover_key(17) == "17"
+    assert manga_sync._normalize_volume_cover_key("17.0") == "17"
+    assert manga_sync._normalize_volume_cover_key("1") == "1"
+    assert manga_sync._normalize_volume_cover_key("") == ""
+
+
+def test_volume_cover_urls_by_canonical_key():
+    assert manga_sync._volume_cover_urls_by_canonical_key({"17": "http://x/a"})["17"] == "http://x/a"
+    assert manga_sync._volume_cover_urls_by_canonical_key({"17.0": "http://x/b"})["17"] == "http://x/b"
+
+
+def test_missing_mdx_cover_is_notable():
+    assert manga_sync._missing_mdx_cover_is_notable("17")
+    assert not manga_sync._missing_mdx_cover_is_notable("-100000")
+    assert not manga_sync._missing_mdx_cover_is_notable("0")
+    assert not manga_sync._missing_mdx_cover_is_notable("-1")
+    assert not manga_sync._missing_mdx_cover_is_notable("")
+    assert not manga_sync._missing_mdx_cover_is_notable("Special")
+
+
+def test_chapter_data_external_url_flag():
+    """``externalUrl`` is exposed for tooling; sync does not override user/preferred uploads."""
+    from sources.mangadex import _ChapterData
+
+    hosted = {
+        "id": "a",
+        "attributes": {"chapter": "1", "publishAt": "2024-01-01T00:00:00Z"},
+        "relationships": [],
+    }
+    assert _ChapterData(hosted).is_mangadex_hosted
+    ext = {
+        "id": "b",
+        "attributes": {
+            "chapter": "1",
+            "externalUrl": "https://example.com/read",
+            "publishAt": "2024-01-01T00:00:00Z",
+        },
+        "relationships": [],
+    }
+    assert not _ChapterData(ext).is_mangadex_hosted
+
+
+def test_manga_archive_sanity_rejects_tiny_non_zip(tmp_path):
+    p = tmp_path / "bad.cbz"
+    p.write_bytes(b"not a zip" * 20)
+    assert not manga_sync._manga_archive_passes_sanity_check(str(p))
+
+
+def test_manga_archive_sanity_accepts_plump_zip(tmp_path):
+    import zipfile
+
+    # Starts like JPEG (SOI + stub JFIF) so magic-byte check passes; bulk padding for size.
+    fake_page = (
+        b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+        + b"\xff" * 6000
+        + b"\xff\xd9"
+    )
+    p = tmp_path / "ok.cbz"
+    with zipfile.ZipFile(p, "w") as zf:
+        zf.writestr("0001.jpg", fake_page)
+    assert manga_sync._manga_archive_passes_sanity_check(str(p))
+
+
+def test_manga_archive_rejects_zip_with_only_comicinfo(tmp_path):
+    import zipfile
+
+    p = tmp_path / "meta.cbz"
+    payload = b"<ComicInfo/>" * 500
+    with zipfile.ZipFile(p, "w") as zf:
+        zi = zipfile.ZipInfo("ComicInfo.xml")
+        zi.compress_type = zipfile.ZIP_STORED
+        zf.writestr(zi, payload)
+    assert os.path.getsize(p) >= manga_sync.MIN_MDX_ARCHIVE_BYTES
+    assert not manga_sync._manga_archive_passes_sanity_check(str(p))
+
+
+def test_manga_archive_rejects_html_renamed_jpg(tmp_path):
+    import zipfile
+
+    p = tmp_path / "fake.cbz"
+    html = b"<html><body>error</body></html>" * 400
+    with zipfile.ZipFile(p, "w") as zf:
+        zi = zipfile.ZipInfo("0001.jpg")
+        zi.compress_type = zipfile.ZIP_STORED
+        zf.writestr(zi, html)
+    assert os.path.getsize(p) >= manga_sync.MIN_MDX_ARCHIVE_BYTES
+    assert not manga_sync._manga_archive_passes_sanity_check(str(p))
+
+
+def test_junk_chapter_file_cleared(tmp_path, monkeypatch):
+    import sqlite3
+
+    manga_root = tmp_path / "manga"
+    (manga_root / "en" / "T").mkdir(parents=True)
+    bad = manga_root / "en" / "T" / "x.cbz"
+    bad.write_bytes(b"x" * 100)
+    monkeypatch.setattr(manga_sync, "MANGA_ROOT", str(manga_root))
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        "CREATE TABLE chapters (id INTEGER PRIMARY KEY, path TEXT, status TEXT, "
+        "file_size INTEGER, has_comicinfo INTEGER)"
+    )
+    conn.execute(
+        "INSERT INTO chapters (id, path, status, file_size, has_comicinfo) VALUES (1, ?, 'downloaded', 100, 0)",
+        ("en/T/x.cbz",),
+    )
+    existing = conn.execute("SELECT id, path, status FROM chapters WHERE id=1").fetchone()
+    assert manga_sync._junk_chapter_file_cleared(conn, existing)
+    row = conn.execute("SELECT path, status, file_size FROM chapters WHERE id=1").fetchone()
+    assert row["path"] is None
+    assert row["status"] == "known"
+    assert row["file_size"] is None
+    assert not bad.exists()

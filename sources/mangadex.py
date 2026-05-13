@@ -50,7 +50,10 @@ def _parse_last_volume(attr: dict | None) -> int:
 
 class _ChapterData:
     """Parsed chapter entry from the MangaDex feed."""
-    __slots__ = ("ch_id", "ch_str", "ch_num", "volume", "group", "title", "publish_date")
+    __slots__ = (
+        "ch_id", "ch_str", "ch_num", "volume", "group", "title", "publish_date",
+        "external_url",
+    )
 
     def __init__(self, data: dict):
         attr = data["attributes"]
@@ -61,6 +64,13 @@ class _ChapterData:
         self.group        = _group_name_from_rel(data)
         self.title        = (attr.get("title") or "").strip() or None
         self.publish_date = (attr.get("publishAt") or "")[:10] or None
+        ex = (attr.get("externalUrl") or "").strip()
+        self.external_url = ex or None
+
+    @property
+    def is_mangadex_hosted(self) -> bool:
+        """True when ``externalUrl`` is unset (chapter metadata still lives on MangaDex)."""
+        return self.external_url is None
 
 
 # ---------------------------------------------------------------------------
@@ -215,17 +225,32 @@ class MangaDexSource:
             time.sleep(0.4)
 
     def get_volume_covers(self, manga_id: str) -> dict[str, str]:
-        """Map volume number string → MangaDex cover URL (.512.jpg)."""
-        data = self._api_get("/cover", {
-            "manga[]": manga_id, "limit": 100, "order[volume]": "asc",
-        })
+        """Map volume number string → MangaDex cover URL (.512.jpg).
+
+        Paginates: the MD ``/cover`` list can exceed ``limit`` (variants, locales,
+        re-uploads), so the first page alone may omit high-numbered volumes.
+        """
         covers: dict[str, str] = {}
-        for item in data.get("data", []):
-            attr  = item["attributes"]
-            vol   = attr.get("volume")
-            fname = attr.get("fileName")
-            if vol and fname:
-                covers[str(vol)] = f"{MDEX_COVERS}/{manga_id}/{fname}.512.jpg"
+        offset, limit = 0, 100
+        while True:
+            data = self._api_get("/cover", {
+                "manga[]": manga_id,
+                "limit": limit,
+                "offset": offset,
+                "order[volume]": "asc",
+            })
+            batch = data.get("data", [])
+            for item in batch:
+                attr  = item["attributes"]
+                vol   = attr.get("volume")
+                fname = attr.get("fileName")
+                if vol and fname:
+                    covers[str(vol)] = f"{MDEX_COVERS}/{manga_id}/{fname}.512.jpg"
+            total = int(data.get("total") or 0)
+            offset += len(batch)
+            if offset >= total or not batch:
+                break
+            time.sleep(0.25)
         return covers
 
     def get_lang_chapter_count(self, manga_id: str, lang: str) -> tuple[str, int]:

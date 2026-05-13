@@ -218,6 +218,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             ) WHERE mangadex_id IS NULL
             """
         )
+    if "last_aggregate_volume_remap_at" not in cols:
+        conn.execute(
+            "ALTER TABLE series ADD COLUMN last_aggregate_volume_remap_at TEXT"
+        )
 
     # ``since`` (skip <= N) → ``start_chapter`` (download where >= N). Convert
     # the value so the resulting download set is unchanged: 0 stays 0; any
@@ -1168,6 +1172,96 @@ def assign_chapter_to_volume(
 ):
     conn.execute(
         "UPDATE chapters SET volume_id=? WHERE id=?", (volume_id, chapter_id)
+    )
+    conn.commit()
+
+
+def apply_aggregate_volume_mapping(
+    conn: sqlite3.Connection, series_id: int, agg: dict | None
+) -> None:
+    """Map local chapter rows to MangaDex volume buckets using a /aggregate response."""
+    volumes_map = (agg or {}).get("volumes") or {}
+    for vol_key, vol_data in volumes_map.items():
+        if vol_key in ("none", "0"):
+            continue
+        try:
+            vol_num = float(vol_key)
+        except (ValueError, TypeError):
+            continue
+        vol_id = upsert_volume(conn, series_id, vol_num)
+        for ch_key in (vol_data.get("chapters") or {}):
+            try:
+                ch_num = float(ch_key)
+            except (ValueError, TypeError):
+                continue
+            ch_row = conn.execute(
+                "SELECT id FROM chapters WHERE series_id=? AND chapter_num=?",
+                (series_id, ch_num),
+            ).fetchone()
+            if ch_row:
+                conn.execute(
+                    "UPDATE chapters SET volume_id=? WHERE id=? AND (volume_id IS NULL OR volume_id != ?)",
+                    (vol_id, ch_row["id"], vol_id),
+                )
+    conn.commit()
+
+
+def series_has_materialized_chapter_missing_volume(
+    conn: sqlite3.Connection, series_id: int
+) -> bool:
+    """True if any on-disk (or downloaded) chapter row still lacks ``volume_id``."""
+    row = conn.execute(
+        """
+        SELECT 1 FROM chapters
+        WHERE series_id = ? AND volume_id IS NULL
+          AND (
+              path IS NOT NULL
+              OR COALESCE(status, '') IN ('downloaded', 'on_disk')
+          )
+        LIMIT 1
+        """,
+        (series_id,),
+    ).fetchone()
+    return row is not None
+
+
+def weekly_mdx_aggregate_volume_remap_due(
+    conn: sqlite3.Connection, series_id: int, interval_days: int = 7
+) -> bool:
+    """Whether the low-frequency /aggregate pass should run for stuck chapters.
+
+    Only applies when at least one **materialized** chapter is missing ``volume_id``
+    (e.g. MD backfilled tankōbon metadata after the file was downloaded). Debounced
+    by ``interval_days`` using ``series.last_aggregate_volume_remap_at``.
+    """
+    if interval_days < 1:
+        interval_days = 1
+    if not series_has_materialized_chapter_missing_volume(conn, series_id):
+        return False
+    row = conn.execute(
+        "SELECT last_aggregate_volume_remap_at FROM series WHERE id=?",
+        (series_id,),
+    ).fetchone()
+    raw = row["last_aggregate_volume_remap_at"] if row else None
+    if raw is None or not str(raw).strip():
+        return True
+    try:
+        last_dt = datetime.fromisoformat(str(raw).strip())
+    except ValueError:
+        return True
+    return datetime.now() - last_dt >= timedelta(days=interval_days)
+
+
+def touch_series_aggregate_volume_remap_at(
+    conn: sqlite3.Connection, series_id: int
+) -> None:
+    """Record that we ran the MD /aggregate volume remap for debouncing."""
+    conn.execute(
+        """
+        UPDATE series SET last_aggregate_volume_remap_at = ?
+        WHERE id = ?
+        """,
+        (datetime.now().isoformat(timespec="seconds"), series_id),
     )
     conn.commit()
 

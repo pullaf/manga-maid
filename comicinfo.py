@@ -1,4 +1,5 @@
 """ComicInfo.xml generation, CBZ injection, and chapter-to-volume merging."""
+import contextlib
 import os
 import shutil
 import tempfile
@@ -118,7 +119,7 @@ def inject_comicinfo(
     """Add or replace ComicInfo.xml inside a CBZ. Returns True on success."""
     if not os.path.exists(cbz_path):
         return False
-    tmp_path = None
+    tmp_path: str | None = None
     try:
         with zipfile.ZipFile(cbz_path, "r") as zin:
             names   = zin.namelist()
@@ -139,12 +140,16 @@ def inject_comicinfo(
                 zout.writestr("ComicInfo.xml", xml_content.encode("utf-8"))
 
         shutil.move(tmp_path, cbz_path)
+        tmp_path = None
         apply_file_permission_mask(cbz_path, file_permission_mask)
         return True
     except Exception:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
         return False
+    finally:
+        if tmp_path:
+            with contextlib.suppress(OSError):
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
 
 
 def merge_chapters_into_volume(
@@ -159,7 +164,7 @@ def merge_chapters_into_volume(
     If cover_image_bytes is provided it is written as 0000.jpg so readers
     display the proper volume cover instead of the first manga page.
     """
-    tmp_path = None
+    tmp_path: str | None = None
     try:
         fd, tmp_path = tempfile.mkstemp(
             dir=os.path.dirname(output_path), suffix=".tmp"
@@ -185,12 +190,16 @@ def merge_chapters_into_volume(
                 zout.writestr("ComicInfo.xml", comicinfo_xml.encode("utf-8"))
 
         shutil.move(tmp_path, output_path)
+        tmp_path = None
         apply_file_permission_mask(output_path, file_permission_mask)
         return True
     except Exception:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
         return False
+    finally:
+        if tmp_path:
+            with contextlib.suppress(OSError):
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
 
 
 def read_comicinfo_xml(cbz_path: str) -> str | None:

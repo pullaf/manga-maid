@@ -35,6 +35,9 @@ DEFAULTS = {
     "suwayomi_username": "",
     "suwayomi_password": "",
     "enabled_sources":   [],
+    # MangaDex /aggregate volume remap when chapters on disk lack volume_id:
+    # at most once per N days unless a download run triggers it sooner.
+    "aggregate_volume_remap_interval_days": 7,
 }
 
 
