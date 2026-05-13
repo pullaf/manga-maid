@@ -12,6 +12,9 @@ if TYPE_CHECKING:
 # (see ``db.legacy_settings_json_path``).
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/data/config/settings.json")
 
+# Stored in settings when the user turns off automatic sync (supercronic gets no job lines).
+SYNC_CRON_DISABLED = "disabled"
+
 DEFAULTS = {
     "root_folders":    [],
     "file_format":     "cbz",
@@ -52,11 +55,19 @@ def sanitize_volume_naming(template: str | None) -> str:
     return _sanitize_volume_stem_template(template, DEFAULTS["volume_naming"])
 
 
+def is_sync_cron_disabled(expr: str | None) -> bool:
+    """True when automatic enqueue-from-cron should not run (manual Jobs UI only)."""
+    s = str(expr or "").strip().lower()
+    return s in (SYNC_CRON_DISABLED, "off", "manual")
+
+
 def sanitize_sync_cron(expr: str | None) -> str:
-    s = str(expr or "").strip()
-    if not s:
+    raw = str(expr or "").strip()
+    if is_sync_cron_disabled(raw):
+        return SYNC_CRON_DISABLED
+    if not raw:
         return DEFAULTS["sync_cron"]
-    parts = s.split()
+    parts = raw.split()
     if len(parts) != 5:
         return DEFAULTS["sync_cron"]
     allowed = re.compile(r"^[\d\*/,\-A-Za-z]+$")
@@ -81,6 +92,8 @@ def load_settings() -> dict:
     conn = init_db()
     try:
         data = read_stored_settings(conn)
+        raw_sw = (data.get("suwayomi_url") or "").strip()
+        raw_kv = (data.get("kavita_url") or "").strip()
         data.pop("volume_mode", None)
         data.pop("merge_volume_naming", None)
         out = {**DEFAULTS, **data}
@@ -90,6 +103,24 @@ def load_settings() -> dict:
     out["volume_naming"] = sanitize_volume_naming(out.get("volume_naming"))
     out["sync_cron"] = sanitize_sync_cron(out.get("sync_cron"))
     out["file_permission_mask"] = sanitize_file_permission_mask(out.get("file_permission_mask"))
+    # Optional Docker Compose defaults when the DB still has blank URLs (omit env lines or set
+    # SUWAYOMI_URL= / KAVITA_URL= via override to leave unset in the container).
+    if not (out.get("suwayomi_url") or "").strip():
+        sw = (os.environ.get("SUWAYOMI_URL") or "").strip().rstrip("/")
+        if sw:
+            out["suwayomi_url"] = sw
+    if not (out.get("kavita_url") or "").strip():
+        kv = (os.environ.get("KAVITA_URL") or "").strip().rstrip("/")
+        if kv:
+            out["kavita_url"] = kv
+    # Persist compose/env URLs once when the DB row had blanks so Settings matches runtime.
+    seed: dict[str, str] = {}
+    if not raw_sw and (out.get("suwayomi_url") or "").strip():
+        seed["suwayomi_url"] = out["suwayomi_url"]
+    if not raw_kv and (out.get("kavita_url") or "").strip():
+        seed["kavita_url"] = out["kavita_url"]
+    if seed:
+        save_settings(seed)
     _settings_cache = out
     _settings_cache_at = now
     return out
@@ -120,10 +151,11 @@ def save_settings(data: dict):
 
 
 def get_suwayomi_client() -> "SuwayomiClient | None":
-    """Return a SuwayomiClient if suwayomi_url is configured, else None."""
+    """Return a SuwayomiClient if ``suwayomi_url`` is set (including from ``SUWAYOMI_URL`` via ``load_settings``)."""
     from sources.suwayomi import SuwayomiClient
+
     settings = load_settings()
-    url = (settings.get("suwayomi_url") or "").strip()
+    url = (settings.get("suwayomi_url") or "").strip().rstrip("/")
     if not url:
         return None
     return SuwayomiClient(

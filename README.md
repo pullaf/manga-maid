@@ -1,6 +1,8 @@
-# mangadex-kavita-sync
+# Manga Maid
 
-A containerised toolset that keeps a [Kavita](https://www.kavitareader.com/) manga library in sync with [MangaDex](https://mangadex.org/) - and now with **200+ additional sources** via [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server). Runs on a configurable schedule alongside your existing stack via built-in cron queueing, no manual downloads, no SSH.
+A containerised toolset that keeps a [Kavita](https://www.kavitareader.com/) manga library in sync with [MangaDex](https://mangadex.org/) and with **200+ sources** via [Suwayomi-Server](https://github.com/Suwayomi/Suwayomi-Server). Runs on a configurable schedule alongside your existing stack via built-in cron queueing, no manual downloads, no SSH.
+
+Source code: [github.com/pullaf/manga-maid](https://github.com/pullaf/manga-maid)
 
 Includes a **web UI** (port `4649`) for managing series, triggering syncs, browsing logs, and configuring all integrations.
 
@@ -34,7 +36,7 @@ Includes a **web UI** (port `4649`) for managing series, triggering syncs, brows
 - Suwayomi sources can be used as the download backend for any tracked series
 - Optional username/password auth support; connection test built into Settings
 
-**Web UI** - dark-themed browser interface at port `4649`
+**Web UI** - mobile-friendly browser interface at port `4649`
 - Dashboard showing all tracked series with source badges, edit/remove controls
 - **Add Series**: search MangaDex and all enabled Suwayomi sources simultaneously; results grouped by source
 - **Sources page**: browse Suwayomi extensions, toggle them on/off for search and sync
@@ -51,15 +53,17 @@ Includes a **web UI** (port `4649`) for managing series, triggering syncs, brows
 ### 1. Pull the image
 
 ```bash
-docker pull ghcr.io/pullaf/mangadex-kavita-sync:latest
+docker pull ghcr.io/pullaf/manga-maid:latest
 ```
+
+CI still publishes `ghcr.io/pullaf/mangadex-kavita-sync:*` with the same digests for existing installs only — new setups should use **`manga-maid`**.
 
 ### 2. Add to your compose stack
 
 ```yaml
 services:
   manga-sync:
-    image: ghcr.io/pullaf/mangadex-kavita-sync:latest
+    image: ghcr.io/pullaf/manga-maid:latest
     ports:
       - "4649:4649"          # web UI
     environment:
@@ -88,7 +92,7 @@ services:
     restart: unless-stopped
 
   manga-sync:
-    image: ghcr.io/pullaf/mangadex-kavita-sync:latest
+    image: ghcr.io/pullaf/manga-maid:latest
     # ... same as above
 ```
 

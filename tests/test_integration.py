@@ -1,29 +1,49 @@
-"""Integration tests - hit the real MangaDex API and invoke mdx.
+"""Integration tests — real MangaDex API + ``mdx``, official Test manga only.
 
-Run with:  pytest tests/test_integration.py --run-integration -v
+https://mangadex.org/title/f9c33607-9180-4ba6-b85c-e4b5faee7192
 
-Test manga: 7-Kakan Gentei Kanojo (b80ea8bd-7293-4e61-965a-14594059dde1)
-  - 3 volumes, completed, English available
-  - vol 1: ch 1–5.2 (7 chapters)
-  - vol 2: ch 6–10.5 (6 chapters)
-  - vol 3: ch 11–15.5 (6 chapters)
-  - all 3 volumes have cover art on MangaDex
+Run::
+
+    pytest tests/test_integration.py --run-integration -v
+
+Environment::
+
+    MDEX_TEST_MANGA_ID   UUID (default: MangaDex official \"Test\" manga)
+    MDEX_TEST_LANG       translatedLanguage (default: en)
+
+No curated romance/obscure titles in-repo — only the sanctioned stress-test title.
+
+The pipeline test patches ``MangaDexSource.iter_feed`` so we fetch **one descending feed page**
+instead of walking tens of thousands of chapters from ch.1 upward (what production ``iter_feed``
+does with ``order[chapter]=asc``). ``start_chapter`` is set to the **latest** chapter number so
+``get_chapters_to_download`` queues ~one chapter — exercising ``insert_series``, feed → DB
+upserts, ``start_chapter`` filtering (the UI calls this “Start from chapter ≥”; legacy ``since``
+was migrated to this column — see ``db.py``), sync download, and naming under ``chapter_naming``.
 """
+
+from __future__ import annotations
+
 import os
+import re
 import shutil
+from unittest.mock import patch
 
 import pytest
 
+import db as dbmod
 import manga_sync
-
-MANGA_ID = "b80ea8bd-7293-4e61-965a-14594059dde1"
-MANGA_LANG = "en"
-CONFIG = {"id": MANGA_ID, "language": MANGA_LANG}
+from sources.mangadex import CONTENT_RATINGS, MangaDexSource
 
 pytestmark = pytest.mark.integration
 
+OFFICIAL_TEST_MANGA_ID = "f9c33607-9180-4ba6-b85c-e4b5faee7192"
+MANGA_ID = os.environ.get("MDEX_TEST_MANGA_ID", OFFICIAL_TEST_MANGA_ID).strip()
+LANG = os.environ.get("MDEX_TEST_LANG", "en").strip() or "en"
 
-@pytest.fixture(scope="module")
+_SERIES_REL_PATH = "library/md_integration"
+
+
+@pytest.fixture
 def mdx():
     path = shutil.which("mdx")
     if not path:
@@ -31,154 +51,127 @@ def mdx():
     return path
 
 
-# One shared download dir per test session - avoids re-downloading the same
-# files across multiple download tests.
-@pytest.fixture(scope="module")
-def dl_dir(tmp_path_factory):
-    return tmp_path_factory.mktemp("downloads")
+@pytest.fixture
+def isolated_library(tmp_path, monkeypatch):
+    """Hermetic ``MANGA_ROOT`` + ``DATA_DIR`` + fresh SQLite."""
+    manga_root = tmp_path / "manga"
+    data_dir = tmp_path / "data"
+    series_dir = manga_root.joinpath(*_SERIES_REL_PATH.split("/"))
+    series_dir.mkdir(parents=True)
+    data_dir.mkdir()
+
+    monkeypatch.setenv("MANGA_ROOT", str(manga_root))
+    monkeypatch.setenv("DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SYNC_LOG", str(data_dir / "sync.log"))
+
+    monkeypatch.setattr(dbmod, "DATA_DIR", str(data_dir))
+    monkeypatch.setattr(dbmod, "MANGA_ROOT", str(manga_root))
+
+    monkeypatch.setattr(manga_sync, "MANGA_ROOT", str(manga_root))
+    monkeypatch.setattr(manga_sync, "DATA_DIR", str(data_dir))
+    monkeypatch.setattr(manga_sync, "SYNC_LOG", str(data_dir / "sync.log"))
+
+    conn = dbmod.init_db(str(data_dir))
+    return conn, series_dir
 
 
-# ---------------------------------------------------------------------------
-# MangaDex API - no mdx needed
-# ---------------------------------------------------------------------------
+def _api_latest_chapter_num() -> float:
+    """Single MD API request — highest chapter for ``LANG``."""
+    src = MangaDexSource()
+    data = src._api_get(
+        f"/manga/{MANGA_ID}/feed",
+        {
+            "translatedLanguage[]": LANG,
+            "limit": 1,
+            "offset": 0,
+            "order[chapter]": "desc",
+            "includes[]": "scanlation_group",
+            "contentRating[]": CONTENT_RATINGS,
+        },
+    )
+    items = data.get("data") or []
+    assert len(items) >= 1
+    return float(items[0]["attributes"]["chapter"])
 
-class TestMangaDexAPI:
-    def test_fetch_new_volumes_returns_all_three(self):
-        vols = manga_sync.fetch_new_volumes(CONFIG, after_vol=0)
-        assert set(vols) == {1, 2, 3}
 
-    def test_fetch_new_volumes_respects_after(self):
-        vols = manga_sync.fetch_new_volumes(CONFIG, after_vol=2)
-        assert vols == [3]
+def _bounded_desc_feed_iter_feed(self, manga_id: str, lang: str, params_extra=None):
+    """Test substitute for ``iter_feed``: one **desc** page, ignores caller ``asc`` ordering.
 
-    def test_fetch_new_volumes_up_to_date(self):
-        vols = manga_sync.fetch_new_volumes(CONFIG, after_vol=3)
-        assert vols == []
+    Production ``_sync_chapters_mdx`` passes ``order[chapter]=asc``, which paginates from ch.1 —
+    unusable for MangaDex's official Test title (huge catalogue).
+    """
+    params = {
+        "translatedLanguage[]": lang,
+        "limit": 120,
+        "offset": 0,
+        "order[chapter]": "desc",
+        "includes[]": "scanlation_group",
+        "contentRating[]": CONTENT_RATINGS,
+    }
+    data = self._api_get(f"/manga/{manga_id}/feed", params)
+    yield from data.get("data") or []
 
-    def test_fetch_volume_covers_all_volumes(self):
+
+class TestMangaDexOfficialAPI:
+    """Cheap API-only checks (no DB, no ``mdx``)."""
+
+    def test_metadata_title(self):
+        meta = MangaDexSource().get_metadata(MANGA_ID)
+        title = (meta.get("title") or "").strip()
+        assert title
+        assert "test" in title.lower()
+
+    def test_volume_covers(self):
         covers = manga_sync.fetch_volume_covers(MANGA_ID)
-        # All three volumes must have a cover
-        assert "1" in covers
-        assert "2" in covers
-        assert "3" in covers
-
-    def test_fetch_volume_covers_are_valid_urls(self):
-        covers = manga_sync.fetch_volume_covers(MANGA_ID)
-        for vol, url in covers.items():
-            assert url.startswith("https://uploads.mangadex.org/covers/")
-            assert MANGA_ID in url
-            assert url.endswith(".512.jpg") or url.endswith(".512.png")
-
-    def test_fetch_latest_chapter(self):
-        ch = manga_sync.fetch_latest_chapter(CONFIG)
-        assert ch is not None
-        assert ch.ch_num == 15.5
-
-    def test_chapters_after_returns_half_chapters(self):
-        # vol 1 has ch 5.1 and 5.2 - good float chapter test
-        chapters = manga_sync.fetch_chapters_after(CONFIG, after=4)
-        nums = {c.ch_num for c in chapters}
-        assert 5.0 in nums
-        assert 5.1 in nums
-        assert 5.2 in nums
+        assert len(covers) >= 1
+        for url in list(covers.values())[:5]:
+            assert "uploads.mangadex.org/covers/" in url
 
 
-# ---------------------------------------------------------------------------
-# Chapter mode download
-# ---------------------------------------------------------------------------
+class TestOfficialPipeline:
+    """DB insert + bounded feed + ``start_chapter`` + real chapter download."""
 
-class TestChapterDownload:
-    def test_download_chapter_creates_file(self, mdx, dl_dir):
-        ch = manga_sync.fetch_latest_chapter(CONFIG)
-        # Use ch.1 (smallest), not ch.15.5 (end)
-        chapters = manga_sync.fetch_chapters_after(CONFIG, after=0)
-        ch1 = next(c for c in chapters if c.ch_num == 1.0)
+    def test_insert_series_sync_latest_chapter_download_named_cbz(
+        self, mdx, isolated_library,
+    ):
+        conn, series_dir = isolated_library
+        latest = _api_latest_chapter_num()
+
+        sid = dbmod.insert_series(
+            conn,
+            path=_SERIES_REL_PATH,
+            title='Official "Test" Manga',
+            language=LANG,
+            start_chapter=latest,
+            source="mangadex",
+            source_id=MANGA_ID,
+            sync_configured=1,
+        )
+        assert sid >= 1
+
+        row = dbmod.get_series_by_path(conn, _SERIES_REL_PATH)
+        assert row is not None
+        assert row["linked"]
+        assert row["source_id"] == MANGA_ID
+        assert float(row["start_chapter"]) == latest
+
         settings = {
-            "file_format": "cbz",
-            "chapter_naming": "[%1 %2] %3 vol.%4 ch.%5",
-        }
-        result = manga_sync.mdx_download_chapter(ch1, CONFIG, str(dl_dir), settings)
-        assert result is True
-        cbz_files = list(dl_dir.glob("*.cbz"))
-        assert len(cbz_files) >= 1
-
-    def test_downloaded_chapter_appears_in_chapters_on_disk(self, mdx, dl_dir):
-        # Depends on test_download_chapter_creates_file having run first
-        on_disk = manga_sync.chapters_on_disk(str(dl_dir))
-        assert 1.0 in on_disk
-
-    def test_custom_naming_scheme(self, mdx, tmp_path):
-        chapters = manga_sync.fetch_chapters_after(CONFIG, after=1)
-        ch2 = next(c for c in chapters if c.ch_num == 2.0)
-        settings = {
+            "download_delay": 0.0,
             "file_format": "cbz",
             "chapter_naming": "%3 ch.%5",
+            "merge_volumes": False,
+            "webhook_url": "",
+            "file_permission_mask": None,
         }
-        result = manga_sync.mdx_download_chapter(ch2, CONFIG, str(tmp_path), settings)
-        assert result is True
-        files = list(tmp_path.glob("*.cbz"))
-        assert any("ch." in f.name for f in files)
-        # No bracket group prefix in this naming scheme
-        assert not any(f.name.startswith("[") for f in files)
 
+        with patch.object(MangaDexSource, "iter_feed", _bounded_desc_feed_iter_feed):
+            got = manga_sync._sync_one_series(row, conn, settings, None)
 
-# ---------------------------------------------------------------------------
-# Volume mode download
-# ---------------------------------------------------------------------------
-
-class TestVolumeDownload:
-    def test_download_volume_creates_file(self, mdx, dl_dir):
-        vol_dir = dl_dir / "vol_mode"
-        vol_dir.mkdir(exist_ok=True)
-        settings = {
-            "file_format": "cbz",
-            "volume_naming": "[%1 %2] %3 vol.%4",
-        }
-        result = manga_sync.mdx_download_volume(1, CONFIG, str(vol_dir), settings)
-        assert result is True
-        cbz_files = list(vol_dir.glob("*.cbz"))
-        assert len(cbz_files) >= 1
-
-    def test_volume_file_appears_in_volumes_on_disk(self, mdx, dl_dir):
-        vol_dir = dl_dir / "vol_mode"
-        vols = manga_sync.volumes_on_disk(str(vol_dir))
-        assert 1 in vols
-
-    def test_volume_naming_applied(self, mdx, tmp_path):
-        settings = {
-            "file_format": "cbz",
-            "volume_naming": "%3 vol.%4",
-        }
-        result = manga_sync.mdx_download_volume(2, CONFIG, str(tmp_path), settings)
-        assert result is True
-        files = list(tmp_path.glob("*.cbz"))
-        assert any("vol." in f.name for f in files)
-        assert not any(f.name.startswith("[") for f in files)
-
-    def test_volume_mode_no_individual_chapters(self, mdx, dl_dir):
-        # In volume mode the file should NOT contain a ch. tag in its name
-        # (it's a merged volume file, not a per-chapter file)
-        vol_dir = dl_dir / "vol_mode"
-        files = list(vol_dir.glob("*.cbz"))
-        assert len(files) >= 1
-        # At least one file should be volume-named, not chapter-named
-        assert any("vol." in f.name.lower() for f in files)
-
-
-# ---------------------------------------------------------------------------
-# Covers (API only - Kavita upload not tested without an instance)
-# ---------------------------------------------------------------------------
-
-class TestCovers:
-    def test_all_covers_fetchable(self):
-        covers = manga_sync.fetch_volume_covers(MANGA_ID)
-        assert len(covers) == 3
-
-    def test_cover_url_is_reachable(self):
-        import urllib.request
-        covers = manga_sync.fetch_volume_covers(MANGA_ID)
-        url = covers["1"]
-        # Fetch only the first byte - CDN doesn't support HEAD
-        req = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            assert resp.status in (200, 206)
+        assert got == 1, "expected exactly one chapter queued at start_chapter>=latest"
+        cbzs = list(series_dir.glob("*.cbz"))
+        assert len(cbzs) == 1
+        stem = cbzs[0].stem
+        assert "ch." in stem.lower()
+        m = re.search(r"ch\.(\d+(?:\.\d+)?)", stem, re.I)
+        assert m is not None
+        assert abs(float(m.group(1)) - latest) < 1e-6

@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install pytest fastapi
+      - run: pip install pytest fastapi httpx python-multipart
 
       - run: pytest tests/ --ignore=tests/test_integration.py -v
 
@@ -41,18 +41,22 @@ jobs:
         id: tags
         run: |
           VERSION="${{ steps.version.outputs.value }}"
-          BASE="ghcr.io/pullaf/mangadex-kavita-sync"
+          # Canonical GHCR name + legacy package (same digest; old compose files keep working).
+          PRIMARY="ghcr.io/pullaf/manga-maid"
+          LEGACY="ghcr.io/pullaf/mangadex-kavita-sync"
           if [[ "$VERSION" == "dev" ]]; then
-            echo "value=${BASE}:dev" >> "$GITHUB_OUTPUT"
+            TAGS="${PRIMARY}:dev"
           elif [[ "$VERSION" == *-beta* ]]; then
             # Beta pre-release: tag bare, v-prefixed, and floating :beta
-            echo "value=${BASE}:${VERSION},${BASE}:v${VERSION},${BASE}:beta" >> "$GITHUB_OUTPUT"
+            TAGS="${PRIMARY}:${VERSION},${PRIMARY}:v${VERSION},${PRIMARY}:beta"
           elif [[ "$VERSION" == *-* ]]; then
             # Other pre-release: tag bare and v-prefixed only
-            echo "value=${BASE}:${VERSION},${BASE}:v${VERSION}" >> "$GITHUB_OUTPUT"
+            TAGS="${PRIMARY}:${VERSION},${PRIMARY}:v${VERSION}"
           else
-            echo "value=${BASE}:${VERSION},${BASE}:latest" >> "$GITHUB_OUTPUT"
+            TAGS="${PRIMARY}:${VERSION},${PRIMARY}:latest"
           fi
+          TAGS="${TAGS},${TAGS//$PRIMARY/$LEGACY}"
+          echo "value=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/login-action@v3
         with:

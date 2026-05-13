@@ -859,9 +859,12 @@ def _kavita_set_covers(client: KavitaClient, series_dir: str, manga_id: str):
 # ---------------------------------------------------------------------------
 
 def _sync_one_series(
-    series_row: dict, conn, settings: dict,
+    series_row: dict,
+    conn,
+    settings: dict,
     kavita_client: KavitaClient | None,
-) -> bool:
+    skip_feed_counts: dict[str, int] | None = None,
+) -> int | bool:
     series_id   = series_row["id"]
     series_path = series_row["path"]
     series_dir  = os.path.join(MANGA_ROOT, series_path)
@@ -875,7 +878,6 @@ def _sync_one_series(
     name        = series_row.get("name") or os.path.basename(series_path)
     series_web  = source.get_web_url(manga_id) if manga_id else None
     file_permission_mask = settings.get("file_permission_mask")
-    _log(f"[{name}] checking for updates…")
 
     # Always reconcile disk state first
     scan_disk_files(series_dir, series_id, conn)
@@ -888,7 +890,10 @@ def _sync_one_series(
     # Linked-only (no download options chosen yet): refresh metadata+ComicInfo,
     # do not pull the chapter feed or queue downloads.
     if not series_row.get("sync_configured"):
-        _log(f"[{name}] sync not configured - skipping feed/download")
+        if skip_feed_counts is not None:
+            skip_feed_counts["not_configured"] = (
+                skip_feed_counts.get("not_configured", 0) + 1
+            )
         _ensure_comicinfo_all(
             series_id, series_dir, conn, meta, language,
             series_web=series_web, series_label=name,
@@ -899,7 +904,8 @@ def _sync_one_series(
 
     # User-paused: skip feed polling until manually resumed.
     if series_row.get("sync_paused"):
-        _log(f"[{name}] sync paused - skipping feed")
+        if skip_feed_counts is not None:
+            skip_feed_counts["paused"] = skip_feed_counts.get("paused", 0) + 1
         _ensure_comicinfo_all(
             series_id, series_dir, conn, meta, language,
             series_web=series_web, series_label=name,
@@ -907,6 +913,8 @@ def _sync_one_series(
         )
         update_source_sync_time(conn, series_id, source_name)
         return 0
+
+    _log(f"[{name}] checking for updates…")
 
     # Sync chapter feed → DB
     try:
@@ -1237,6 +1245,7 @@ def main(
     any_downloaded = False
     processed = 0
     downloads: list[tuple[str, int]] = []
+    skip_feed_counts: dict[str, int] = {"not_configured": 0, "paused": 0}
 
     for series_row in series_list:
         processed += 1
@@ -1259,7 +1268,9 @@ def main(
             continue
 
         try:
-            count = _sync_one_series(series_row, conn, settings, kavita_client)
+            count = _sync_one_series(
+                series_row, conn, settings, kavita_client, skip_feed_counts
+            )
             if count:
                 any_downloaded = True
                 name = series_row.get("name") or os.path.basename(series_row["path"])
@@ -1279,7 +1290,23 @@ def main(
         if wurl:
             _send_webhook(wurl, settings.get("webhook_platform", "generic"), downloads)
 
-    _log(f"[sync] completed - processed {processed} series")
+    segments: list[str] = [f"processed {processed} series"]
+    if downloads:
+        n_ch = sum(c for _, c in downloads)
+        n_sr = len(downloads)
+        ch_word = "chapter" if n_ch == 1 else "chapters"
+        segments.append(f"{n_sr} series with {n_ch} new {ch_word}")
+    nc = skip_feed_counts.get("not_configured", 0)
+    pz = skip_feed_counts.get("paused", 0)
+    if nc or pz:
+        parts: list[str] = []
+        if nc:
+            parts.append(f"{nc} not configured")
+        if pz:
+            parts.append(f"{pz} paused")
+        segments.append(f"feed skipped: {', '.join(parts)}")
+    msg = "[sync] completed - " + "; ".join(segments)
+    _log(msg)
     conn.close()
 
 

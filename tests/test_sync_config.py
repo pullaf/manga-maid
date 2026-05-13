@@ -106,6 +106,21 @@ def test_migrate_from_config_folder_json(tmp_path, monkeypatch):
     assert (cfg_dir / "settings.json.migrated").exists()
 
 
+def test_sanitize_sync_cron_disabled_aliases():
+    assert sync_config.sanitize_sync_cron("disabled") == sync_config.SYNC_CRON_DISABLED
+    assert sync_config.sanitize_sync_cron("OFF") == sync_config.SYNC_CRON_DISABLED
+    assert sync_config.sanitize_sync_cron("  manual  ") == sync_config.SYNC_CRON_DISABLED
+
+
+def test_sanitize_sync_cron_valid_five_part():
+    assert sync_config.sanitize_sync_cron("0 3 * * *") == "0 3 * * *"
+
+
+def test_is_sync_cron_disabled():
+    assert sync_config.is_sync_cron_disabled(sync_config.SYNC_CRON_DISABLED)
+    assert not sync_config.is_sync_cron_disabled("0 */6 * * *")
+
+
 def test_save_drops_merge_volume_naming(tmp_path, monkeypatch):
     _isolated_data_dir(tmp_path, monkeypatch)
     sync_config.save_settings({"merge_volume_naming": "%3 ch.%5", "kavita_url": "http://x"})

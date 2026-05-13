@@ -12,7 +12,7 @@ from urllib import parse, request as urlrequest
 
 from urllib.parse import quote_plus
 
-from fastapi import FastAPI, Form, HTTPException, Query, Request, Response
+from fastapi import FastAPI, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -97,6 +97,7 @@ from sync_config import (  # noqa: E402
     save_settings,
     sanitize_volume_naming,
     sanitize_sync_cron,
+    is_sync_cron_disabled,
     get_suwayomi_client,
 )
 from kavita import KavitaClient                        # noqa: E402
@@ -143,6 +144,10 @@ def _enabled_source_keys() -> set[str]:
 
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Hermetic pytest: skip workers, crontab, telemetry, startup reconcile.
+    if os.environ.get("MANGA_TEST_SKIP_LIFESPAN") == "1":
+        yield
+        return
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _get_conn)
     cron_expr = sanitize_sync_cron(load_settings().get("sync_cron"))
@@ -178,7 +183,7 @@ app = FastAPI(title="Manga Maid", lifespan=_lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(_WEB_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(_WEB_DIR, "templates"))
 templates.env.filters["urlencode"] = quote_plus
-templates.env.globals["APP_VERSION"] = os.environ.get("APP_VERSION", "dev")
+templates.env.globals["APP_VERSION"] = os.environ.get("APP_VERSION", "local")
 
 _sync_running = False
 _cover_cache: dict[str, bytes] = {}
@@ -213,10 +218,13 @@ def _get_conn():
 
 def _write_runtime_crontab(cron_expr: str) -> None:
     """Update the watched crontab file used by supercronic."""
-    runas = (os.environ.get("CRON_RUNAS") or "").strip()
-    cmd = "python3 /app/cron_enqueue_sync.py"
-    line = f"{cron_expr} {runas} {cmd}".strip()
     with open(RUNTIME_CRONTAB_PATH, "w", encoding="utf-8") as f:
+        if is_sync_cron_disabled(cron_expr):
+            f.write("# Auto-sync disabled — enqueue sync from the Jobs page.\n")
+            return
+        runas = (os.environ.get("CRON_RUNAS") or "").strip()
+        cmd = "python3 /app/cron_enqueue_sync.py"
+        line = f"{cron_expr} {runas} {cmd}".strip()
         f.write(line + "\n")
 
 
@@ -1865,6 +1873,18 @@ async def unignore_series(path: str):
     return JSONResponse({"ok": True})
 
 
+@app.post("/api/series/{path:path}/unlink", response_class=HTMLResponse)
+async def unlink_series_from_source(path: str):
+    _require_root_folders()
+    conn = _get_conn()
+    if not _db.get_series_by_path(conn, path):
+        raise HTTPException(404, "Series not found")
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: _db.unlink_series(conn, path))
+    _db.increment_usage(conn, "source_unlinks")
+    return HTMLResponse("")
+
+
 @app.delete("/api/series/{path:path}/with-folder", response_class=JSONResponse)
 async def delete_series_with_folder(path: str):
     _require_root_folders()
@@ -1878,25 +1898,6 @@ async def delete_series_with_folder(path: str):
     if os.path.isdir(series_dir):
         await loop.run_in_executor(None, lambda: shutil.rmtree(series_dir))
     return JSONResponse({"ok": True})
-
-
-@app.delete("/api/series/{path:path}", response_class=HTMLResponse)
-async def delete_series(path: str, and_folder: bool = Query(False)):
-    _require_root_folders()
-    conn = _get_conn()
-    if not _db.get_series_by_path(conn, path):
-        raise HTTPException(404, "Series not found")
-    if and_folder:
-        series_dir = os.path.join(MANGA_ROOT, path)
-        _require_under_manga_root(series_dir)
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, lambda: _db.unlink_series(conn, path))
-    _db.increment_usage(conn, "series_deletes" if and_folder else "source_unlinks")
-    if and_folder:
-        series_dir = os.path.join(MANGA_ROOT, path)
-        if os.path.isdir(series_dir):
-            shutil.rmtree(series_dir)
-    return HTMLResponse("")
 
 
 class MdxCompanionBody(BaseModel):
