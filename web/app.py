@@ -421,37 +421,9 @@ def _resolve_total_volumes(attr: dict | None, manga_id: str) -> int:
     return _mdx.resolve_total_volumes(attr, manga_id)
 
 
-def _fetch_mdx_aggregate(manga_id: str) -> dict:
-    """Fetch raw /aggregate response for a MangaDex manga."""
-    return _mdx._api_get(f"/manga/{manga_id}/aggregate", {}, timeout=15)
-
-
 def _apply_volume_mapping(conn, series_id: int, agg: dict) -> None:
     """Map local chapters to MDX volume buckets using an /aggregate response."""
-    volumes_map = (agg or {}).get("volumes") or {}
-    for vol_key, vol_data in volumes_map.items():
-        if vol_key in ("none", "0"):
-            continue
-        try:
-            vol_num = float(vol_key)
-        except (ValueError, TypeError):
-            continue
-        vol_id = _db.upsert_volume(conn, series_id, vol_num)
-        for ch_key in (vol_data.get("chapters") or {}).keys():
-            try:
-                ch_num = float(ch_key)
-            except (ValueError, TypeError):
-                continue
-            ch_row = conn.execute(
-                "SELECT id FROM chapters WHERE series_id=? AND chapter_num=?",
-                (series_id, ch_num),
-            ).fetchone()
-            if ch_row:
-                conn.execute(
-                    "UPDATE chapters SET volume_id=? WHERE id=? AND (volume_id IS NULL OR volume_id != ?)",
-                    (vol_id, ch_row["id"], vol_id),
-                )
-    conn.commit()
+    _db.apply_aggregate_volume_mapping(conn, series_id, agg)
 
 
 def _scan_settings_naming_issues(series_path: str | None = None) -> list[tuple[str, str, str]]:
@@ -927,11 +899,16 @@ async def series_details_page(request: Request, path: str):
                         total_volumes=total_vols,
                     )
                     row = _db.get_series_by_path(conn, path) or row
-            if is_suwayomi:
-                agg = await loop.run_in_executor(
-                    None, lambda: _fetch_mdx_aggregate(mdx_lookup_id)
-                )
-                _apply_volume_mapping(conn, row["id"], agg)
+            lang = (row.get("language") or "en").strip() or "en"
+            agg = await loop.run_in_executor(
+                None,
+                lambda mid=mdx_lookup_id, lg=lang: _mdx._api_get(
+                    f"/manga/{mid}/aggregate",
+                    {"translatedLanguage[]": lg},
+                    timeout=15,
+                ),
+            )
+            _apply_volume_mapping(conn, row["id"], agg)
         except Exception:
             pass
 
@@ -1807,7 +1784,11 @@ async def series_chapter_gaps(path: str):
     try:
         agg = await loop.run_in_executor(
             None,
-            lambda: lambda: _mdx._api_get(f"/manga/{manga_id}/aggregate", {"translatedLanguage[]": language}, timeout=15),
+            lambda mid=manga_id, lg=language: _mdx._api_get(
+                f"/manga/{mid}/aggregate",
+                {"translatedLanguage[]": lg},
+                timeout=15,
+            ),
         )
     except Exception as e:
         return JSONResponse({"mode": "error", "error": str(e)})

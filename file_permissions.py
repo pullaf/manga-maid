@@ -26,7 +26,14 @@ def parse_file_permission_mask(mask: str | None, default: str = "664") -> int:
 
 
 def apply_file_permission_mask(path: str, mask: str | None, default: str = "664") -> None:
-    """Apply a sanitized permission mask to ``path`` if it exists."""
+    """Apply a sanitized permission mask to ``path`` if it exists.
+
+    Skips silently on failure (e.g. read-only or root-owned bind mounts) so callers
+    are not aborted after a successful rename or download.
+    """
     if not os.path.exists(path):
         return
-    os.chmod(path, parse_file_permission_mask(mask, default=default))
+    try:
+        os.chmod(path, parse_file_permission_mask(mask, default=default))
+    except OSError:
+        pass

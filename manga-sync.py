@@ -2,6 +2,7 @@
 """manga-sync - download new chapters, merge volumes, inject ComicInfo.xml."""
 
 import contextlib
+import errno
 import importlib.util
 import json
 import math
@@ -10,6 +11,7 @@ import re
 import subprocess
 import sys
 import time
+import zipfile
 from datetime import datetime
 from urllib import parse, request
 
@@ -17,6 +19,10 @@ MANGA_ROOT = os.environ.get("MANGA_ROOT", "/manga")
 DATA_DIR   = os.environ.get("DATA_DIR",   "/data")
 SYNC_LOG   = os.environ.get("SYNC_LOG",   "/data/logs/sync.log")
 SYNC_LOG_MAX_LINES = 5000
+try:
+    MIN_MDX_ARCHIVE_BYTES = max(512, int(os.environ.get("MIN_MDX_ARCHIVE_BYTES", "4096")))
+except (TypeError, ValueError):
+    MIN_MDX_ARCHIVE_BYTES = 4096
 
 _here = os.path.dirname(os.path.abspath(__file__))
 
@@ -38,11 +44,13 @@ from db import (                                        # noqa: E402
     get_series_metadata, upsert_series_metadata, is_metadata_stale,
     upsert_volume, upsert_chapter, get_volume,
     get_chapters_for_volume, get_chapters_to_download,
-    get_complete_volumes, get_volumes_needing_compact,
+    get_volumes_needing_compact,
     get_files_missing_comicinfo,
     mark_chapter_downloaded, mark_chapter_comicinfo,
     mark_volume_merged, mark_volume_comicinfo,
-    assign_chapter_to_volume, scan_disk_files, log_rename,
+    assign_chapter_to_volume, apply_aggregate_volume_mapping,
+    weekly_mdx_aggregate_volume_remap_due, touch_series_aggregate_volume_remap_at,
+    scan_disk_files, log_rename,
 )
 from comicinfo import (                                 # noqa: E402
     build_comicinfo_xml, count_pages, inject_comicinfo,
@@ -220,10 +228,21 @@ def _sync_chapters_mdx(
                 picked_id, picked = found
                 break
 
+        # Volume is one per manga on MangaDex, but each chapter *entity* carries
+        # ``attributes.volume``; the preferred scanlator upload can lag null while
+        # another upload for the same chapter number already has it—reuse any.
+        vol_str = picked.volume
+        if not vol_str or str(vol_str).lower() in ("none", ""):
+            for _cid, ch in candidates:
+                vs = ch.volume
+                if vs and str(vs).lower() not in ("none", ""):
+                    vol_str = vs
+                    break
+
         vol_id = None
-        if picked.volume and picked.volume not in ("none", ""):
+        if vol_str and str(vol_str).lower() not in ("none", ""):
             try:
-                vol_id = upsert_volume(conn, series_id, float(picked.volume))
+                vol_id = upsert_volume(conn, series_id, float(vol_str))
             except (ValueError, TypeError):
                 pass
 
@@ -235,9 +254,12 @@ def _sync_chapters_mdx(
             (series_id, ch_num),
         ).fetchone()
         if existing and (existing["path"] or existing["status"] == "on_disk"):
-            if vol_id is not None:
-                assign_chapter_to_volume(conn, existing["id"], vol_id)
-            continue
+            if _junk_chapter_file_cleared(conn, existing):
+                pass
+            else:
+                if vol_id is not None:
+                    assign_chapter_to_volume(conn, existing["id"], vol_id)
+                continue
 
         chapter_id = upsert_chapter(
             conn, series_id, ch_num,
@@ -276,9 +298,12 @@ def _sync_chapters_suwayomi(
             (series_id, ch_num),
         ).fetchone()
         if existing and (existing["path"] or existing["status"] == "on_disk"):
-            if vol_id is not None:
-                assign_chapter_to_volume(conn, existing["id"], vol_id)
-            continue
+            if _junk_chapter_file_cleared(conn, existing):
+                pass
+            else:
+                if vol_id is not None:
+                    assign_chapter_to_volume(conn, existing["id"], vol_id)
+                continue
 
         chapter_id = upsert_chapter(
             conn, series_id, ch_num,
@@ -298,6 +323,118 @@ def _sync_chapters_suwayomi(
 # ---------------------------------------------------------------------------
 # Download helpers
 # ---------------------------------------------------------------------------
+
+_ARCHIVE_IMAGE_SUFFIX_RE = re.compile(
+    r"\.(jpe?g|png|webp|gif|bmp|tif|tiff)$",
+    re.IGNORECASE,
+)
+# Smallest single member we bother reading magic from (avoid huge reads on corrupt zips).
+_MIN_COMIC_PAGE_UNCOMPRESSED = 400
+
+
+def _bytes_look_like_raster_image(head: bytes) -> bool:
+    """True if ``head`` starts like a common raster format (not HTML/JSON/text)."""
+    if len(head) < 6:
+        return False
+    if head[:2] == b"\xff\xd8":
+        return True
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        return True
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return True
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return True
+    if head[:2] == b"BM":
+        return True
+    return False
+
+
+def _cbz_zip_archive_has_plausible_pages(path: str) -> bool:
+    """CBZ/CBR-style zip: at least one image member, total payload not trivial, first page has image magic."""
+    try:
+        with zipfile.ZipFile(path, "r") as zf:
+            infos = [
+                i
+                for i in zf.infolist()
+                if not i.is_dir()
+                and _ARCHIVE_IMAGE_SUFFIX_RE.search(i.filename)
+                and "__MACOSX/" not in i.filename
+            ]
+            if not infos:
+                return False
+            infos.sort(key=lambda x: x.filename)
+            total_img = sum(i.file_size for i in infos)
+            if total_img < MIN_MDX_ARCHIVE_BYTES:
+                return False
+            first = infos[0]
+            if first.file_size < _MIN_COMIC_PAGE_UNCOMPRESSED:
+                return False
+            with zf.open(first.filename, "r") as rf:
+                head = rf.read(32)
+    except (zipfile.BadZipFile, OSError, RuntimeError):
+        return False
+    return _bytes_look_like_raster_image(head)
+
+
+def _manga_archive_passes_sanity_check(path: str) -> bool:
+    """Reject tiny or non-comic archives (bad ``mdx`` runs, empty Suwayomi zips, HTML-as-.jpg, etc.)."""
+    try:
+        sz = os.path.getsize(path)
+    except OSError:
+        return False
+    if sz < MIN_MDX_ARCHIVE_BYTES:
+        return False
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".cbz", ".zip"):
+        if not zipfile.is_zipfile(path):
+            return False
+        return _cbz_zip_archive_has_plausible_pages(path)
+    if ext == ".epub":
+        if not zipfile.is_zipfile(path):
+            return False
+        try:
+            with zipfile.ZipFile(path, "r") as zf:
+                names = set(zf.namelist())
+                if "mimetype" not in names and "META-INF/container.xml" not in names:
+                    return False
+        except (zipfile.BadZipFile, OSError):
+            return False
+        return True
+    if ext == ".pdf":
+        with open(path, "rb") as f:
+            return f.read(5) == b"%PDF-"
+    return True
+
+
+def _junk_chapter_file_cleared(conn, existing) -> bool:
+    """If ``existing.path`` points to a bogus archive, delete it and reset the DB row.
+
+    Returns True when the caller should fall through and run ``upsert_chapter`` again.
+    """
+    abs_p = (
+        os.path.join(MANGA_ROOT, existing["path"])
+        if existing["path"]
+        else ""
+    )
+    junk = (
+        bool(existing["path"])
+        and os.path.isfile(abs_p)
+        and not _manga_archive_passes_sanity_check(abs_p)
+    )
+    if not junk:
+        return False
+    with contextlib.suppress(OSError):
+        os.remove(abs_p)
+    conn.execute(
+        """
+        UPDATE chapters SET path=NULL, file_size=NULL,
+            has_comicinfo=0, status='known'
+        WHERE id=?
+        """,
+        (existing["id"],),
+    )
+    return True
+
 
 def _cbz_files_in(series_dir: str) -> set[str]:
     try:
@@ -641,20 +778,6 @@ def _merge_volume_batch(
     return merged, errors
 
 
-def _merge_complete_volumes(
-    series_id: int, series_dir: str, conn,
-    meta: dict, language: str, preferred_group: str | None,
-    settings: dict, series_web: str | None = None,
-):
-    complete = get_complete_volumes(conn, series_id)
-    if not complete:
-        return
-    _merge_volume_batch(
-        series_id, series_dir, conn, complete,
-        meta, language, preferred_group, settings, series_web=series_web,
-    )
-
-
 def compact_series_volumes(series_row: dict, conn, settings: dict) -> tuple[int, list[str]]:
     """Manual/UI: merge every volume that has chapter files but no merged CBZ yet."""
     series_id   = series_row["id"]
@@ -699,6 +822,7 @@ def _ensure_comicinfo_all(
     series_label: str | None = None,
     force_overwrite: bool = False,
     file_permission_mask: str | None = None,
+    side_fx: dict | None = None,
 ):
     ch_rows, vol_rows = get_files_missing_comicinfo(conn, series_id)
     if not ch_rows and not vol_rows:
@@ -770,6 +894,12 @@ def _ensure_comicinfo_all(
             mark_chapter_comicinfo(conn, ch["id"])
             injected_ch += 1
             _log(f"[{label}] ComicInfo {idx}/{total_ch}: {os.path.basename(cbz_path)}")
+        elif not os.access(cbz_path, os.W_OK):
+            _bump_library_write_denied(side_fx)
+            _log(
+                f"[{label}] ComicInfo not applied (no write permission to file): "
+                f"{os.path.basename(cbz_path)}"
+            )
 
     injected_vol = 0
     total_vol    = len(vol_rows)
@@ -809,6 +939,12 @@ def _ensure_comicinfo_all(
             mark_volume_comicinfo(conn, vol["id"])
             injected_vol += 1
             _log(f"[{label}] ComicInfo vol {idx}/{total_vol}: {os.path.basename(cbz_path)}")
+        elif not os.access(cbz_path, os.W_OK):
+            _bump_library_write_denied(side_fx)
+            _log(
+                f"[{label}] ComicInfo not applied (no write permission to file): "
+                f"{os.path.basename(cbz_path)}"
+            )
     _log(f"[{label}] ComicInfo done: {injected_ch} chapter(s), {injected_vol} volume(s) updated")
 
 
@@ -830,10 +966,49 @@ def _mdx_id_for_covers(series_row: dict) -> str | None:
     return series_row.get("mangadex_id")
 
 
+def _normalize_volume_cover_key(v) -> str:
+    """Canonical key for matching Kavita volume numbers to MangaDex ``/cover`` volume strings."""
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if not s:
+        return ""
+    try:
+        n = float(s)
+        if math.isfinite(n) and n == int(n):
+            return str(int(n))
+    except ValueError:
+        pass
+    return s
+
+
+def _volume_cover_urls_by_canonical_key(raw: dict[str, str]) -> dict[str, str]:
+    """Re-key MD cover map so ``17`` and ``17.0`` (and JSON float quirks) resolve the same URL."""
+    out: dict[str, str] = {}
+    for k, url in raw.items():
+        ck = _normalize_volume_cover_key(k)
+        if ck and url:
+            out[ck] = url
+    return out
+
+
+def _missing_mdx_cover_is_notable(vol_key: str) -> bool:
+    """Whether to log ``cover skip`` — omit Kavita placeholders (e.g. ``-100000`` loose chapters)."""
+    if not vol_key:
+        return False
+    try:
+        n = float(vol_key)
+    except ValueError:
+        return False
+    return math.isfinite(n) and n >= 1
+
+
 def _kavita_set_covers(client: KavitaClient, series_dir: str, manga_id: str):
     series_name = os.path.basename(series_dir)
     try:
-        covers = MangaDexSource().get_volume_covers(manga_id)
+        covers = _volume_cover_urls_by_canonical_key(
+            MangaDexSource().get_volume_covers(manga_id)
+        )
         if not covers:
             return
         series = client.search_series(series_name)
@@ -841,9 +1016,16 @@ def _kavita_set_covers(client: KavitaClient, series_dir: str, manga_id: str):
             _log(f"[kavita] series not found: {series_name}")
             return
         for vol in client.get_volumes(series["id"]):
-            vol_num = str(vol.get("number", ""))
-            url     = covers.get(vol_num)
+            vol_raw = vol.get("number", "")
+            vol_num = str(vol_raw).strip() or "(unnumbered)"
+            vol_key = _normalize_volume_cover_key(vol_raw)
+            url     = covers.get(vol_key) if vol_key else None
             if not url:
+                if vol_key and _missing_mdx_cover_is_notable(vol_key):
+                    _log(
+                        f"[kavita] cover skip (no MangaDex volume cover): "
+                        f"{series_name} vol.{vol_num}"
+                    )
                 continue
             try:
                 client.set_volume_cover(vol["id"], url)
@@ -858,12 +1040,153 @@ def _kavita_set_covers(client: KavitaClient, series_dir: str, manga_id: str):
 # Per-series sync
 # ---------------------------------------------------------------------------
 
+def _bump_library_write_denied(side_fx: dict | None) -> None:
+    """Count permission-related skips so the main sync can summarize once at the end."""
+    if side_fx is not None:
+        side_fx["library_write_denied"] = side_fx.get("library_write_denied", 0) + 1
+
+
+def _is_permission_errno(err: OSError) -> bool:
+    no = getattr(err, "errno", None)
+    return no in (errno.EACCES, errno.EPERM, errno.EROFS)
+
+
+def _stem_shows_volume_num(stem: str, volume_num) -> bool:
+    """True if the basename already embeds ``vol.N`` matching ``volume_num`` (from MD)."""
+    if volume_num is None:
+        return False
+    try:
+        want = float(volume_num)
+    except (TypeError, ValueError):
+        return False
+    m = re.search(r"(?i)\bvol\.?\s*(\d+(?:\.\d+)?)\b", stem)
+    if not m:
+        return False
+    try:
+        got = float(m.group(1))
+    except ValueError:
+        return False
+    return abs(got - want) < 1e-6
+
+
+def _stem_declares_any_volume(stem: str) -> bool:
+    """True if the basename already embeds a ``vol.N`` token (user or legacy layout)."""
+    return bool(re.search(r"(?i)\bvol\.?\s*\d", stem))
+
+
+def _rename_tracked_chapter_stems_for_template(
+    conn,
+    series_row: dict,
+    settings: dict,
+    label: str,
+    side_fx: dict | None = None,
+) -> int:
+    """Rename chapter CBZs on disk so basenames match ``chapter_naming`` (incl. vol).
+
+    Does not merge archives — only filesystem renames + DB path updates so
+    volume numbers picked up from MangaDex appear in filenames (e.g. ``vol.17``).
+
+    Skips stems that already embed the correct ``vol.N`` for the DB bucket so we
+    only touch files that actually need a volume tag (sync-time behaviour; Fix
+    Files / manga-fix is unchanged and still proposes full template alignment).
+    """
+    if series_row.get("exclude_from_fix"):
+        return 0
+    series_id = series_row["id"]
+    series_dir = os.path.join(MANGA_ROOT, series_row["path"])
+    language = series_row.get("language", "en")
+    ch_naming = settings.get("chapter_naming", "%3 ch.%5")
+    name = series_row.get("name") or os.path.basename(series_row["path"])
+    rows = conn.execute(
+        """
+        SELECT c.id, c.path, c.chapter_num, c.title, c.group_name, v.volume_num
+        FROM chapters c
+        LEFT JOIN volumes v ON v.id = c.volume_id
+        WHERE c.series_id = ? AND c.path IS NOT NULL
+        ORDER BY c.chapter_num
+        """,
+        (series_id,),
+    ).fetchall()
+    n_done = 0
+    for r in rows:
+        old_rel = (r["path"] or "").strip()
+        if not old_rel:
+            continue
+        old_abs = os.path.join(MANGA_ROOT, old_rel)
+        if not os.path.isfile(old_abs):
+            continue
+        desired = apply_naming_template(
+            ch_naming,
+            language=language,
+            group=(r["group_name"] or ""),
+            title=name,
+            volume_num=r["volume_num"],
+            chapter_num=r["chapter_num"],
+            chapter_title=(r["title"] or "").strip() or "",
+        )
+        if not desired:
+            continue
+        ext = os.path.splitext(old_abs)[1]
+        cur_stem = os.path.splitext(os.path.basename(old_abs))[0]
+        if cur_stem == desired:
+            continue
+        # Already carries the correct tankōbon volume in the filename (layout may
+        # differ slightly from ``chapter_naming``, e.g. scanlator suffix) — do not touch.
+        if r["volume_num"] is not None and _stem_shows_volume_num(cur_stem, r["volume_num"]):
+            continue
+        # DB has no volume yet but filename already carries vol.N — avoid stripping it.
+        if r["volume_num"] is None and _stem_declares_any_volume(cur_stem):
+            continue
+        new_abs = os.path.join(series_dir, desired + ext)
+        if os.path.abspath(old_abs) == os.path.abspath(new_abs):
+            continue
+        if os.path.exists(new_abs):
+            _log(f"[{label}] chapter stem skip (target exists): {desired}{ext}")
+            continue
+        try:
+            os.rename(old_abs, new_abs)
+        except OSError as e:
+            if _is_permission_errno(e):
+                _bump_library_write_denied(side_fx)
+                _log(
+                    f"[{label}] chapter stem rename blocked by filesystem permissions "
+                    f"(ch.{r['chapter_num']}): {e} — file: {old_abs}"
+                )
+            else:
+                _log(f"[{label}] chapter stem rename failed ch.{r['chapter_num']}: {e}")
+            continue
+        rel_new = os.path.relpath(new_abs, MANGA_ROOT)
+        sz = os.path.getsize(new_abs)
+        conn.execute(
+            "UPDATE chapters SET path=?, file_size=?, has_comicinfo=0 WHERE id=?",
+            (rel_new, sz, r["id"]),
+        )
+        conn.commit()
+        log_rename(
+            conn,
+            old_rel,
+            rel_new,
+            "rename",
+            "chapter_stem_template",
+            series_id=series_id,
+            chapter_id=r["id"],
+        )
+        apply_file_permission_mask(new_abs, settings.get("file_permission_mask"))
+        n_done += 1
+        _log(
+            f"[{label}] chapter stem: ch.{r['chapter_num']} "
+            f"{os.path.basename(old_rel)} → {desired}{ext}"
+        )
+    return n_done
+
+
 def _sync_one_series(
     series_row: dict,
     conn,
     settings: dict,
     kavita_client: KavitaClient | None,
     skip_feed_counts: dict[str, int] | None = None,
+    side_fx: dict | None = None,
 ) -> int | bool:
     series_id   = series_row["id"]
     series_path = series_row["path"]
@@ -898,6 +1221,7 @@ def _sync_one_series(
             series_id, series_dir, conn, meta, language,
             series_web=series_web, series_label=name,
             file_permission_mask=file_permission_mask,
+            side_fx=side_fx,
         )
         update_source_sync_time(conn, series_id, source_name)
         return 0
@@ -910,6 +1234,7 @@ def _sync_one_series(
             series_id, series_dir, conn, meta, language,
             series_web=series_web, series_label=name,
             file_permission_mask=file_permission_mask,
+            side_fx=side_fx,
         )
         update_source_sync_time(conn, series_id, source_name)
         return 0
@@ -925,13 +1250,60 @@ def _sync_one_series(
 
     to_download = get_chapters_to_download(conn, series_id, start_chapter)
 
+    try:
+        interval_days = int(settings.get("aggregate_volume_remap_interval_days") or 7)
+    except (TypeError, ValueError):
+        interval_days = 7
+    interval_days = max(1, min(interval_days, 90))
+
+    run_mdx_aggregate_remap = False
+    if isinstance(source, MangaDexSource) and manga_id:
+        if to_download:
+            run_mdx_aggregate_remap = True
+        elif weekly_mdx_aggregate_volume_remap_due(conn, series_id, interval_days):
+            run_mdx_aggregate_remap = True
+
+    # Canonical volume buckets from /aggregate (language-scoped). Runs when we
+    # are about to download, or on a debounced schedule while materialized rows
+    # still lack volume_id (e.g. finished series MD fills tankōbon later).
+    if run_mdx_aggregate_remap:
+        try:
+            agg = source._api_get(
+                f"/manga/{manga_id}/aggregate",
+                {"translatedLanguage[]": language},
+                timeout=15,
+            )
+            apply_aggregate_volume_mapping(conn, series_id, agg)
+            touch_series_aggregate_volume_remap_at(conn, series_id)
+            _log(f"[{name}] MD aggregate volume remap applied")
+        except Exception as e:
+            _log(f"[{name}] aggregate volume remap skipped: {e}")
+
+    def _chapter_stem_sync_pass() -> int:
+        m = _rename_tracked_chapter_stems_for_template(
+            conn, series_row, settings, name, side_fx
+        )
+        if side_fx is not None and m:
+            side_fx["chapter_stems_renamed"] = side_fx.get("chapter_stems_renamed", 0) + m
+        return m
+
+    stem_renames = _chapter_stem_sync_pass()
+
     if not to_download:
         _log(f"[{name}] up-to-date")
         _ensure_comicinfo_all(
             series_id, series_dir, conn, meta, language,
             series_web=series_web, series_label=name,
             file_permission_mask=file_permission_mask,
+            side_fx=side_fx,
         )
+        if kavita_client and settings.get("auto_covers"):
+            mdx_id = _mdx_id_for_covers(series_row)
+            if mdx_id:
+                try:
+                    _kavita_set_covers(kavita_client, series_dir, mdx_id)
+                except Exception as e:
+                    _log(f"[{name}] kavita covers: {e}")
         return False
 
     delay         = float(settings.get("download_delay", 1.0))
@@ -969,7 +1341,7 @@ def _sync_one_series(
         )
 
         if isinstance(source, SuwayomiSource):
-            # Suwayomi: we control the output path directly
+            # Suwayomi (e.g. MANGA Plus extension): pages via Suwayomi REST — not ``mdx``.
             ok = source.download_chapter(
                 ch_row["source_chapter_id"],
                 series_dir,
@@ -980,10 +1352,22 @@ def _sync_one_series(
             if ok:
                 fpath = os.path.join(series_dir, f"{desired_stem or 'ch.' + str(ch_row['chapter_num'])}.{file_format}")
                 if os.path.exists(fpath):
-                    rel = os.path.relpath(fpath, MANGA_ROOT)
-                    apply_file_permission_mask(fpath, file_permission_mask)
-                    mark_chapter_downloaded(conn, ch_row["id"], rel, os.path.getsize(fpath))
-                    downloaded += 1
+                    if not _manga_archive_passes_sanity_check(fpath):
+                        try:
+                            bad_sz = os.path.getsize(fpath)
+                        except OSError:
+                            bad_sz = 0
+                        _log(
+                            f"[{name}] ch.{ch_row['chapter_num']}: Suwayomi download produced unusable output "
+                            f"({bad_sz} bytes). Removed file. Path: {fpath}"
+                        )
+                        with contextlib.suppress(OSError):
+                            os.remove(fpath)
+                    else:
+                        rel = os.path.relpath(fpath, MANGA_ROOT)
+                        apply_file_permission_mask(fpath, file_permission_mask)
+                        mark_chapter_downloaded(conn, ch_row["id"], rel, os.path.getsize(fpath))
+                        downloaded += 1
                 else:
                     _log(f"[{name}] ch.{ch_row['chapter_num']}: file not found after download")
             else:
@@ -995,22 +1379,35 @@ def _sync_one_series(
             if ok:
                 fpath = _find_new_file(series_dir, before, ch_row["chapter_num"])
                 if fpath:
-                    if desired_stem:
-                        ext = os.path.splitext(fpath)[1]
-                        desired_path = os.path.join(series_dir, desired_stem + ext)
-                        if os.path.abspath(desired_path) != os.path.abspath(fpath):
-                            if not os.path.exists(desired_path):
-                                os.rename(fpath, desired_path)
-                                fpath = desired_path
-                            else:
-                                _log(f"[{name}] ch.{ch_row['chapter_num']}: naming target exists, keeping existing file")
-                                with contextlib.suppress(OSError):
-                                    os.remove(fpath)
-                                fpath = desired_path
-                    rel = os.path.relpath(fpath, MANGA_ROOT)
-                    apply_file_permission_mask(fpath, file_permission_mask)
-                    mark_chapter_downloaded(conn, ch_row["id"], rel, os.path.getsize(fpath))
-                    downloaded += 1
+                    if not _manga_archive_passes_sanity_check(fpath):
+                        try:
+                            bad_sz = os.path.getsize(fpath)
+                        except OSError:
+                            bad_sz = 0
+                        _log(
+                            f"[{name}] ch.{ch_row['chapter_num']}: download produced unusable output "
+                            f"({bad_sz} bytes; expected a real archive). Removed junk file — chapter stays "
+                            f"queued for retry. Path: {fpath}"
+                        )
+                        with contextlib.suppress(OSError):
+                            os.remove(fpath)
+                    else:
+                        if desired_stem:
+                            ext = os.path.splitext(fpath)[1]
+                            desired_path = os.path.join(series_dir, desired_stem + ext)
+                            if os.path.abspath(desired_path) != os.path.abspath(fpath):
+                                if not os.path.exists(desired_path):
+                                    os.rename(fpath, desired_path)
+                                    fpath = desired_path
+                                else:
+                                    _log(f"[{name}] ch.{ch_row['chapter_num']}: naming target exists, keeping existing file")
+                                    with contextlib.suppress(OSError):
+                                        os.remove(fpath)
+                                    fpath = desired_path
+                        rel = os.path.relpath(fpath, MANGA_ROOT)
+                        apply_file_permission_mask(fpath, file_permission_mask)
+                        mark_chapter_downloaded(conn, ch_row["id"], rel, os.path.getsize(fpath))
+                        downloaded += 1
                 else:
                     _log(f"[{name}] ch.{ch_row['chapter_num']}: file not found after download")
             else:
@@ -1018,26 +1415,20 @@ def _sync_one_series(
 
         time.sleep(delay)
 
-    # Legacy UI-level "compact into volume" toggles are intentionally ignored.
-    # Volume merge should only run via explicit compact mode CLI path.
-    merge_ok = False
-
     # Filename cleanup (skip series excluded from Fix Files / manual filenames)
     if not series_row.get("exclude_from_fix"):
         _run_fix_pass(series_dir)
     # Re-scan after rename pass (or after download when fix pass skipped)
     scan_disk_files(series_dir, series_id, conn)
 
-    # Volume merge
-    if merge_ok:
-        _merge_complete_volumes(series_id, series_dir, conn,
-                                meta, language, group, settings, series_web=series_web)
+    _chapter_stem_sync_pass()
 
     # ComicInfo injection for all remaining files
     _ensure_comicinfo_all(
         series_id, series_dir, conn, meta, language,
         series_web=series_web, series_label=name,
         file_permission_mask=file_permission_mask,
+        side_fx=side_fx,
     )
 
     # Kavita covers
@@ -1246,6 +1637,7 @@ def main(
     processed = 0
     downloads: list[tuple[str, int]] = []
     skip_feed_counts: dict[str, int] = {"not_configured": 0, "paused": 0}
+    side_fx: dict[str, int] = {"chapter_stems_renamed": 0, "library_write_denied": 0}
 
     for series_row in series_list:
         processed += 1
@@ -1269,7 +1661,7 @@ def main(
 
         try:
             count = _sync_one_series(
-                series_row, conn, settings, kavita_client, skip_feed_counts
+                series_row, conn, settings, kavita_client, skip_feed_counts, side_fx
             )
             if count:
                 any_downloaded = True
@@ -1278,12 +1670,28 @@ def main(
         except Exception as e:
             _log(f"[{series_row.get('name', series_row['path'])}] error: {e}")
 
-    if any_downloaded and kavita_client and settings.get("auto_scan"):
+    stems_renamed = int(side_fx.get("chapter_stems_renamed") or 0)
+    if kavita_client and settings.get("auto_scan") and (any_downloaded or stems_renamed):
         try:
             kavita_client.scan_all()
-            _log("[kavita] library scan triggered")
+            bits: list[str] = []
+            if any_downloaded:
+                bits.append("new downloads")
+            if stems_renamed:
+                bits.append(f"{stems_renamed} chapter stem rename(s)")
+            _log("[kavita] library scan triggered (" + ", ".join(bits) + ")")
         except Exception as e:
             _log(f"[kavita] scan failed: {e}")
+
+    denied = int(side_fx.get("library_write_denied") or 0)
+    if denied:
+        _log(
+            "[sync] Library writes: "
+            f"{denied} operation(s) could not complete because of file or folder permissions "
+            "(see the per-file lines above). Renames and ComicInfo injection need write access "
+            "to the archive and its directory. If that is intentional, you can ignore this; "
+            "otherwise fix ownership (e.g. host chown/chmod or Docker PUID/PGID) on the bind mount."
+        )
 
     if notify and downloads:
         wurl = settings.get("webhook_url", "").strip()
