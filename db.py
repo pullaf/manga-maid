@@ -512,25 +512,34 @@ def migrate_json_configs(manga_root: str, conn: sqlite3.Connection) -> int:
         ).fetchone()["id"]
 
         if manga_id:
-            conn.execute("""
-                INSERT INTO series_sources (series_id, source, source_id, priority)
-                VALUES (?, 'mangadex', ?, 1)
-                ON CONFLICT(series_id, source) DO UPDATE SET source_id = excluded.source_id
-            """, (series_id, manga_id))
-
-            cover_filename = cfg.get("cover_filename")
-            status         = cfg.get("status")
-            total_volumes  = cfg.get("total_volumes")
-            if any(v is not None for v in [cover_filename, status, total_volumes]):
+            # Do not push legacy MangaDex rows from disk if this folder is already
+            # linked via the web UI to another adapter (e.g. Suwayomi/MangaPlus).
+            # Otherwise both sources sit at default priority 1 and list queries
+            # duplicate the series until the stale ``.mangadex.json`` is removed.
+            has_non_mdx_source = conn.execute(
+                "SELECT 1 FROM series_sources WHERE series_id=? AND source != 'mangadex' LIMIT 1",
+                (series_id,),
+            ).fetchone()
+            if not has_non_mdx_source:
                 conn.execute("""
-                    INSERT INTO series_metadata
-                        (series_id, source, cover_filename, status, total_volumes, fetched_at)
-                    VALUES (?, 'mangadex', ?, ?, ?, ?)
-                    ON CONFLICT(series_id, source) DO UPDATE SET
-                        cover_filename = COALESCE(excluded.cover_filename, cover_filename),
-                        status         = COALESCE(excluded.status, status),
-                        total_volumes  = COALESCE(excluded.total_volumes, total_volumes)
-                """, (series_id, cover_filename, status, total_volumes, now))
+                    INSERT INTO series_sources (series_id, source, source_id, priority)
+                    VALUES (?, 'mangadex', ?, 1)
+                    ON CONFLICT(series_id, source) DO UPDATE SET source_id = excluded.source_id
+                """, (series_id, manga_id))
+
+                cover_filename = cfg.get("cover_filename")
+                status         = cfg.get("status")
+                total_volumes  = cfg.get("total_volumes")
+                if any(v is not None for v in [cover_filename, status, total_volumes]):
+                    conn.execute("""
+                        INSERT INTO series_metadata
+                            (series_id, source, cover_filename, status, total_volumes, fetched_at)
+                        VALUES (?, 'mangadex', ?, ?, ?, ?)
+                        ON CONFLICT(series_id, source) DO UPDATE SET
+                            cover_filename = COALESCE(excluded.cover_filename, cover_filename),
+                            status         = COALESCE(excluded.status, status),
+                            total_volumes  = COALESCE(excluded.total_volumes, total_volumes)
+                    """, (series_id, cover_filename, status, total_volumes, now))
 
         imported += 1
         dirs.clear()
@@ -625,8 +634,12 @@ def get_all_series(conn: sqlite3.Connection) -> list[dict]:
                 WHERE series_id = s.id AND path IS NOT NULL AND volume_id IS NOT NULL
             )) AS volume_count
         FROM series s
-        LEFT JOIN series_sources ss ON s.id = ss.series_id
-            AND ss.priority = (SELECT MIN(priority) FROM series_sources WHERE series_id = s.id)
+        LEFT JOIN series_sources ss ON ss.id = (
+            SELECT ss2.id FROM series_sources ss2
+            WHERE ss2.series_id = s.id
+            ORDER BY ss2.priority ASC, ss2.source ASC
+            LIMIT 1
+        )
         LEFT JOIN series_metadata sm
             ON s.id = sm.series_id AND sm.source = ss.source
         ORDER BY LOWER(s.title)
@@ -667,8 +680,12 @@ def get_series_by_path(conn: sqlite3.Connection, path: str) -> dict | None:
                (SELECT COUNT(*) FROM chapters c WHERE c.series_id = s.id) AS chapter_count,
                (SELECT COUNT(*) FROM volumes v WHERE v.series_id = s.id) AS source_volume_count
         FROM series s
-        LEFT JOIN series_sources ss ON s.id = ss.series_id
-            AND ss.priority = (SELECT MIN(priority) FROM series_sources WHERE series_id = s.id)
+        LEFT JOIN series_sources ss ON ss.id = (
+            SELECT ss2.id FROM series_sources ss2
+            WHERE ss2.series_id = s.id
+            ORDER BY ss2.priority ASC, ss2.source ASC
+            LIMIT 1
+        )
         LEFT JOIN series_metadata sm ON s.id = sm.series_id AND sm.source = ss.source
         WHERE s.path = ?
     """, (path,)).fetchone()
@@ -878,18 +895,28 @@ def reset_chapter_source_metadata(
 
 
 def unlink_series(conn: sqlite3.Connection, path: str) -> bool:
-    """Remove source links and detach per-chapter source metadata.
+    """Remove source links, series-level remote metadata, and per-chapter source fields.
 
-    Files on disk and the series row stay; merging the unlink with the
-    chapter reset means ComicInfo regenerated afterwards will not retain
-    feed-only fields (e.g. a Vietnamese scanlator's name on an English
-    archive that only had the link for cover purposes).
+    Clears ``mangadex_id`` and ``series_metadata`` so an unlinked folder does not
+    retain stale MangaDex companion or cover rows. Files on disk and the series
+    row stay; merging the unlink with the chapter reset means ComicInfo
+    regenerated afterwards will not retain feed-only fields (e.g. a Vietnamese
+    scanlator's name on an English archive that only had the link for cover purposes).
     """
     row = conn.execute("SELECT id FROM series WHERE path=?", (path,)).fetchone()
     if not row:
         return False
-    conn.execute("DELETE FROM series_sources WHERE series_id=?", (row["id"],))
-    reset_chapter_source_metadata(conn, row["id"])
+    sid = row["id"]
+    conn.execute("DELETE FROM series_sources WHERE series_id=?", (sid,))
+    # Remote metadata / companion UUID — not tied to series_sources rows but
+    # misleading if left behind after unlink (and harmless to drop; refetch on relink).
+    conn.execute("DELETE FROM series_metadata WHERE series_id=?", (sid,))
+    now = _now()
+    conn.execute(
+        "UPDATE series SET mangadex_id = NULL, updated_at = ? WHERE id = ?",
+        (now, sid),
+    )
+    reset_chapter_source_metadata(conn, sid)
     conn.commit()
     return True
 
@@ -899,7 +926,19 @@ def delete_series(conn: sqlite3.Connection, path: str) -> bool:
     row = conn.execute("SELECT id FROM series WHERE path=?", (path,)).fetchone()
     if not row:
         return False
-    conn.execute("DELETE FROM series WHERE id=?", (row["id"],))
+    sid = row["id"]
+    # ``rename_log`` references series/volumes/chapters without ON DELETE CASCADE;
+    # clearing first avoids IntegrityError when removing the series row.
+    conn.execute("DELETE FROM rename_log WHERE series_id=?", (sid,))
+    conn.execute(
+        "DELETE FROM rename_log WHERE volume_id IN (SELECT id FROM volumes WHERE series_id=?)",
+        (sid,),
+    )
+    conn.execute(
+        "DELETE FROM rename_log WHERE chapter_id IN (SELECT id FROM chapters WHERE series_id=?)",
+        (sid,),
+    )
+    conn.execute("DELETE FROM series WHERE id=?", (sid,))
     conn.commit()
     return True
 

@@ -496,9 +496,15 @@
       The series will also be removed from the database.
     </p>
     <p class="text-sm mt-2 font-semibold" style="color:#f87171">This cannot be undone.</p>
+    <p class="text-sm mt-3 leading-relaxed" style="color:var(--text-muted)">
+      <span class="font-semibold tabular-nums" style="color:var(--text)">{{ delete_tracked_file_count }}</span>
+      catalogued archive{% if delete_tracked_file_count != 1 %}s{% endif %}
+      (chapter + volume files on disk). The entire folder is removed, including anything not in the catalog.
+    </p>
     <div class="mt-4">
       <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">
-        Type <code id="dsf-confirm-hint" class="text-xs px-1 py-0.5 rounded" style="background:var(--surface-alt);color:var(--text)"></code> to confirm
+        Type <code class="text-xs px-1 py-0.5 rounded" style="background:var(--surface-alt);color:var(--text)">delete</code>
+        to confirm (case-insensitive)
       </label>
       <input id="dsf-confirm-input" type="text" autocomplete="off" spellcheck="false"
              class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none"
@@ -1298,12 +1304,10 @@ document.addEventListener('keydown', function(e) {
 
 // --- Delete series + folder ---
 (function() {
-  var _seriesName = {{ series.name | tojson }};
   var _seriesPath = {{ series.path | tojson }};
 
   window.openDeleteSeriesFolderModal = function() {
     document.getElementById('dsf-path').textContent = _seriesPath;
-    document.getElementById('dsf-confirm-hint').textContent = _seriesName;
     document.getElementById('dsf-confirm-input').value = '';
     document.getElementById('dsf-status').textContent = '';
     updateDsfButton();
@@ -1316,9 +1320,9 @@ document.addEventListener('keydown', function(e) {
   };
 
   window.updateDsfButton = function() {
-    var val = (document.getElementById('dsf-confirm-input').value || '').trim();
+    var val = (document.getElementById('dsf-confirm-input').value || '').trim().toLowerCase();
     var btn = document.getElementById('dsf-confirm-btn');
-    var ok = val === _seriesName;
+    var ok = val === 'delete';
     btn.disabled = !ok;
     btn.style.opacity = ok ? '1' : '.4';
     btn.style.cursor  = ok ? 'pointer' : 'not-allowed';

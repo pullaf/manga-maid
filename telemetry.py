@@ -54,8 +54,12 @@ def _gather_stats(conn, settings: dict) -> dict:
             SUM(CASE WHEN COALESCE(s.sync_configured, 0) = 1
                           AND ss.source_id IS NOT NULL THEN 1 ELSE 0 END) AS sync_configured
         FROM series s
-        LEFT JOIN series_sources ss ON s.id = ss.series_id
-            AND ss.priority = (SELECT MIN(priority) FROM series_sources WHERE series_id = s.id)
+        LEFT JOIN series_sources ss ON ss.id = (
+            SELECT ss2.id FROM series_sources ss2
+            WHERE ss2.series_id = s.id
+            ORDER BY ss2.priority ASC, ss2.source ASC
+            LIMIT 1
+        )
     """).fetchone()
 
     vol_files = conn.execute("SELECT COUNT(*) FROM volumes WHERE path IS NOT NULL").fetchone()[0]

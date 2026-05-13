@@ -963,6 +963,7 @@ async def series_details_page(request: Request, path: str):
     volume_ok = source_volumes > 0 and have_volumes >= source_volumes
 
     compact_volume_count = len(_db.get_volumes_needing_compact(conn, row["id"]))
+    delete_tracked_file_count = len(chapters) + len(volumes)
 
     settings     = load_settings()
     suwayomi_url = (settings.get("suwayomi_url") or "").strip().rstrip("/")
@@ -986,6 +987,7 @@ async def series_details_page(request: Request, path: str):
             "chapter_ok": chapter_ok,
             "volume_ok": volume_ok,
             "compact_volume_count": compact_volume_count,
+            "delete_tracked_file_count": delete_tracked_file_count,
             "comicinfo_manga_values": MANGA_VALUES,
             "comicinfo_age_rating_values": AGE_RATING_VALUES,
             "no_root_folders": _no_rf(),
