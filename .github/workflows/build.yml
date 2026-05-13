@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - run: pip install pytest fastapi httpx python-multipart
+      - run: pip install pytest fastapi httpx python-multipart jinja2
 
       - run: pytest tests/ --ignore=tests/test_integration.py -v
 
