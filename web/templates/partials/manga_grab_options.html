@@ -206,8 +206,8 @@ async function grabOptionsUnlink(btn) {
   if (!ok) return;
   btn.disabled = true;
   try {
-    var resp = await fetch('/api/series/' + path.split('/').map(encodeURIComponent).join('/'), {
-      method: 'DELETE'
+    var resp = await fetch('/api/series/' + path.split('/').map(encodeURIComponent).join('/') + '/unlink', {
+      method: 'POST'
     });
     if (resp.ok) { window.location.reload(); return; }
     var data = await resp.json().catch(function() { return {}; });

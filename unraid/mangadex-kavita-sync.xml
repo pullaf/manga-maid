@@ -1,20 +1,20 @@
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>MangaDex-Kavita-Sync</Name>
-  <Repository>ghcr.io/pullaf/mangadex-kavita-sync:latest</Repository>
+  <Name>Manga Maid</Name>
+  <Repository>ghcr.io/pullaf/manga-maid:latest</Repository>
   <Registry>https://ghcr.io</Registry>
   <Network>bridge</Network>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/pullaf/mangadex-kavita-sync/issues</Support>
-  <Project>https://github.com/pullaf/mangadex-kavita-sync</Project>
-  <Overview>Sync MangaDex manga directly into your Kavita library. Automatically downloads new chapters on a schedule, writes ComicInfo.xml metadata, and provides a web UI for managing your sync list and settings.</Overview>
+  <Support>https://github.com/pullaf/manga-maid/issues</Support>
+  <Project>https://github.com/pullaf/manga-maid</Project>
+  <Overview>Manga Maid — sync MangaDex and Suwayomi sources into your Kavita library. Downloads new chapters on a schedule, writes ComicInfo.xml metadata, and provides a web UI for series, jobs, and settings.</Overview>
   <Category>Downloaders: MediaApp:Books</Category>
   <WebUI>http://[IP]:[PORT:4649]/</WebUI>
-  <TemplateURL>https://raw.githubusercontent.com/pullaf/mangadex-kavita-sync/main/unraid/mangadex-kavita-sync.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/pullaf/mangadex-kavita-sync/main/unraid/icon.png</Icon>
+  <TemplateURL>https://raw.githubusercontent.com/pullaf/manga-maid/main/unraid/mangadex-kavita-sync.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/pullaf/manga-maid/main/unraid/icon.png</Icon>
   <ExtraParams/>
-  <Description>Sync MangaDex manga directly into your Kavita library. Automatically downloads new chapters on a schedule, writes ComicInfo.xml metadata, and provides a web UI for managing your sync list and settings.</Description>
+  <Description>Manga Maid — sync MangaDex and Suwayomi sources into your Kavita library. Downloads new chapters on a schedule, writes ComicInfo.xml metadata, and provides a web UI for managing your sync list and settings.</Description>
 
   <Config Name="Web UI Port"
           Target="4649"
@@ -38,13 +38,13 @@
 
   <Config Name="Data Path"
           Target="/data"
-          Default="/mnt/user/appdata/mangadex-kavita-sync"
+          Default="/mnt/user/appdata/manga-maid"
           Mode="rw"
           Description="Persistent storage for config, database, and logs."
           Type="Path"
           Display="always"
           Required="true"
-          Mask="false">/mnt/user/appdata/mangadex-kavita-sync</Config>
+          Mask="false">/mnt/user/appdata/manga-maid</Config>
 
   <Config Name="PUID"
           Target="PUID"

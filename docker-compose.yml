@@ -1,21 +1,39 @@
+# `build` needs this repo as context (Dockerfile at root). For registry-only: `image: ghcr.io/pullaf/manga-maid:latest`
 services:
   manga-sync:
     build:
       context: .
       args:
-        APP_VERSION: ${APP_VERSION:-dev}
-    image: mangadex-kavita-sync:local
+        APP_VERSION: ${APP_VERSION:-local}
+    image: manga-maid:local
     environment:
       SYNC_CRON: "0 */6 * * *"   # every 6 hours — standard cron syntax
       DEFAULT_LANGUAGE: "en"
-      TZ: "Europe/Rome"
-      # Set automatically when running --profile suwayomi
-      SUWAYOMI_URL: ${SUWAYOMI_URL:-}
+      TZ: ${TZ:-Europe/Rome}
+      # Optional: comment out or remove the next line if you are not using Suwayomi (same-stack default).
+      # To force-disable in compose while keeping the service, set SUWAYOMI_URL= in an override file.
+      SUWAYOMI_URL: ${SUWAYOMI_URL-http://suwayomi:4567}
+      # Optional: comment out or remove the next line if you are not using Kavita (same-stack default).
+      # To force-disable, set KAVITA_URL= in an override file.
+      KAVITA_URL: ${KAVITA_URL-http://kavita:5000}
     ports:
       - "4649:4649"
     volumes:
-      - /mnt/storage/media/books/manga:/manga
-      - /home/fabri/.local/share/manga-sync-data:/data
+      - /path/to/your/manga:/manga
+      - /path/to/data:/data
+    restart: unless-stopped
+
+  # Kavita — optional but handy for a full local stack (point Manga Maid at http://kavita:5000)
+  kavita:
+    image: jvmilazz0/kavita:latest
+    environment:
+      TZ: ${TZ:-Europe/Rome}
+    ports:
+      - "5000:5000"
+    volumes:
+      # Host library root — use a path that contains your manga tree (e.g. parent of …/manga)
+      - /path/to/your/library:/books
+      - kavita-config:/kavita/config
     restart: unless-stopped
 
   # Optional: remove or comment out if you don't need extra sources
@@ -41,4 +59,5 @@ services:
   #   restart: unless-stopped
 
 volumes:
+  kavita-config:
   suwayomi-data:

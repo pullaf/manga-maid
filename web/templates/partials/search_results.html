@@ -1,10 +1,9 @@
 {% for group in groups %}
-{% if multi_source %}
+{# Always label the source — with one provider users could not tell MangaDex vs Suwayomi. #}
 <div class="source-group-header">
   <span>{{ group.source_name }}</span>
   <hr>
 </div>
-{% endif %}
 {% if group.error %}
 <div class="flex items-start gap-2 px-4 py-2 mx-2 my-1 rounded-lg text-xs" style="background:color-mix(in srgb,var(--danger) 12%,transparent);color:var(--danger)">
   <svg viewBox="0 0 16 16" fill="currentColor" style="width:13px;height:13px;flex-shrink:0;margin-top:1px">

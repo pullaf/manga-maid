@@ -236,6 +236,18 @@
       to { transform: rotate(360deg); }
     }
 
+    /* Global confirm modal — OK button variants (avoid inline cssText) */
+    #confirm-modal-ok.confirm-modal-ok--primary {
+      background: var(--accent);
+      border: 1px solid var(--accent);
+      color: #fff;
+    }
+    #confirm-modal-ok.confirm-modal-ok--danger {
+      background: color-mix(in srgb, var(--danger) 15%, transparent);
+      border: 1px solid color-mix(in srgb, var(--danger) 50%, transparent);
+      color: var(--danger);
+    }
+
     /* ── Terminal output ───────────────────────────────────── */
     .bg-slate-900 {
       background: #090910 !important;
@@ -444,7 +456,7 @@
           Cancel
         </button>
         <button type="button" id="confirm-modal-ok"
-                class="text-xs px-3 py-2 rounded-lg font-semibold transition-colors">
+                class="text-xs px-3 py-2 rounded-lg font-semibold transition-colors confirm-modal-ok--danger">
           Confirm
         </button>
       </div>
@@ -760,6 +772,7 @@
         r(!!ok);
       }
     }
+    // Second arg false = primary OK; omitted or truthy = danger (htmx uses one arg).
     window.appConfirm = function(message, danger) {
       var modal = document.getElementById('confirm-modal');
       var text = document.getElementById('confirm-modal-text');
@@ -769,11 +782,8 @@
         return Promise.resolve(false);
       }
       text.textContent = String(message || 'Are you sure?');
-      if (danger === false) {
-        okBtn.style.cssText = 'background:var(--accent);border:1px solid var(--accent);color:#fff';
-      } else {
-        okBtn.style.cssText = 'background:rgba(248,113,113,.15);border:1px solid rgba(248,113,113,.5);color:#f87171';
-      }
+      okBtn.classList.remove('confirm-modal-ok--primary', 'confirm-modal-ok--danger');
+      okBtn.classList.add(danger === false ? 'confirm-modal-ok--primary' : 'confirm-modal-ok--danger');
       modal.classList.remove('hidden');
       okBtn.focus();
       return new Promise(function(resolve) {

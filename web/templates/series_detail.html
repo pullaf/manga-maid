@@ -268,7 +268,7 @@
           {% if series.linked %}
           <button type="button" class="dropdown-item dropdown-item--warn"
                   id="btn-detail-remove-series"
-                  hx-delete="/api/series/{{ series.path }}"
+                  hx-post="/api/series/{{ series.path }}/unlink"
                   hx-swap="none"
                   hx-confirm="Unlink '{{ series.name }}' from its source? Local files stay on disk.">Unlink from source</button>
           {% endif %}
@@ -724,28 +724,19 @@ async function toggleIgnored(ignore) {
     : 'Resume managing "{{ series.name }}"? It will reappear on the dashboard and be included in automatic jobs.';
   var ok = await window.appConfirm(msg, ignore);
   if (!ok) return;
+  var log = document.getElementById('detail-action-log');
   try {
     var resp = await fetch(seriesDetailApiUrl(path, '/ignore'), {
       method: ignore ? 'POST' : 'DELETE'
     });
     if (resp.ok) window.location.reload();
-  } catch (e) {}
-}
-
-async function openDeleteSeriesFolderModal() {
-  var path = document.getElementById('detail-actions').dataset.seriesPath;
-  var name = {{ series.name | tojson }};
-  var ok = await window.appConfirm('Delete "' + name + '" and its entire folder from disk? All downloaded files will be permanently removed. This cannot be undone.');
-  if (!ok) return;
-  var log = document.getElementById('detail-action-log');
-  if (log) { log.textContent = 'Deleting…'; log.classList.remove('hidden'); }
-  try {
-    var resp = await fetch(seriesDetailApiUrl(path, '?and_folder=true'), { method: 'DELETE' });
-    if (resp.ok) { window.location.href = '/'; return; }
-    var data = await resp.json().catch(function() { return {}; });
-    var msg = data.detail || data.error || ('Delete failed (HTTP ' + resp.status + ')');
-    if (typeof msg !== 'string') msg = JSON.stringify(msg);
-    if (log) log.textContent = msg;
+    else if (log) {
+      var data = await resp.json().catch(function() { return {}; });
+      var err = data.detail || data.error || ('Request failed (HTTP ' + resp.status + ')');
+      if (typeof err !== 'string') err = JSON.stringify(err);
+      log.textContent = err;
+      log.classList.remove('hidden');
+    }
   } catch (e) {
     if (log) { log.textContent = String(e); log.classList.remove('hidden'); }
   }

@@ -82,6 +82,7 @@
     <div class="space-y-2">
       <label class="block text-xs font-medium" style="color:var(--text-muted)">Auto-sync schedule</label>
       <select id="sync-cron-preset" class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+        <option value="disabled">Disabled (manual only)</option>
         <option value="0 * * * *">Hourly</option>
         <option value="0 */6 * * *">Every 6 hours</option>
         <option value="0 */12 * * *">Every 12 hours</option>
@@ -94,7 +95,7 @@
              placeholder="0 */6 * * *"
              class="w-full border rounded-lg px-3 py-2.5 text-sm font-mono focus:outline-none">
       <p class="text-xs" style="color:var(--text-dim)">
-        Use presets for common schedules, or choose Custom for a 5-field cron expression.
+        Use presets for common schedules, choose <strong>Disabled</strong> to run sync only from the Jobs page, or pick Custom for a 5-field cron expression.
       </p>
     </div>
 
@@ -381,6 +382,11 @@ let _cronIsCustom = false;
 
 function syncCronRender() {
   const current = (_cronValue.value || '').trim();
+  if (current === 'disabled') {
+    _cronPreset.value = 'disabled';
+    _cronCustom.style.display = 'none';
+    return;
+  }
   const isPreset = _presetValues.has(current);
   if (!_cronIsCustom && isPreset) {
     _cronPreset.value = current;
@@ -396,7 +402,10 @@ function syncCronRender() {
 }
 
 _cronPreset.addEventListener('change', () => {
-  if (_cronPreset.value === 'custom') {
+  if (_cronPreset.value === 'disabled') {
+    _cronIsCustom = false;
+    _cronValue.value = 'disabled';
+  } else if (_cronPreset.value === 'custom') {
     _cronIsCustom = true;
     if (!_cronCustom.value.trim() && _presetValues.has((_cronValue.value || '').trim())) {
       _cronCustom.value = _cronValue.value.trim();
@@ -416,7 +425,7 @@ _cronCustom.addEventListener('input', () => {
   }
 });
 
-_cronIsCustom = !_presetValues.has((_cronValue.value || '').trim());
+_cronIsCustom = !_presetValues.has((_cronValue.value || '').trim()) && (_cronValue.value || '').trim() !== 'disabled';
 syncCronRender();
 
 /* ── Toggles ──────────────────────────────── */
