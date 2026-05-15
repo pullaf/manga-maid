@@ -9,6 +9,7 @@ Page download: fetchChapterPages returns relative REST paths
 (/api/v1/manga/{id}/chapter/{sourceOrder}/page/{n}).  We proxy these through
 Suwayomi so the server handles auth / Cloudflare bypass, then zip into a CBZ.
 """
+import base64
 import io
 import json
 import re
@@ -42,6 +43,14 @@ def _parse_chapter_name(name: str, chapter_number: float | None):
 # ---------------------------------------------------------------------------
 # GraphQL client
 # ---------------------------------------------------------------------------
+
+_GQL_LOGIN = """
+mutation Login($username: String!, $password: String!) {
+  login(input: { username: $username, password: $password }) {
+    accessToken
+  }
+}
+"""
 
 _GQL_SOURCES = """
 query Sources {
@@ -89,70 +98,168 @@ mutation FetchChapterPages($chapterId: Int!) {
 """
 
 
+def _is_gql_unauthorized(body: dict) -> bool:
+    return any(
+        "Unauthorized" in str(e.get("message", ""))
+        for e in body.get("errors", [])
+    )
+
+
 class SuwayomiClient:
     """Thin GraphQL transport for Suwayomi-Server."""
 
-    def __init__(self, base_url: str, username: str = "", password: str = ""):
+    # Known auth modes persisted to settings so probing is skipped on restart.
+    AUTH_JWT     = "jwt"
+    AUTH_SESSION = "session"
+    AUTH_BASIC   = "basic"
+
+    def __init__(
+        self,
+        base_url: str,
+        username: str = "",
+        password: str = "",
+        auth_mode: str = "",
+        on_auth_mode_change: "callable | None" = None,
+    ):
         self.base_url = base_url.rstrip("/")
         self._username = username
         self._password = password
-        self._token: str | None = None
+        self._auth_mode = auth_mode       # saved mode; "" = needs probing
+        self._on_change = on_auth_mode_change
+        self._token = ""
+        self._session_cookie = ""
 
     # ------------------------------------------------------------------
     # Auth
     # ------------------------------------------------------------------
 
-    def _authenticate(self) -> str:
-        """Obtain a JWT bearer token via the REST login endpoint."""
-        payload = json.dumps({"username": self._username, "password": self._password}).encode()
+    def _gql_login(self) -> str:
+        """GQL login mutation (no auth required). Returns accessToken or ''."""
+        payload = json.dumps({
+            "query": _GQL_LOGIN,
+            "variables": {"username": self._username, "password": self._password},
+        }).encode()
         req = urlrequest.Request(
-            f"{self.base_url}/api/v1/auth/login",
+            f"{self.base_url}/api/graphql",
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urlrequest.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-        return data["token"]
+        try:
+            with urlrequest.urlopen(req, timeout=15) as resp:
+                body = json.loads(resp.read())
+            return (body.get("data") or {}).get("login", {}).get("accessToken") or ""
+        except Exception:
+            return ""
+
+    def _form_login(self) -> str:
+        """POST /login.html form (Simple Login mode). Returns JSESSIONID or ''."""
+        data = parse.urlencode({"user": self._username, "pass": self._password}).encode()
+        req = urlrequest.Request(
+            f"{self.base_url}/login.html",
+            data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+
+        class _NoRedirect(urlrequest.HTTPRedirectHandler):
+            def redirect_request(self, *a, **kw):
+                return None
+
+        try:
+            opener = urlrequest.build_opener(_NoRedirect())
+            with opener.open(req, timeout=15):
+                return ""
+        except urlerror.HTTPError as e:
+            if e.code in (302, 303):
+                raw = e.headers.get("Set-Cookie", "")
+                for part in raw.split(";"):
+                    part = part.strip()
+                    if part.startswith("JSESSIONID="):
+                        return part.split("=", 1)[1]
+            return ""
+
+    def _basic_header(self) -> str:
+        return "Basic " + base64.b64encode(f"{self._username}:{self._password}".encode()).decode()
+
+    def _set_mode(self, mode: str) -> None:
+        if mode != self._auth_mode:
+            self._auth_mode = mode
+            if self._on_change:
+                self._on_change(mode)
+
+    def _probe_auth(self) -> dict:
+        """Run the full auth probe chain, cache mode, notify on change."""
+        self._token = ""
+        self._session_cookie = ""
+        if not self._username:
+            self._set_mode(self.AUTH_BASIC)
+            return {}
+        self._token = self._gql_login()
+        if self._token:
+            self._set_mode(self.AUTH_JWT)
+            return {"Authorization": f"Bearer {self._token}"}
+        self._session_cookie = self._form_login()
+        if self._session_cookie:
+            self._set_mode(self.AUTH_SESSION)
+            return {"Cookie": f"JSESSIONID={self._session_cookie}"}
+        self._set_mode(self.AUTH_BASIC)
+        return {"Authorization": self._basic_header()}
+
+    def _login_for_mode(self) -> dict:
+        """Re-acquire credentials for the already-known auth mode."""
+        if self._auth_mode == self.AUTH_JWT:
+            self._token = self._gql_login()
+            if self._token:
+                return {"Authorization": f"Bearer {self._token}"}
+        elif self._auth_mode == self.AUTH_SESSION:
+            self._session_cookie = self._form_login()
+            if self._session_cookie:
+                return {"Cookie": f"JSESSIONID={self._session_cookie}"}
+        return {"Authorization": self._basic_header()}
 
     def _auth_header(self) -> dict:
         if not self._username:
             return {}
-        if not self._token:
-            self._token = self._authenticate()
-        return {"Authorization": f"Bearer {self._token}"}
+        if self._token:
+            return {"Authorization": f"Bearer {self._token}"}
+        if self._session_cookie:
+            return {"Cookie": f"JSESSIONID={self._session_cookie}"}
+        return {"Authorization": self._basic_header()}
 
     # ------------------------------------------------------------------
     # GraphQL transport
     # ------------------------------------------------------------------
 
-    def _gql(self, query: str, variables: dict | None = None) -> dict:
-        payload = json.dumps({"query": query, "variables": variables or {}}).encode()
-        headers = {"Content-Type": "application/json", **self._auth_header()}
-        req = urlrequest.Request(
-            f"{self.base_url}/api/graphql",
-            data=payload,
-            headers=headers,
-            method="POST",
-        )
+    def _raw_gql(self, query: str, variables: dict, extra_headers: dict) -> dict:
+        payload = json.dumps({"query": query, "variables": variables}).encode()
+        headers = {"Content-Type": "application/json", **extra_headers}
+        req = urlrequest.Request(f"{self.base_url}/api/graphql", data=payload, headers=headers, method="POST")
         try:
             with urlrequest.urlopen(req, timeout=30) as resp:
-                body = json.loads(resp.read())
+                return json.loads(resp.read())
         except urlerror.HTTPError as e:
-            if e.code == 401 and self._username:
-                # Token may have expired - refresh once
-                self._token = self._authenticate()
-                headers["Authorization"] = f"Bearer {self._token}"
-                req = urlrequest.Request(
-                    f"{self.base_url}/api/graphql",
-                    data=payload,
-                    headers=headers,
-                    method="POST",
-                )
-                with urlrequest.urlopen(req, timeout=30) as resp:
-                    body = json.loads(resp.read())
-            else:
-                raise RuntimeError(f"Suwayomi HTTP {e.code}") from e
+            raise RuntimeError(f"Suwayomi HTTP {e.code}") from e
+
+    def _gql(self, query: str, variables: dict | None = None) -> dict:
+        # Use saved mode if known; acquire fresh credentials for it on first call
+        if self._auth_mode and not self._token and not self._session_cookie:
+            auth = self._login_for_mode()
+        elif not self._auth_mode:
+            auth = self._probe_auth()
+        else:
+            auth = self._auth_header()
+
+        body = self._raw_gql(query, variables or {}, auth)
+
+        # Auth rejected — auth mode may have changed in Suwayomi; re-probe once
+        if _is_gql_unauthorized(body) and self._username:
+            self._auth_mode = ""
+            auth = self._probe_auth()
+            body = self._raw_gql(query, variables or {}, auth)
+
+        if _is_gql_unauthorized(body):
+            raise RuntimeError("Suwayomi: unauthorized — check credentials")
         if "errors" in body:
             raise RuntimeError(f"Suwayomi GQL error: {body['errors']}")
         return body["data"]

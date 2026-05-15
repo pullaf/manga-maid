@@ -99,6 +99,7 @@ from sync_config import (  # noqa: E402
     sanitize_sync_cron,
     is_sync_cron_disabled,
     get_suwayomi_client,
+    _suwayomi_client_cache,
 )
 from kavita import KavitaClient                        # noqa: E402
 import db as _db                                       # noqa: E402
@@ -263,7 +264,7 @@ def _run_disk_reconcile(job_id: int, payload: dict | None = None) -> None:
     scanned = 0
     for row in series_rows:
         series_path = row.get("path") or ""
-        if roots:
+        if roots and "" not in roots:
             if not any(series_path == rf or series_path.startswith(rf + "/") for rf in roots):
                 continue
         series_dir = os.path.join(MANGA_ROOT, series_path)
@@ -666,6 +667,9 @@ def get_all_series() -> list[dict]:
     roots = _root_folders()
     if not roots:
         return rows
+    if "" in roots:
+        # Empty string = MANGA_ROOT itself — no path restriction.
+        return rows
     out: list[dict] = []
     for row in rows:
         p = (row.get("path") or "").replace("\\", "/").strip()
@@ -1045,9 +1049,10 @@ async def save_settings_endpoint(
     file_permission_mask: str = Form("664"),
     webhook_url:       str = Form(""),
     webhook_platform:  str = Form("generic"),
-    suwayomi_url:      str = Form(""),
-    suwayomi_username: str = Form(""),
-    suwayomi_password: str = Form(""),
+    suwayomi_url:       str = Form(""),
+    suwayomi_username:  str = Form(""),
+    suwayomi_password:  str = Form(""),
+    telemetry_enabled:  str = Form("true"),
 ):
     try:
         root_folders = json.loads(root_folders_json)
@@ -1081,12 +1086,15 @@ async def save_settings_endpoint(
         "file_permission_mask": sanitize_file_permission_mask(file_permission_mask),
         "webhook_url":       webhook_url.strip(),
         "webhook_platform":  platform,
-        "suwayomi_url":      suwayomi_url.strip(),
-        "suwayomi_username": suwayomi_username.strip(),
-        "suwayomi_password": effective_pw,
+        "suwayomi_url":       suwayomi_url.strip(),
+        "suwayomi_username":  suwayomi_username.strip(),
+        "suwayomi_password":  effective_pw,
+        "suwayomi_auth_mode": "",  # force re-probe after credentials change
+        "telemetry_enabled":  telemetry_enabled == "true",
     })
-    # Bust Suwayomi cache so new URL takes effect immediately
+    # Bust Suwayomi caches so new URL/credentials take effect immediately
     _suwayomi_cache["ts"] = 0.0
+    _suwayomi_client_cache["key"] = None
     if sanitize_sync_cron(before.get("sync_cron")) != normalized_sync_cron:
         try:
             _write_runtime_crontab(normalized_sync_cron)

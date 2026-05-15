@@ -153,16 +153,29 @@ def save_settings(data: dict):
         conn.close()
 
 
+_suwayomi_client_cache: dict = {"key": None, "client": None}
+
+
 def get_suwayomi_client() -> "SuwayomiClient | None":
-    """Return a SuwayomiClient if ``suwayomi_url`` is set (including from ``SUWAYOMI_URL`` via ``load_settings``)."""
+    """Return a cached SuwayomiClient; recreates it only when settings change."""
     from sources.suwayomi import SuwayomiClient
 
     settings = load_settings()
     url = (settings.get("suwayomi_url") or "").strip().rstrip("/")
     if not url:
+        _suwayomi_client_cache["key"] = None
+        _suwayomi_client_cache["client"] = None
         return None
-    return SuwayomiClient(
-        url,
-        settings.get("suwayomi_username", ""),
-        settings.get("suwayomi_password", ""),
-    )
+    key = (url, settings.get("suwayomi_username", ""), settings.get("suwayomi_password", ""))
+    if _suwayomi_client_cache["key"] != key:
+        _suwayomi_client_cache["key"] = key
+
+        def _persist_auth_mode(mode: str) -> None:
+            save_settings({"suwayomi_auth_mode": mode})
+
+        _suwayomi_client_cache["client"] = SuwayomiClient(
+            *key,
+            auth_mode=settings.get("suwayomi_auth_mode", ""),
+            on_auth_mode_change=_persist_auth_mode,
+        )
+    return _suwayomi_client_cache["client"]
