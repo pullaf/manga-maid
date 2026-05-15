@@ -52,6 +52,10 @@ else
   echo "manga-sync starting — schedule: $SCHED | root: $MANGA_ROOT | data: $DATA_DIR | uid=${PUID} gid=${PGID}"
 fi
 
-$RUNAS uvicorn web.app:app --app-dir /app --host 0.0.0.0 --port 4649 --log-level warning &
+TRUSTED_PROXY_IPS="${TRUSTED_PROXY_IPS:-*}"
+$RUNAS uvicorn web.app:app --app-dir /app --host 0.0.0.0 --port 4649 \
+  --log-level warning \
+  --proxy-headers \
+  --forwarded-allow-ips "$TRUSTED_PROXY_IPS" &
 
 exec supercronic -inotify /tmp/crontab

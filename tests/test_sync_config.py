@@ -121,6 +121,33 @@ def test_is_sync_cron_disabled():
     assert not sync_config.is_sync_cron_disabled("0 */6 * * *")
 
 
+def test_scan_disk_series_empty_string_root_means_unrestricted(tmp_path, monkeypatch):
+    """Empty-string root folder (saved when user adds MANGA_ROOT itself) must scan everything."""
+    manga_root = tmp_path / "manga"
+    (manga_root / "Yotsuba").mkdir(parents=True)
+    (manga_root / "Yotsuba" / "ch.1.cbz").write_text("x")
+    _isolated_data_dir(tmp_path, monkeypatch)
+    conn = db.init_db(str(tmp_path / "data"))
+    # allowed_roots=[""] should behave as unrestricted
+    added = db.scan_disk_series(str(manga_root), conn, allowed_roots=[""])
+    assert added == 1, "empty-string root should discover series at any depth"
+    conn.close()
+
+
+def test_scan_disk_series_empty_string_alongside_real_root(tmp_path, monkeypatch):
+    """Empty string in allowed_roots makes the whole tree unrestricted."""
+    manga_root = tmp_path / "manga"
+    (manga_root / "en" / "Yotsuba").mkdir(parents=True)
+    (manga_root / "en" / "Yotsuba" / "ch.1.cbz").write_text("x")
+    (manga_root / "jp" / "OtherManga").mkdir(parents=True)
+    (manga_root / "jp" / "OtherManga" / "ch.1.cbz").write_text("x")
+    _isolated_data_dir(tmp_path, monkeypatch)
+    conn = db.init_db(str(tmp_path / "data"))
+    added = db.scan_disk_series(str(manga_root), conn, allowed_roots=["", "en"])
+    assert added == 2
+    conn.close()
+
+
 def test_save_drops_merge_volume_naming(tmp_path, monkeypatch):
     _isolated_data_dir(tmp_path, monkeypatch)
     sync_config.save_settings({"merge_volume_naming": "%3 ch.%5", "kavita_url": "http://x"})

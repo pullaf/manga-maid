@@ -1502,7 +1502,7 @@ def main(
     else:
         series_list = get_all_series(conn)
         series_list = [s for s in series_list if not s.get("ignored")]
-        if roots:
+        if roots and "" not in roots:
             filtered: list[dict] = []
             for s in series_list:
                 p = (s.get("path") or "").replace("\\", "/").strip()

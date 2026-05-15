@@ -568,7 +568,11 @@ def scan_disk_series(
     if not unrestricted:
         for rf in allowed_roots:
             s = str(rf or "").strip().strip("/")
-            if s and s not in roots:
+            if not s:
+                # Empty string means MANGA_ROOT itself — treat as unrestricted.
+                unrestricted = True
+                break
+            if s not in roots:
                 roots.append(s)
 
     def _is_allowed(rel_path: str) -> bool:

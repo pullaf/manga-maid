@@ -128,6 +128,7 @@ Then in **Settings → Suwayomi Integration** enter `http://suwayomi:4567`, hit 
 | `DATA_DIR` | `/data` | Base path for config and logs. |
 | `SYNC_LOG` | `$DATA_DIR/logs/sync.log` | Override log file location. |
 | `TELEMETRY` | `true` | Set to `false` to opt out of anonymous usage statistics. Can also be toggled in Settings → Privacy. |
+| `TRUSTED_PROXY_IPS` | `*` | Comma-separated IPs (or `*`) whose `X-Forwarded-*` headers are trusted. Relevant when running behind a reverse proxy. Default `*` is fine for home setups; tighten to your proxy's IP in exposed deployments. |
 
 > Sync schedule and all integration settings (Kavita, Suwayomi) are persisted in SQLite and edited from the web UI.
 
@@ -254,6 +255,44 @@ docker exec -it manga-sync python3 /app/manga-fix.py
 # Auto-fix everything without prompts
 docker exec manga-sync python3 /app/manga-fix.py --yes
 ```
+
+---
+
+## Reverse proxy (nginx / Caddy / Traefik)
+
+Manga Maid speaks plain HTTP/1.1. **Always proxy to `http://`, never `https://`.** Sending TLS traffic to the container directly returns `400 Invalid HTTP request received.` — that is uvicorn rejecting the TLS handshake, not an application error.
+
+### nginx
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name manga.example.com;
+
+    ssl_certificate     /etc/ssl/certs/manga.crt;
+    ssl_certificate_key /etc/ssl/private/manga.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:4649;   # ← http, not https
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Required for live job-log streaming (Server-Sent Events)
+        proxy_buffering      off;
+        proxy_read_timeout   3600s;
+        proxy_http_version   1.1;
+    }
+}
+```
+
+If nginx and the container are in **different Docker networks** (or nginx is on the host), replace `127.0.0.1:4649` with the container's IP or the Docker service name: `http://manga-sync:4649`.
+
+> **Common mistakes**
+> - `proxy_pass https://…` → TLS error (see above)
+> - Missing `proxy_buffering off` → sync log stream freezes mid-run
+> - Missing `proxy_read_timeout` → long syncs time out after 60 s
 
 ---
 
