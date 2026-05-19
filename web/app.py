@@ -914,7 +914,8 @@ async def series_details_page(request: Request, path: str):
             )
             _apply_volume_mapping(conn, row["id"], agg)
         except Exception:
-            pass
+            with contextlib.suppress(Exception):
+                conn.rollback()
 
     _db.scan_disk_files(os.path.join(MANGA_ROOT, row["path"]), row["id"], conn)
 

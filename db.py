@@ -172,7 +172,7 @@ def db_path(data_dir: str = None) -> str:
 def get_conn(data_dir: str = None) -> sqlite3.Connection:
     path = db_path(data_dir)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False)
+    conn = sqlite3.connect(path, check_same_thread=False, timeout=60)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -1628,7 +1628,7 @@ def get_active_job_for_series(conn: sqlite3.Connection, series_id: int) -> dict 
 
 def claim_next_queued_job(conn: sqlite3.Connection, queue_key: str = "default") -> dict | None:
     conn.execute("BEGIN IMMEDIATE")
-    row = conn.execute(
+    cur = conn.execute(
         """
         SELECT id FROM jobs
         WHERE status=? AND queue_key=?
@@ -1636,7 +1636,9 @@ def claim_next_queued_job(conn: sqlite3.Connection, queue_key: str = "default") 
         LIMIT 1
         """,
         (JOB_STATUS_QUEUED, queue_key),
-    ).fetchone()
+    )
+    row = cur.fetchone()
+    cur.close()
     if not row:
         conn.commit()
         return None
@@ -1649,7 +1651,9 @@ def claim_next_queued_job(conn: sqlite3.Connection, queue_key: str = "default") 
         """,
         (JOB_STATUS_RUNNING, now, row["id"], JOB_STATUS_QUEUED),
     )
-    changed = conn.execute("SELECT changes()").fetchone()[0]
+    cur = conn.execute("SELECT changes()")
+    changed = cur.fetchone()[0]
+    cur.close()
     conn.commit()
     if not changed:
         return None
