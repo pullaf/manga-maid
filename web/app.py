@@ -402,6 +402,8 @@ async def _jobs_worker_loop():
             # Keep worker alive even if an unexpected error occurs.
             print(f"[jobs-worker] unexpected error: {e}")
             _worker_current_job_id = None
+            with contextlib.suppress(Exception):
+                conn.rollback()
             await asyncio.sleep(1.0)
 
 

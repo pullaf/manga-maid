@@ -1662,10 +1662,12 @@ def claim_next_queued_job(conn: sqlite3.Connection, queue_key: str = "default") 
 
 def append_job_log(conn: sqlite3.Connection, job_id: int, line: str) -> int:
     ts = _now()
-    next_seq = conn.execute(
+    cur = conn.execute(
         "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM job_logs WHERE job_id=?",
         (job_id,),
-    ).fetchone()["next_seq"]
+    )
+    next_seq = cur.fetchone()["next_seq"]
+    cur.close()
     conn.execute(
         "INSERT INTO job_logs (job_id, seq, line, ts) VALUES (?, ?, ?, ?)",
         (job_id, next_seq, line, ts),
