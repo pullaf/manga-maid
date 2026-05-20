@@ -14,7 +14,7 @@ Two issues combined to silently break containers running as a non-root user
    owned by `root`. When uvicorn then started as the target user it couldn't
    write to the database, silently aborting startup.
 
-**v2.1.3 fixes all three:**
+**v2.1.4 fixes all three:**
 - Removed the `chown` on the manga root entirely — the write-permission check
   that follows it is sufficient
 - The schedule snippet now runs as the target user (`$RUNAS python3`), so the
@@ -27,6 +27,6 @@ Users running as root (default, no `PUID`/`PGID` set) are unaffected.
 
 ---
 
-**Docker image:** `ghcr.io/pullaf/manga-maid:2.1.3`
+**Docker image:** `ghcr.io/pullaf/manga-maid:2.1.4`
 
-**Full changelog:** https://github.com/pullaf/manga-maid/compare/v2.1.2...v2.1.3
+**Full changelog:** https://github.com/pullaf/manga-maid/compare/v2.1.2...v2.1.4
