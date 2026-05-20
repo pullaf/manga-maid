@@ -165,6 +165,7 @@ async def _lifespan(app: FastAPI):
     global _job_worker_task, _reconcile_scheduler_task
     _job_worker_task = asyncio.create_task(_jobs_worker_loop())
     _reconcile_scheduler_task = asyncio.create_task(_reconcile_scheduler_loop())
+    print(f"[startup] ready — http://0.0.0.0:4649  version={os.environ.get('APP_VERSION','local')}", flush=True)
 
     yield
 

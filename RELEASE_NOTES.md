@@ -1,21 +1,21 @@
 ## What's changed
 
-### Fix: startup hang + drive hammering on NAS/network mounts
+### Fix: no visible startup logs
 
-v2.1.0 introduced a regression where the disk reconcile ran in a thread-pool
-executor with no throttling, hammering network or slow mounts and blocking
-the web server from starting (lifespan never yielded if the mount was slow).
+`docker logs` showed only supercronic crontab messages with nothing from
+the web server, making it impossible to tell whether the app had started
+successfully or was still initialising.
 
-**v2.1.1 fixes:**
-- Startup no longer scans the library — DB migrations only. The web server is
-  ready to accept connections immediately; the reconcile job runs moments later
-  as a background task
-- Reconcile now sleeps 20ms between each series scan to avoid saturating
-  network mounts. Set `RECONCILE_SERIES_SLEEP=0` to disable, or tune the value
-  (in seconds) for your setup
+**v2.1.2 adds:**
+- A `[startup] ready` line printed once the web server is fully up and
+  accepting connections — no more guessing whether it started
+
+If you upgraded to v2.1.1 and everything is working, this is a quality-of-life
+fix only. If you are still seeing no UI after upgrading to v2.1.1, the ready
+line will confirm whether the server started or is still initialising.
 
 ---
 
-**Docker image:** `ghcr.io/pullaf/manga-maid:2.1.1`
+**Docker image:** `ghcr.io/pullaf/manga-maid:2.1.2`
 
-**Full changelog:** https://github.com/pullaf/manga-maid/compare/v2.1.0...v2.1.1
+**Full changelog:** https://github.com/pullaf/manga-maid/compare/v2.1.1...v2.1.2
