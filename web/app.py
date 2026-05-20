@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from urllib import parse, request as urlrequest
 
 from urllib.parse import quote_plus
@@ -212,12 +213,14 @@ def _get_conn() -> "_db.sqlite3.Connection":
 
 
 def _startup_init() -> None:
-    """Blocking startup: run DB migrations + initial disk scan in executor thread."""
+    """Blocking startup: apply DB migrations and migrate legacy JSON configs.
+
+    Intentionally does NOT scan disk — that runs in the reconcile job so the
+    web server is ready to accept connections before any filesystem I/O starts.
+    """
     conn = _db.init_db(DATA_DIR)
     try:
         _db.migrate_json_configs(MANGA_ROOT, conn)
-        roots = [rf for rf in (load_settings().get("root_folders") or []) if rf is not None]
-        _db.scan_disk_series(MANGA_ROOT, conn, allowed_roots=roots)
     finally:
         conn.close()
 
@@ -271,6 +274,9 @@ def _run_disk_reconcile(job_id: int, payload: dict | None = None) -> None:
         added = _db.scan_disk_series(MANGA_ROOT, conn, allowed_roots=roots)
         _db.append_job_log(conn, job_id, f"[reconcile] discovered {added} new series")
         series_rows = _db.get_all_series(conn)
+        # Throttle between series to avoid hammering network or slow mounts.
+        # Defaults to 20ms; set RECONCILE_SERIES_SLEEP=0 to disable.
+        _sleep = float(os.environ.get("RECONCILE_SERIES_SLEEP", "0.02"))
         scanned = 0
         for row in series_rows:
             series_path = row.get("path") or ""
@@ -280,6 +286,8 @@ def _run_disk_reconcile(job_id: int, payload: dict | None = None) -> None:
             series_dir = os.path.join(MANGA_ROOT, series_path)
             _db.scan_disk_files(series_dir, row["id"], conn)
             scanned += 1
+            if _sleep:
+                time.sleep(_sleep)
 
         _db.append_job_log(conn, job_id, f"[reconcile] scanned {scanned} tracked series")
         _db.append_job_log(conn, job_id, "[reconcile] done")
