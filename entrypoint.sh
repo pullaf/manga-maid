@@ -37,18 +37,13 @@ expr = sanitize_sync_cron(load_settings().get("sync_cron"))
 print("__disabled__" if is_sync_cron_disabled(expr) else expr)
 PY
 )"
+
+CRONTAB_PATH="${DATA_DIR}/crontab"
 if [ "$SCHED" = "__disabled__" ]; then
-  echo "# Auto-sync disabled — enqueue sync from the Jobs page." > /tmp/crontab
-else
-  echo "$SCHED $RUNAS python3 /app/cron_enqueue_sync.py" > /tmp/crontab
-fi
-if [ "$PUID" != "0" ] || [ "$PGID" != "0" ]; then
-    chown "${PUID}:${PGID}" /tmp/crontab 2>/dev/null || true
-fi
-chmod 664 /tmp/crontab 2>/dev/null || true
-if [ "$SCHED" = "__disabled__" ]; then
+  echo "# Auto-sync disabled — enqueue sync from the Jobs page." > "$CRONTAB_PATH"
   echo "manga-maid sync schedule: disabled (manual only)"
 else
+  echo "$SCHED $RUNAS python3 /app/cron_enqueue_sync.py" > "$CRONTAB_PATH"
   echo "manga-maid sync schedule: $SCHED"
 fi
 
@@ -58,4 +53,4 @@ $RUNAS uvicorn web.app:app --app-dir /app --host 0.0.0.0 --port 4649 \
   --proxy-headers \
   --forwarded-allow-ips "$TRUSTED_PROXY_IPS" &
 
-exec supercronic -inotify /tmp/crontab
+exec supercronic -inotify "$CRONTAB_PATH"
