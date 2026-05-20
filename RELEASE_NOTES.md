@@ -14,11 +14,14 @@ Two issues combined to silently break containers running as a non-root user
    owned by `root`. When uvicorn then started as the target user it couldn't
    write to the database, silently aborting startup.
 
-**v2.1.3 fixes both:**
+**v2.1.3 fixes all three:**
 - Removed the `chown` on the manga root entirely — the write-permission check
   that follows it is sufficient
 - The schedule snippet now runs as the target user (`$RUNAS python3`), so the
   database is created with the correct ownership from the start
+- The crontab file is now written to `DATA_DIR` instead of `/tmp` — on
+  container runtimes that run the entrypoint as the target user (TrueNAS SCALE,
+  k8s with `securityContext.runAsUser`), `/tmp` may not be writable
 
 Users running as root (default, no `PUID`/`PGID` set) are unaffected.
 
