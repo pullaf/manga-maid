@@ -87,7 +87,14 @@ jobs:
           VERSION="${{ github.ref_name }}"
           PRERELEASE_FLAG=""
           [[ "$VERSION" == *-* ]] && PRERELEASE_FLAG="--prerelease"
-          gh release create "$VERSION" \
-            --title "$VERSION" \
-            --generate-notes \
-            $PRERELEASE_FLAG
+          if [ -f RELEASE_NOTES.md ]; then
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --notes-file RELEASE_NOTES.md \
+              $PRERELEASE_FLAG
+          else
+            gh release create "$VERSION" \
+              --title "$VERSION" \
+              --generate-notes \
+              $PRERELEASE_FLAG
+          fi
