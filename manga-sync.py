@@ -1310,6 +1310,8 @@ def _sync_one_series(
     file_format   = settings.get("file_format", "cbz")
     ch_naming     = settings.get("chapter_naming", "%3 ch.%5")
     downloaded    = 0
+    _COMMIT_BATCH = int(os.environ.get("SYNC_COMMIT_BATCH", "50"))
+    _uncommitted  = 0
 
     for ch_row in to_download:
         # Re-check in case scan_disk_files already found it
@@ -1366,8 +1368,9 @@ def _sync_one_series(
                     else:
                         rel = os.path.relpath(fpath, MANGA_ROOT)
                         apply_file_permission_mask(fpath, file_permission_mask)
-                        mark_chapter_downloaded(conn, ch_row["id"], rel, os.path.getsize(fpath))
+                        mark_chapter_downloaded(conn, ch_row["id"], rel, os.path.getsize(fpath), commit=False)
                         downloaded += 1
+                        _uncommitted += 1
                 else:
                     _log(f"[{name}] ch.{ch_row['chapter_num']}: file not found after download")
             else:
@@ -1406,15 +1409,20 @@ def _sync_one_series(
                                     fpath = desired_path
                         rel = os.path.relpath(fpath, MANGA_ROOT)
                         apply_file_permission_mask(fpath, file_permission_mask)
-                        mark_chapter_downloaded(conn, ch_row["id"], rel, os.path.getsize(fpath))
+                        mark_chapter_downloaded(conn, ch_row["id"], rel, os.path.getsize(fpath), commit=False)
                         downloaded += 1
+                        _uncommitted += 1
                 else:
                     _log(f"[{name}] ch.{ch_row['chapter_num']}: file not found after download")
             else:
                 _log(f"[{name}] ch.{ch_row['chapter_num']}: failed")
 
+        if _uncommitted >= _COMMIT_BATCH:
+            conn.commit()
+            _uncommitted = 0
         time.sleep(delay)
 
+    conn.commit()  # flush any remaining uncommitted chapter marks
     # Filename cleanup (skip series excluded from Fix Files / manual filenames)
     if not series_row.get("exclude_from_fix"):
         _run_fix_pass(series_dir)
@@ -1479,6 +1487,7 @@ def main(
     notify: bool = False,
 ):
     _rotate_log()
+    _job_start = time.monotonic()
 
     conn = init_db(DATA_DIR)
     migrated = migrate_json_configs(MANGA_ROOT, conn)
@@ -1715,6 +1724,11 @@ def main(
         segments.append(f"feed skipped: {', '.join(parts)}")
     msg = "[sync] completed - " + "; ".join(segments)
     _log(msg)
+    try:
+        import db as _db_mod
+        _db_mod.record_job_timing(conn, "sync", time.monotonic() - _job_start)
+    except Exception:
+        pass
     conn.close()
 
 

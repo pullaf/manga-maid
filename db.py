@@ -402,6 +402,19 @@ def get_usage(conn: sqlite3.Connection) -> dict:
         return {}
 
 
+def record_job_timing(conn: sqlite3.Connection, job_type: str, duration_s: float) -> None:
+    """Append a job timing entry; keep rolling 20 entries per type total."""
+    usage = get_usage(conn)
+    timings: list = usage.get("job_timings") or []
+    timings.append({"type": job_type, "duration_s": round(duration_s, 1), "ts": _now()})
+    timings = timings[-20:]
+    conn.execute(
+        "UPDATE app_config SET usage_json=? WHERE id=1",
+        (json.dumps({**usage, "job_timings": timings}),),
+    )
+    conn.commit()
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -1197,12 +1210,14 @@ def get_chapters_to_download(
 
 
 def mark_chapter_downloaded(
-    conn: sqlite3.Connection, chapter_id: int, path: str, file_size: int
+    conn: sqlite3.Connection, chapter_id: int, path: str, file_size: int,
+    commit: bool = True,
 ):
     conn.execute("""
         UPDATE chapters SET path=?, file_size=?, status='downloaded' WHERE id=?
     """, (path, file_size, chapter_id))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def mark_chapter_comicinfo(conn: sqlite3.Connection, chapter_id: int):

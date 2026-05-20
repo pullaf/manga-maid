@@ -150,7 +150,7 @@ async def _lifespan(app: FastAPI):
         yield
         return
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _get_conn)
+    await loop.run_in_executor(None, _startup_init)
     cron_expr = sanitize_sync_cron(load_settings().get("sync_cron"))
     try:
         await loop.run_in_executor(None, _write_runtime_crontab, cron_expr)
@@ -189,7 +189,6 @@ templates.env.globals["APP_VERSION"] = os.environ.get("APP_VERSION", "local")
 _sync_running = False
 _cover_cache: dict[str, bytes] = {}
 _COVER_CACHE_MAX = 500
-_conn = None  # shared SQLite connection (WAL mode, safe for single-writer)
 _job_worker_task: asyncio.Task | None = None
 _reconcile_scheduler_task: asyncio.Task | None = None
 _job_worker_stop = asyncio.Event()
@@ -207,14 +206,20 @@ RUNTIME_CRONTAB_PATH = os.environ.get("RUNTIME_CRONTAB_PATH", "/tmp/crontab")
 RECONCILE_INTERVAL_SECONDS = int(os.environ.get("RECONCILE_INTERVAL_SECONDS", "3600"))
 
 
-def _get_conn():
-    global _conn
-    if _conn is None:
-        _conn = _db.init_db(DATA_DIR)
-        _db.migrate_json_configs(MANGA_ROOT, _conn)
+def _get_conn() -> "_db.sqlite3.Connection":
+    """Return a fresh per-call SQLite connection. Caller owns the lifecycle."""
+    return _db.get_conn(DATA_DIR)
+
+
+def _startup_init() -> None:
+    """Blocking startup: run DB migrations + initial disk scan in executor thread."""
+    conn = _db.init_db(DATA_DIR)
+    try:
+        _db.migrate_json_configs(MANGA_ROOT, conn)
         roots = [rf for rf in (load_settings().get("root_folders") or []) if rf is not None]
-        _db.scan_disk_series(MANGA_ROOT, _conn, allowed_roots=roots)
-    return _conn
+        _db.scan_disk_series(MANGA_ROOT, conn, allowed_roots=roots)
+    finally:
+        conn.close()
 
 
 def _write_runtime_crontab(cron_expr: str) -> None:
@@ -234,45 +239,52 @@ def _enqueue_reconcile_job(reason: str) -> int | None:
     if not roots:
         return None
     conn = _get_conn()
-    active = _db.get_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
-    for j in active:
-        if j.get("job_type") == JOB_TYPE_RECONCILE_DISK:
-            return None
-    return _db.enqueue_job(
-        conn,
-        job_type=JOB_TYPE_RECONCILE_DISK,
-        queue_key=JOB_QUEUE_KEY,
-        payload={"reason": reason},
-    )
+    try:
+        active = _db.get_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
+        for j in active:
+            if j.get("job_type") == JOB_TYPE_RECONCILE_DISK:
+                return None
+        return _db.enqueue_job(
+            conn,
+            job_type=JOB_TYPE_RECONCILE_DISK,
+            queue_key=JOB_QUEUE_KEY,
+            payload={"reason": reason},
+        )
+    finally:
+        conn.close()
 
 
 def _run_disk_reconcile(job_id: int, payload: dict | None = None) -> None:
+    """Blocking disk scan — intended to run in a thread-pool executor."""
     conn = _get_conn()
-    payload = payload or {}
-    reason = str(payload.get("reason") or "manual").strip()
-    _db.append_job_log(conn, job_id, f"[reconcile] started (reason: {reason})")
+    try:
+        payload = payload or {}
+        reason = str(payload.get("reason") or "manual").strip()
+        _db.append_job_log(conn, job_id, f"[reconcile] started (reason: {reason})")
 
-    roots = [rf for rf in (load_settings().get("root_folders") or []) if rf is not None]
-    if not roots:
-        _db.append_job_log(conn, job_id, "[reconcile] skipped - no root folders configured")
+        roots = [rf for rf in (load_settings().get("root_folders") or []) if rf is not None]
+        if not roots:
+            _db.append_job_log(conn, job_id, "[reconcile] skipped - no root folders configured")
+            _db.append_job_log(conn, job_id, "[reconcile] done")
+            return
+
+        added = _db.scan_disk_series(MANGA_ROOT, conn, allowed_roots=roots)
+        _db.append_job_log(conn, job_id, f"[reconcile] discovered {added} new series")
+        series_rows = _db.get_all_series(conn)
+        scanned = 0
+        for row in series_rows:
+            series_path = row.get("path") or ""
+            if roots and "" not in roots:
+                if not any(series_path == rf or series_path.startswith(rf + "/") for rf in roots):
+                    continue
+            series_dir = os.path.join(MANGA_ROOT, series_path)
+            _db.scan_disk_files(series_dir, row["id"], conn)
+            scanned += 1
+
+        _db.append_job_log(conn, job_id, f"[reconcile] scanned {scanned} tracked series")
         _db.append_job_log(conn, job_id, "[reconcile] done")
-        return
-
-    added = _db.scan_disk_series(MANGA_ROOT, conn, allowed_roots=roots)
-    _db.append_job_log(conn, job_id, f"[reconcile] discovered {added} new series")
-    series_rows = _db.get_all_series(conn)
-    scanned = 0
-    for row in series_rows:
-        series_path = row.get("path") or ""
-        if roots and "" not in roots:
-            if not any(series_path == rf or series_path.startswith(rf + "/") for rf in roots):
-                continue
-        series_dir = os.path.join(MANGA_ROOT, series_path)
-        _db.scan_disk_files(series_dir, row["id"], conn)
-        scanned += 1
-
-    _db.append_job_log(conn, job_id, f"[reconcile] scanned {scanned} tracked series")
-    _db.append_job_log(conn, job_id, "[reconcile] done")
+    finally:
+        conn.close()
 
 
 async def _reconcile_scheduler_loop() -> None:
@@ -314,24 +326,25 @@ def _job_payload_argv(job: dict) -> list[str] | None:
     return None
 
 
-async def _run_job(job: dict) -> None:
+async def _run_job(worker_conn, job: dict) -> None:
     global _worker_current_proc
-    conn = _get_conn()
     job_id = job["id"]
     if job.get("job_type") == JOB_TYPE_RECONCILE_DISK:
+        loop = asyncio.get_event_loop()
+        _payload = job.get("payload") or {}
         try:
-            _run_disk_reconcile(job_id, job.get("payload") or {})
-            _db.finish_job(conn, job_id, success=True, exit_code=0)
+            await loop.run_in_executor(None, lambda: _run_disk_reconcile(job_id, _payload))
+            _db.finish_job(worker_conn, job_id, success=True, exit_code=0)
         except Exception as e:
-            _db.append_job_log(conn, job_id, f"[reconcile] failed: {e}")
-            _db.finish_job(conn, job_id, success=False, exit_code=1, error_summary=str(e))
+            _db.append_job_log(worker_conn, job_id, f"[reconcile] failed: {e}")
+            _db.finish_job(worker_conn, job_id, success=False, exit_code=1, error_summary=str(e))
         return
     argv = _job_payload_argv(job)
     if argv is None:
-        _db.append_job_log(conn, job_id, "[job] unsupported or invalid payload")
-        _db.finish_job(conn, job_id, success=False, exit_code=2, error_summary="invalid payload")
+        _db.append_job_log(worker_conn, job_id, "[job] unsupported or invalid payload")
+        _db.finish_job(worker_conn, job_id, success=False, exit_code=2, error_summary="invalid payload")
         return
-    _db.append_job_log(conn, job_id, f"[job] started: {_job_display_name(job)}")
+    _db.append_job_log(worker_conn, job_id, f"[job] started: {_job_display_name(job)}")
     try:
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -342,15 +355,15 @@ async def _run_job(job: dict) -> None:
             env={**os.environ, "MANGA_ROOT": MANGA_ROOT, "DATA_DIR": DATA_DIR},
         )
     except Exception as e:
-        _db.append_job_log(conn, job_id, f"[job] spawn failed: {e}")
-        _db.finish_job(conn, job_id, success=False, exit_code=1, error_summary=str(e))
+        _db.append_job_log(worker_conn, job_id, f"[job] spawn failed: {e}")
+        _db.finish_job(worker_conn, job_id, success=False, exit_code=1, error_summary=str(e))
         return
     _worker_current_proc = proc
 
     async for line in proc.stdout:
         text = line.decode(errors="replace").rstrip()
         if text:
-            _db.append_job_log(conn, job_id, text)
+            _db.append_job_log(worker_conn, job_id, text)
         if job_id in _cancel_requested_job_ids and proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 proc.terminate()
@@ -360,17 +373,17 @@ async def _run_job(job: dict) -> None:
     was_cancelled = job_id in _cancel_requested_job_ids
     if was_cancelled:
         _cancel_requested_job_ids.discard(job_id)
-        _db.append_job_log(conn, job_id, "[job] cancelled")
-        _db.mark_job_cancelled(conn, job_id, reason="cancelled by user")
+        _db.append_job_log(worker_conn, job_id, "[job] cancelled")
+        _db.mark_job_cancelled(worker_conn, job_id, reason="cancelled by user")
         return
     ok = proc.returncode == 0
     if ok:
-        _db.append_job_log(conn, job_id, "[job] done")
-        _db.finish_job(conn, job_id, success=True, exit_code=proc.returncode)
+        _db.append_job_log(worker_conn, job_id, "[job] done")
+        _db.finish_job(worker_conn, job_id, success=True, exit_code=proc.returncode)
     else:
-        _db.append_job_log(conn, job_id, f"[job] failed (exit {proc.returncode})")
+        _db.append_job_log(worker_conn, job_id, f"[job] failed (exit {proc.returncode})")
         _db.finish_job(
-            conn,
+            worker_conn,
             job_id,
             success=False,
             exit_code=proc.returncode,
@@ -380,31 +393,34 @@ async def _run_job(job: dict) -> None:
 
 async def _jobs_worker_loop():
     global _worker_current_job_id
-    conn = _get_conn()
-    recovered = _db.requeue_running_jobs(conn, queue_key=JOB_QUEUE_KEY)
-    for jid in recovered:
-        with contextlib.suppress(Exception):
-            _db.append_job_log(conn, jid, "[job] recovered after app restart; re-queued")
-    _db.cleanup_old_jobs(conn, keep_days=JOB_RETENTION_DAYS)
-    while not _job_worker_stop.is_set():
-        try:
-            job = _db.claim_next_queued_job(conn, queue_key=JOB_QUEUE_KEY)
-            if not job:
-                await asyncio.sleep(0.4)
-                continue
-            _worker_current_job_id = int(job["id"])
-            await _run_job(job)
-            _worker_current_job_id = None
-            _db.cleanup_old_jobs(conn, keep_days=JOB_RETENTION_DAYS)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            # Keep worker alive even if an unexpected error occurs.
-            print(f"[jobs-worker] unexpected error: {e}")
-            _worker_current_job_id = None
+    worker_conn = _get_conn()
+    try:
+        recovered = _db.requeue_running_jobs(worker_conn, queue_key=JOB_QUEUE_KEY)
+        for jid in recovered:
             with contextlib.suppress(Exception):
-                conn.rollback()
-            await asyncio.sleep(1.0)
+                _db.append_job_log(worker_conn, jid, "[job] recovered after app restart; re-queued")
+        _db.cleanup_old_jobs(worker_conn, keep_days=JOB_RETENTION_DAYS)
+        while not _job_worker_stop.is_set():
+            try:
+                job = _db.claim_next_queued_job(worker_conn, queue_key=JOB_QUEUE_KEY)
+                if not job:
+                    await asyncio.sleep(0.4)
+                    continue
+                _worker_current_job_id = int(job["id"])
+                await _run_job(worker_conn, job)
+                _worker_current_job_id = None
+                _db.cleanup_old_jobs(worker_conn, keep_days=JOB_RETENTION_DAYS)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # Keep worker alive even if an unexpected error occurs.
+                print(f"[jobs-worker] unexpected error: {e}")
+                _worker_current_job_id = None
+                with contextlib.suppress(Exception):
+                    worker_conn.rollback()
+                await asyncio.sleep(1.0)
+    finally:
+        worker_conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +446,7 @@ def _apply_volume_mapping(conn, series_id: int, agg: dict) -> None:
 
 
 def _scan_settings_naming_issues(series_path: str | None = None) -> list[tuple[str, str, str]]:
+    """Blocking scan — safe to call from executor threads."""
     settings = load_settings()
     chapter_tpl = settings.get("chapter_naming", "%3 ch.%5")
     volume_tpl = settings.get("volume_naming", "%3 vol.%4")
@@ -553,6 +570,7 @@ def _scan_settings_naming_issues(series_path: str | None = None) -> list[tuple[s
             findings.append((old_path, "settings_volume_naming", new_name))
 
     findings.sort(key=lambda x: x[0].lower())
+    conn.close()
     return findings
 
 
@@ -1260,7 +1278,8 @@ async def fix_page(request: Request, series: str = ""):
         t for t in _fix.scan(MANGA_ROOT)
         if not _is_under_excluded_series(_rel_manga_path(t[0]), excluded)
     ]
-    issues.extend(_scan_settings_naming_issues())
+    loop = asyncio.get_event_loop()
+    issues.extend(await loop.run_in_executor(None, _scan_settings_naming_issues))
     dup_groups = [
         g for g in _fix.scan_duplicates(MANGA_ROOT)
         if not _is_under_excluded_series(_rel_manga_path(g["keep_path"]), excluded)
@@ -1852,7 +1871,8 @@ async def ignore_series(path: str):
     if not _db.get_series_by_path(conn, path):
         raise HTTPException(404, "Series not found")
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, lambda: _db.set_series_ignored(conn, path, True))
+    _p = path
+    await loop.run_in_executor(None, lambda: _db.set_series_ignored(_get_conn(), _p, True))
     _db.increment_usage(conn, "series_ignores")
     return JSONResponse({"ok": True})
 
@@ -1863,7 +1883,8 @@ async def unignore_series(path: str):
     if not _db.get_series_by_path(conn, path):
         raise HTTPException(404, "Series not found")
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, lambda: _db.set_series_ignored(conn, path, False))
+    _p = path
+    await loop.run_in_executor(None, lambda: _db.set_series_ignored(_get_conn(), _p, False))
     return JSONResponse({"ok": True})
 
 
@@ -1874,7 +1895,8 @@ async def unlink_series_from_source(path: str):
     if not _db.get_series_by_path(conn, path):
         raise HTTPException(404, "Series not found")
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, lambda: _db.unlink_series(conn, path))
+    _p = path
+    await loop.run_in_executor(None, lambda: _db.unlink_series(_get_conn(), _p))
     _db.increment_usage(conn, "source_unlinks")
     return HTMLResponse("")
 
@@ -1888,7 +1910,8 @@ async def delete_series_with_folder(path: str):
     series_dir = os.path.join(MANGA_ROOT, path)
     _require_under_manga_root(series_dir)
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, lambda: _db.delete_series(conn, path))
+    _p = path
+    await loop.run_in_executor(None, lambda: _db.delete_series(_get_conn(), _p))
     if os.path.isdir(series_dir):
         await loop.run_in_executor(None, lambda: shutil.rmtree(series_dir))
     return JSONResponse({"ok": True})
@@ -2076,13 +2099,13 @@ async def update_series(
     excl = 1 if exclude_from_fix == "true" else 0
     merge_ov = _parse_merge_volumes_override(merge_volumes_override)
 
-    conn = _get_conn()
     loop = asyncio.get_event_loop()
     sync_conf: int | None = 1 if mark_sync_configured == "true" else None
+    _old_path, _new_rel = path, new_rel
     await loop.run_in_executor(None, lambda: _db.update_series(
-        conn,
-        old_path=path,
-        new_path=new_rel,
+        _get_conn(),
+        old_path=_old_path,
+        new_path=_new_rel,
         title=title,
         language=language,
         start_chapter=start_f,
@@ -2804,7 +2827,9 @@ async def apply_all_series_fixes(series_path: str = Form(...)):
     seen_paths: set[str] = set()
 
     findings = list(_fix.scan(series_dir))
-    findings.extend(_scan_settings_naming_issues(series_path=series_path))
+    loop = asyncio.get_event_loop()
+    _sp = series_path
+    findings.extend(await loop.run_in_executor(None, lambda: _scan_settings_naming_issues(series_path=_sp)))
     findings.sort(key=lambda x: x[0].lower())
     for old_path, issue_name, new_name in findings:
         if old_path in seen_paths:

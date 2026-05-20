@@ -43,7 +43,6 @@ def web_client(tmp_path, monkeypatch):
     monkeypatch.setattr(appmod, "MANGA_ROOT", str(manga))
     monkeypatch.setattr(appmod, "_MANGA_ROOT_REAL", os.path.realpath(str(manga)))
     monkeypatch.setattr(appmod, "DATA_DIR", str(data))
-    monkeypatch.setattr(appmod, "_conn", None)
 
     from fastapi.testclient import TestClient
 

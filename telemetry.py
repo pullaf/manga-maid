@@ -31,6 +31,15 @@ def _instance_id() -> str:
     return uid
 
 
+def _percentile(values: list, p: float):
+    if not values:
+        return None
+    s = sorted(values)
+    k = (len(s) - 1) * p / 100
+    lo, hi = int(k), min(int(k) + 1, len(s) - 1)
+    return round(s[lo] + (s[hi] - s[lo]) * (k - lo), 1)
+
+
 def _bucket(n: int) -> str:
     if n <= 5:   return "1-5"
     if n <= 20:  return "6-20"
@@ -112,6 +121,15 @@ def collect_and_send() -> None:
         finally:
             conn.close()
 
+        timings = usage.get("job_timings") or []
+        by_type: dict = {}
+        for t in timings:
+            by_type.setdefault(t["type"], []).append(t["duration_s"])
+        timing_stats = {
+            jtype: {"p50": _percentile(durs, 50), "p95": _percentile(durs, 95), "n": len(durs)}
+            for jtype, durs in by_type.items()
+        }
+
         payload = json.dumps({
             "instance_id": _instance_id(),
             "version":     APP_VERSION,
@@ -124,6 +142,7 @@ def collect_and_send() -> None:
             # new:
             "stats":       stats,
             "usage":       usage,
+            "job_timings": timing_stats,
         }).encode()
 
         req = urlrequest.Request(
