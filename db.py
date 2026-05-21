@@ -267,6 +267,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE app_config ADD COLUMN usage_json TEXT NOT NULL DEFAULT '{}'"
         )
 
+    vol_cols = {row[1] for row in conn.execute("PRAGMA table_info(volumes)")}
+    if "kavita_cover_url" not in vol_cols:
+        conn.execute("ALTER TABLE volumes ADD COLUMN kavita_cover_url TEXT")
+
 
 def _migrate_preferred_groups_json(conn: sqlite3.Connection) -> None:
     """One-time: [preferred_group] JSON for rows that only had a single string."""

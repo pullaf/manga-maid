@@ -1003,7 +1003,14 @@ def _missing_mdx_cover_is_notable(vol_key: str) -> bool:
     return math.isfinite(n) and n >= 1
 
 
-def _kavita_set_covers(client: KavitaClient, series_dir: str, manga_id: str):
+def _kavita_set_covers(
+    client: KavitaClient,
+    series_dir: str,
+    manga_id: str,
+    conn=None,
+    series_id: int | None = None,
+    force: bool = False,
+):
     series_name = os.path.basename(series_dir)
     try:
         covers = _volume_cover_urls_by_canonical_key(
@@ -1027,9 +1034,22 @@ def _kavita_set_covers(client: KavitaClient, series_dir: str, manga_id: str):
                         f"{series_name} vol.{vol_num}"
                     )
                 continue
+            if not force and conn is not None and series_id is not None:
+                try:
+                    local_vol = get_volume(conn, series_id, float(vol_raw))
+                    if local_vol and local_vol.get("kavita_cover_url") == url:
+                        continue
+                except Exception:
+                    pass
             try:
                 client.set_volume_cover(vol["id"], url)
                 _log(f"[kavita] cover set: {series_name} vol.{vol_num}")
+                if conn is not None and series_id is not None:
+                    try:
+                        upsert_volume(conn, series_id, float(vol_raw), kavita_cover_url=url)
+                        conn.commit()
+                    except Exception:
+                        pass
             except Exception as e:
                 _log(f"[kavita] cover failed vol.{vol_num}: {e}")
     except Exception as e:
@@ -1301,7 +1321,8 @@ def _sync_one_series(
             mdx_id = _mdx_id_for_covers(series_row)
             if mdx_id:
                 try:
-                    _kavita_set_covers(kavita_client, series_dir, mdx_id)
+                    _kavita_set_covers(kavita_client, series_dir, mdx_id,
+                                       conn=conn, series_id=series_id)
                 except Exception as e:
                     _log(f"[{name}] kavita covers: {e}")
         return False
@@ -1443,7 +1464,8 @@ def _sync_one_series(
     if kavita_client and settings.get("auto_covers"):
         mdx_id_for_covers = _mdx_id_for_covers(series_row)
         if mdx_id_for_covers:
-            _kavita_set_covers(kavita_client, series_dir, mdx_id_for_covers)
+            _kavita_set_covers(kavita_client, series_dir, mdx_id_for_covers,
+                               conn=conn, series_id=series_id)
 
     update_source_sync_time(conn, series_id, source_name)
     _log(f"[{name}] done - {downloaded}/{len(to_download)} downloaded")
@@ -1525,7 +1547,8 @@ def main(
             if mdx_id and kavita_client:
                 _kavita_set_covers(kavita_client,
                                    os.path.join(MANGA_ROOT, s["path"]),
-                                   mdx_id)
+                                   mdx_id,
+                                   conn=conn, series_id=s["id"], force=True)
         conn.close()
         return
 
