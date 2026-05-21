@@ -213,6 +213,36 @@ def _get_conn() -> "_db.sqlite3.Connection":
     return _db.get_conn(DATA_DIR)
 
 
+def _live_active_jobs(conn, *, queue_key: str | None = None) -> list[dict]:
+    """Return truly-active jobs, auto-cancelling any orphaned 'running' entries.
+
+    A job is orphaned when it is marked running but the worker has already
+    moved past it (crash before finish_job). Without this, a ghost job would
+    block every subsequent enqueue of the same type indefinitely.
+    """
+    jobs = _db.get_active_jobs(conn, queue_key=queue_key)
+    live = []
+    for j in jobs:
+        if j.get("status") == "running" and _worker_current_job_id != j.get("id"):
+            with contextlib.suppress(Exception):
+                _db.mark_job_cancelled(conn, j["id"], reason="auto-reaped (orphaned)")
+        else:
+            live.append(j)
+    return live
+
+
+def _live_active_job_for_series(conn, series_id: int) -> dict | None:
+    """Like get_active_job_for_series but auto-cancels orphaned running jobs."""
+    job = _db.get_active_job_for_series(conn, series_id)
+    if not job:
+        return None
+    if job.get("status") == "running" and _worker_current_job_id != job.get("id"):
+        with contextlib.suppress(Exception):
+            _db.mark_job_cancelled(conn, job["id"], reason="auto-reaped (orphaned)")
+        return None
+    return job
+
+
 def _startup_init() -> None:
     """Blocking startup: apply DB migrations and migrate legacy JSON configs.
 
@@ -244,7 +274,7 @@ def _enqueue_reconcile_job(reason: str) -> int | None:
         return None
     conn = _get_conn()
     try:
-        active = _db.get_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
+        active = _live_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
         for j in active:
             if j.get("job_type") == JOB_TYPE_RECONCILE_DISK:
                 return None
@@ -372,7 +402,8 @@ async def _run_job(worker_conn, job: dict) -> None:
     async for line in proc.stdout:
         text = line.decode(errors="replace").rstrip()
         if text:
-            _db.append_job_log(worker_conn, job_id, text)
+            with contextlib.suppress(Exception):
+                _db.append_job_log(worker_conn, job_id, text)
         if job_id in _cancel_requested_job_ids and proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 proc.terminate()
@@ -2138,7 +2169,7 @@ async def update_series(
 async def enqueue_sync_all():
     _require_root_folders()
     conn = _get_conn()
-    active = _db.get_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
+    active = _live_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
     for j in active:
         if j.get("job_type") == JOB_TYPE_SYNC_ALL:
             return JSONResponse({"ok": True, "job": _serialize_job(j), "deduped": True})
@@ -2156,7 +2187,7 @@ async def enqueue_sync_all():
 async def enqueue_reconcile_disk():
     _require_root_folders()
     conn = _get_conn()
-    active = _db.get_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
+    active = _live_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
     for j in active:
         if j.get("job_type") == JOB_TYPE_RECONCILE_DISK:
             return JSONResponse({"ok": True, "job": _serialize_job(j), "deduped": True})
@@ -2176,7 +2207,7 @@ async def enqueue_sync_series(path: str):
     row = _db.get_series_by_path(conn, path)
     if not row:
         raise HTTPException(404, "Series not found")
-    existing = _db.get_active_job_for_series(conn, row["id"])
+    existing = _live_active_job_for_series(conn, row["id"])
     if existing:
         return JSONResponse({"ok": True, "job": _serialize_job(existing), "deduped": True})
     job_id = _db.enqueue_job(
@@ -2198,7 +2229,7 @@ async def enqueue_regenerate_comicinfo(path: str):
     row = _db.get_series_by_path(conn, path)
     if not row:
         raise HTTPException(404, "Series not found")
-    existing = _db.get_active_job_for_series(conn, row["id"])
+    existing = _live_active_job_for_series(conn, row["id"])
     if existing:
         return JSONResponse({"ok": True, "job": _serialize_job(existing), "deduped": True})
     job_id = _db.enqueue_job(
@@ -2261,12 +2292,20 @@ async def cancel_job(job_id: int):
             _db.append_job_log(conn, job_id, "[job] cancelled while queued")
         return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id))})
     if status == "running":
-        _cancel_requested_job_ids.add(job_id)
-        if _worker_current_job_id == job_id and _worker_current_proc and _worker_current_proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                _worker_current_proc.terminate()
-        _db.append_job_log(conn, job_id, "[job] cancellation requested")
-        return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id)), "cancelling": True})
+        if _worker_current_job_id == job_id:
+            # Worker is actively running this job — signal it to stop.
+            _cancel_requested_job_ids.add(job_id)
+            if _worker_current_proc and _worker_current_proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    _worker_current_proc.terminate()
+            _db.append_job_log(conn, job_id, "[job] cancellation requested")
+            return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id)), "cancelling": True})
+        else:
+            # Worker is not processing this job — it's orphaned (worker crashed
+            # before finish_job could run). Force-cancel it immediately.
+            _db.mark_job_cancelled(conn, job_id, reason="cancelled by user")
+            _db.append_job_log(conn, job_id, "[job] cancelled (orphaned)")
+            return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id))})
     return JSONResponse({"ok": False, "error": f"Unsupported job state: {status}"}, status_code=400)
 
 
@@ -2318,7 +2357,7 @@ async def stream_job(job_id: int, from_seq: int = 0):
 @app.get("/api/sync/stream")
 async def sync_stream():
     conn = _get_conn()
-    active = _db.get_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
+    active = _live_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
     job = None
     for j in active:
         if j.get("job_type") == JOB_TYPE_SYNC_ALL:
@@ -2352,7 +2391,7 @@ async def series_sync_stream(path: str):
     row = _db.get_series_by_path(conn, path)
     if not row:
         raise HTTPException(404, "Series not found")
-    job = _db.get_active_job_for_series(conn, row["id"])
+    job = _live_active_job_for_series(conn, row["id"])
     if not job:
         job_id = _db.enqueue_job(
             conn,
