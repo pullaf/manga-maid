@@ -2262,12 +2262,20 @@ async def cancel_job(job_id: int):
             _db.append_job_log(conn, job_id, "[job] cancelled while queued")
         return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id))})
     if status == "running":
-        _cancel_requested_job_ids.add(job_id)
-        if _worker_current_job_id == job_id and _worker_current_proc and _worker_current_proc.returncode is None:
-            with contextlib.suppress(ProcessLookupError):
-                _worker_current_proc.terminate()
-        _db.append_job_log(conn, job_id, "[job] cancellation requested")
-        return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id)), "cancelling": True})
+        if _worker_current_job_id == job_id:
+            # Worker is actively running this job — signal it to stop.
+            _cancel_requested_job_ids.add(job_id)
+            if _worker_current_proc and _worker_current_proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    _worker_current_proc.terminate()
+            _db.append_job_log(conn, job_id, "[job] cancellation requested")
+            return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id)), "cancelling": True})
+        else:
+            # Worker is not processing this job — it's orphaned (worker crashed
+            # before finish_job could run). Force-cancel it immediately.
+            _db.mark_job_cancelled(conn, job_id, reason="cancelled by user")
+            _db.append_job_log(conn, job_id, "[job] cancelled (orphaned)")
+            return JSONResponse({"ok": True, "job": _serialize_job(_db.get_job(conn, job_id))})
     return JSONResponse({"ok": False, "error": f"Unsupported job state: {status}"}, status_code=400)
 
 
