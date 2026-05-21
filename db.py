@@ -247,15 +247,19 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     # with ``source_chapter_id`` set are left alone - they may be real mdx
     # downloads. Use the ``Reset chapter metadata`` UI to clear ambiguous
     # cases (e.g. linked-only-for-covers like Yotsuba).
-    conn.execute(
-        """
-        UPDATE chapters
-        SET status = 'on_disk'
-        WHERE path IS NOT NULL
-          AND COALESCE(source_chapter_id, '') = ''
-          AND status != 'on_disk'
-        """
-    )
+    if conn.execute(
+        "SELECT 1 FROM chapters WHERE path IS NOT NULL"
+        " AND COALESCE(source_chapter_id, '') = '' AND status != 'on_disk' LIMIT 1"
+    ).fetchone():
+        conn.execute(
+            """
+            UPDATE chapters
+            SET status = 'on_disk'
+            WHERE path IS NOT NULL
+              AND COALESCE(source_chapter_id, '') = ''
+              AND status != 'on_disk'
+            """
+        )
 
     ch_cols = {row[1] for row in conn.execute("PRAGMA table_info(chapters)")}
     if "created_at" not in ch_cols:

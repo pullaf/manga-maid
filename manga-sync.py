@@ -1310,7 +1310,7 @@ def _sync_one_series(
     file_format   = settings.get("file_format", "cbz")
     ch_naming     = settings.get("chapter_naming", "%3 ch.%5")
     downloaded    = 0
-    _COMMIT_BATCH = int(os.environ.get("SYNC_COMMIT_BATCH", "50"))
+    _COMMIT_BATCH = int(os.environ.get("SYNC_COMMIT_BATCH", "1"))
     _uncommitted  = 0
 
     for ch_row in to_download:

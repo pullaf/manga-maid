@@ -372,7 +372,8 @@ async def _run_job(worker_conn, job: dict) -> None:
     async for line in proc.stdout:
         text = line.decode(errors="replace").rstrip()
         if text:
-            _db.append_job_log(worker_conn, job_id, text)
+            with contextlib.suppress(Exception):
+                _db.append_job_log(worker_conn, job_id, text)
         if job_id in _cancel_requested_job_ids and proc.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 proc.terminate()
