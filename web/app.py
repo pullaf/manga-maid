@@ -2108,7 +2108,7 @@ async def get_grab_options_form(request: Request, path: str):
 @app.put("/api/series/{path:path}")
 async def update_series(
     path:           str,              # URL path parameter - the OLD series path
-    manga_id:       str   = Form(...),
+    manga_id:       str   = Form(""),
     title:          str   = Form(...),
     subfolder:      str   = Form(""),
     language:       str   = Form("en"),
