@@ -40,6 +40,31 @@ def _percentile(values: list, p: float):
     return round(s[lo] + (s[hi] - s[lo]) * (k - lo), 1)
 
 
+def _cron_bucket(expr) -> str:
+    """Coarse auto-sync cadence bucket from a 5-field cron expr (privacy-safe; no raw expr)."""
+    s = str(expr or "").strip().lower()
+    if s in ("", "disabled", "off", "manual", "none"):
+        return "disabled"
+    parts = s.split()
+    if len(parts) != 5:
+        return "other"
+    minute, hour = parts[0], parts[1]
+    if hour == "*":
+        return "hourly" if minute.isdigit() else "sub-hourly"
+    if hour.startswith("*/"):
+        try:
+            n = int(hour[2:])
+        except ValueError:
+            return "other"
+        if n <= 1:  return "hourly"
+        if n <= 6:  return "6h"
+        if n <= 12: return "12h"
+        return "daily"
+    if hour.isdigit():
+        return "daily"
+    return "other"
+
+
 def _bucket(n: int) -> str:
     if n <= 5:   return "1-5"
     if n <= 20:  return "6-20"
@@ -94,6 +119,8 @@ def _gather_stats(conn, settings: dict) -> dict:
         "languages":           sorted(langs),
         "kavita":              int(bool(settings.get("kavita_url") and settings.get("kavita_api_key"))),
         "webhook":             int(bool(settings.get("webhook_url"))),
+        "webhook_platform":    (settings.get("webhook_platform") or "generic") if settings.get("webhook_url") else None,
+        "sync_cron":           _cron_bucket(settings.get("sync_cron")),
     }
 
 
@@ -138,7 +165,6 @@ def collect_and_send() -> None:
             # kept for backward compat with existing D1 columns:
             "languages":   stats["languages"],
             "webhook":     stats["webhook"],
-            "merge_volumes": 0,
             # new:
             "stats":       stats,
             "usage":       usage,

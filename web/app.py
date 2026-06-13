@@ -1277,6 +1277,56 @@ async def sources_page(request: Request):
                  "suwayomi_url": suwayomi_url, "sources": sources})
 
 
+# --- Update check: compare running version against the latest GitHub release ---
+_GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/pullaf/manga-maid/releases/latest"
+_RELEASES_URL = "https://github.com/pullaf/manga-maid/releases/latest"
+_UPDATE_CHECK_TTL = 6 * 3600
+_update_check_cache: dict = {"ts": 0.0, "data": None}
+_SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+
+
+def _parse_release_version(v: str | None):
+    """Clean release strings only → (major, minor, patch).
+    Pre-releases, forks ('2.1.5-lorsel'), 'dev'/'local' → None, so they're never nagged."""
+    m = _SEMVER_RE.match((v or "").strip())
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def _fetch_latest_release() -> dict | None:
+    try:
+        req = urlrequest.Request(
+            _GITHUB_LATEST_RELEASE_API,
+            headers={"User-Agent": "manga-maid", "Accept": "application/vnd.github+json"},
+        )
+        with urlrequest.urlopen(req, timeout=5) as resp:
+            data = json.load(resp)
+        return {"tag": (data.get("tag_name") or "").lstrip("v"),
+                "url": data.get("html_url") or _RELEASES_URL}
+    except Exception:
+        return None
+
+
+@app.get("/api/update-check")
+async def api_update_check():
+    current = os.environ.get("APP_VERSION", "local")
+    now = time.time()
+    if now - _update_check_cache["ts"] > _UPDATE_CHECK_TTL:
+        loop = asyncio.get_event_loop()
+        latest = await loop.run_in_executor(None, _fetch_latest_release)
+        _update_check_cache["ts"] = now  # throttle even on failure
+        if latest is not None:
+            _update_check_cache["data"] = latest
+    latest = _update_check_cache["data"]
+    cur_t = _parse_release_version(current)
+    lat_t = _parse_release_version(latest["tag"]) if latest else None
+    return JSONResponse({
+        "current": current,
+        "latest": latest["tag"] if latest else None,
+        "update_available": bool(cur_t and lat_t and lat_t > cur_t),
+        "url": latest["url"] if latest else _RELEASES_URL,
+    })
+
+
 @app.get("/api/sources")
 async def api_sources():
     enabled = _enabled_source_keys()
