@@ -407,8 +407,15 @@
         <span id="theme-label"></span>
         <span id="theme-icon" style="display:flex;align-items:center"></span>
       </button>
-      <div class="px-2.5 mt-0.5 text-xs" style="color:var(--text-dim);font-family:'Syne',sans-serif;opacity:.6">
-        v{{ APP_VERSION }}
+      <div class="px-2.5 mt-0.5 text-xs flex items-center gap-1.5" style="font-family:'Syne',sans-serif">
+        <span style="color:var(--text-dim);opacity:.6">v{{ APP_VERSION }}</span>
+        <a id="update-nudge" href="https://github.com/pullaf/manga-maid/releases/latest"
+           target="_blank" rel="noopener"
+           class="hidden items-center gap-1 rounded-full px-1.5 py-0.5"
+           style="text-decoration:none;background:rgba(251,191,36,.14);color:#fbbf24;font-weight:600">
+          <span style="width:5px;height:5px;border-radius:9999px;background:#fbbf24;display:inline-block"></span>
+          <span id="update-nudge-label">update</span>
+        </a>
       </div>
     </div>
   </aside>
@@ -801,6 +808,21 @@
         if (ok) e.detail.issueRequest(true);
       });
     });
+
+    /* ── Update nudge: show a dot when a newer release exists ──── */
+    (function() {
+      var el = document.getElementById('update-nudge');
+      if (!el) return;
+      fetch('/api/update-check').then(function(r) { return r.json(); }).then(function(d) {
+        if (!d || !d.update_available) return;
+        if (d.url) el.href = d.url;
+        var label = document.getElementById('update-nudge-label');
+        if (label && d.latest) label.textContent = 'v' + d.latest;
+        el.title = 'Update available: v' + (d.latest || '') + ' (you have v' + (d.current || '') + ')';
+        el.classList.remove('hidden');
+        el.classList.add('flex');
+      }).catch(function() {});
+    })();
   </script>
 </body>
 </html>
