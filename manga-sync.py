@@ -50,7 +50,7 @@ from db import (                                        # noqa: E402
     mark_volume_merged, mark_volume_comicinfo,
     assign_chapter_to_volume, apply_aggregate_volume_mapping,
     weekly_mdx_aggregate_volume_remap_due, touch_series_aggregate_volume_remap_at,
-    scan_disk_files, log_rename,
+    scan_disk_files, log_rename, mangadex_id_for_series,
 )
 from comicinfo import (                                 # noqa: E402
     build_comicinfo_xml, count_pages, inject_comicinfo,
@@ -959,13 +959,6 @@ def _run_fix_pass(series_dir: str):
         _fix.do_rename(fpath, new_name, issue_name, log_data, log_path)
 
 
-def _mdx_id_for_covers(series_row: dict) -> str | None:
-    """Return the MangaDex UUID for cover fetching: source_id for MDX series, mangadex_id companion for Suwayomi."""
-    if (series_row.get("source_name") or "mangadex") == "mangadex":
-        return series_row.get("source_id")
-    return series_row.get("mangadex_id")
-
-
 def _normalize_volume_cover_key(v) -> str:
     """Canonical key for matching Kavita volume numbers to MangaDex ``/cover`` volume strings."""
     if v is None:
@@ -980,6 +973,23 @@ def _normalize_volume_cover_key(v) -> str:
     except ValueError:
         pass
     return s
+
+
+def _aggregate_remap_mdx_id(
+    series_row: dict,
+    to_download: list,
+    conn,
+    interval_days: int,
+) -> str | None:
+    """Return the MD UUID when this series' canonical volume map is due."""
+    manga_id = mangadex_id_for_series(series_row)
+    if not manga_id:
+        return None
+    if to_download or weekly_mdx_aggregate_volume_remap_due(
+        conn, series_row["id"], interval_days
+    ):
+        return manga_id
+    return None
 
 
 def _volume_cover_urls_by_canonical_key(raw: dict[str, str]) -> dict[str, str]:
@@ -1276,23 +1286,17 @@ def _sync_one_series(
         interval_days = 7
     interval_days = max(1, min(interval_days, 90))
 
-    run_mdx_aggregate_remap = False
-    if isinstance(source, MangaDexSource) and manga_id:
-        if to_download:
-            run_mdx_aggregate_remap = True
-        elif weekly_mdx_aggregate_volume_remap_due(conn, series_id, interval_days):
-            run_mdx_aggregate_remap = True
+    aggregate_mdx_id = _aggregate_remap_mdx_id(
+        series_row, to_download, conn, interval_days
+    )
 
     # Canonical volume buckets from /aggregate (language-scoped). Runs when we
     # are about to download, or on a debounced schedule while materialized rows
     # still lack volume_id (e.g. finished series MD fills tankōbon later).
-    if run_mdx_aggregate_remap:
+    if aggregate_mdx_id:
         try:
-            agg = source._api_get(
-                f"/manga/{manga_id}/aggregate",
-                {"translatedLanguage[]": language},
-                timeout=15,
-            )
+            mdx_source = source if isinstance(source, MangaDexSource) else MangaDexSource()
+            agg = mdx_source.get_aggregate(aggregate_mdx_id, language)
             apply_aggregate_volume_mapping(conn, series_id, agg)
             touch_series_aggregate_volume_remap_at(conn, series_id)
             _log(f"[{name}] MD aggregate volume remap applied")
@@ -1318,7 +1322,7 @@ def _sync_one_series(
             side_fx=side_fx,
         )
         if kavita_client and settings.get("auto_covers"):
-            mdx_id = _mdx_id_for_covers(series_row)
+            mdx_id = mangadex_id_for_series(series_row)
             if mdx_id:
                 try:
                     _kavita_set_covers(kavita_client, series_dir, mdx_id,
@@ -1462,7 +1466,7 @@ def _sync_one_series(
 
     # Kavita covers
     if kavita_client and settings.get("auto_covers"):
-        mdx_id_for_covers = _mdx_id_for_covers(series_row)
+        mdx_id_for_covers = mangadex_id_for_series(series_row)
         if mdx_id_for_covers:
             _kavita_set_covers(kavita_client, series_dir, mdx_id_for_covers,
                                conn=conn, series_id=series_id)
@@ -1543,7 +1547,7 @@ def main(
 
     if covers_only:
         for s in series_list:
-            mdx_id = _mdx_id_for_covers(s)
+            mdx_id = mangadex_id_for_series(s)
             if mdx_id and kavita_client:
                 _kavita_set_covers(kavita_client,
                                    os.path.join(MANGA_ROOT, s["path"]),

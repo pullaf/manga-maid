@@ -911,7 +911,7 @@ async def series_details_page(request: Request, path: str):
     )
     is_suwayomi = (row.get("source_name") or "").startswith("suwayomi:")
     # For Suwayomi series use the MDX companion UUID (if set) for metadata; skip otherwise
-    mdx_lookup_id = row.get("mangadex_id") if is_suwayomi else row.get("source_id")
+    mdx_lookup_id = _db.mangadex_id_for_series(row)
     if mdx_lookup_id:
         loop = asyncio.get_event_loop()
         try:
@@ -966,11 +966,7 @@ async def series_details_page(request: Request, path: str):
             lang = (row.get("language") or "en").strip() or "en"
             agg = await loop.run_in_executor(
                 None,
-                lambda mid=mdx_lookup_id, lg=lang: _mdx._api_get(
-                    f"/manga/{mid}/aggregate",
-                    {"translatedLanguage[]": lg},
-                    timeout=15,
-                ),
+                lambda mid=mdx_lookup_id, lg=lang: _mdx.get_aggregate(mid, lg),
             )
             _apply_volume_mapping(conn, row["id"], agg)
         except Exception:
@@ -1828,7 +1824,7 @@ async def add_series(
 async def series_cover(path: str):
     conn = _get_conn()
     row  = conn.execute("""
-        SELECT ss.source_id, sm.cover_filename
+        SELECT ss.source, ss.source_id, s.mangadex_id, sm.cover_filename
         FROM series s
         JOIN series_sources ss ON s.id = ss.series_id
         LEFT JOIN series_metadata sm ON s.id = sm.series_id AND sm.source = ss.source
@@ -1838,10 +1834,42 @@ async def series_cover(path: str):
     if not row or not row["source_id"]:
         raise HTTPException(404)
 
-    if row["cover_filename"]:
-        return JSONResponse({"url": _cover_url(row["source_id"], row["cover_filename"])})
+    is_suwayomi = (row["source"] or "").startswith("suwayomi:")
+    if is_suwayomi:
+        # Prefer artwork from the actual sync source.  Probe it here so a
+        # broken/missing Suwayomi thumbnail can fall through to the optional
+        # MangaDex companion instead of leaving a broken image in the UI.
+        cache_key = f"suw:{row['source_id']}"
+        try:
+            if cache_key not in _cover_cache:
+                client = get_suwayomi_client()
+                if not client:
+                    raise RuntimeError("Suwayomi not configured")
+                loop = asyncio.get_event_loop()
+                data = await loop.run_in_executor(
+                    None,
+                    lambda: client.download_page(
+                        f"/api/v1/manga/{row['source_id']}/thumbnail"
+                    ),
+                )
+                if not data:
+                    raise RuntimeError("empty Suwayomi thumbnail")
+                if len(_cover_cache) >= _COVER_CACHE_MAX:
+                    _cover_cache.pop(next(iter(_cover_cache)))
+                _cover_cache[cache_key] = data
+            return JSONResponse({
+                "url": f"/api/proxy/suwayomi/thumbnail/{row['source_id']}"
+            })
+        except Exception:
+            pass
 
-    manga_id = row["source_id"]
+    manga_id = _db.mangadex_id_for_series(dict(row))
+    if not manga_id:
+        raise HTTPException(404)
+
+    if row["cover_filename"]:
+        return JSONResponse({"url": _cover_url(manga_id, row["cover_filename"])})
+
     loop = asyncio.get_event_loop()
     try:
         data = await loop.run_in_executor(
@@ -1862,7 +1890,7 @@ async def series_cover(path: str):
 
     series_row = _db.get_series_by_path(conn, path)
     if series_row:
-        _db.upsert_series_metadata(conn, series_row["id"], "mangadex",
+        _db.upsert_series_metadata(conn, series_row["id"], row["source"],
                                    cover_filename=cover_filename)
     return JSONResponse({"url": _cover_url(manga_id, cover_filename)})
 
@@ -1874,11 +1902,9 @@ async def series_chapter_gaps(path: str):
     if not row:
         raise HTTPException(404, "Series not found")
 
-    source = _db.get_primary_source(conn, row["id"])
-    if not source or source.get("source") != "mangadex":
+    manga_id = _db.mangadex_id_for_series(row)
+    if not manga_id:
         return JSONResponse({"mode": "no_source"})
-
-    manga_id = source["source_id"]
     language = (row.get("language") or "en").strip()
 
     all_chapters = _db.get_chapters(conn, row["id"])
@@ -1906,11 +1932,7 @@ async def series_chapter_gaps(path: str):
     try:
         agg = await loop.run_in_executor(
             None,
-            lambda mid=manga_id, lg=language: _mdx._api_get(
-                f"/manga/{mid}/aggregate",
-                {"translatedLanguage[]": lg},
-                timeout=15,
-            ),
+            lambda mid=manga_id, lg=language: _mdx.get_aggregate(mid, lg),
         )
     except Exception as e:
         return JSONResponse({"mode": "error", "error": str(e)})

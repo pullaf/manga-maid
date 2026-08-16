@@ -644,7 +644,7 @@ def get_all_series(conn: sqlite3.Connection) -> list[dict]:
             s.id, s.title, s.path, s.language, s.preferred_group,
             s.preferred_groups_json, s.start_chapter,
             s.exclude_from_fix, s.merge_volumes_override, s.sync_configured, s.sync_paused,
-            s.ignored, s.updated_at,
+            s.ignored, s.updated_at, s.mangadex_id,
             ss.source  AS source_name,
             ss.source_id,
             (SELECT MAX(c.created_at) FROM chapters c WHERE c.series_id = s.id) AS latest_chapter_at,
@@ -689,7 +689,7 @@ def get_all_series(conn: sqlite3.Connection) -> list[dict]:
             "total_volumes": d.get("total_volumes"),
             "cover_filename":d.get("cover_filename"),
         }
-        if d.get("source_id") and d.get("cover_filename"):
+        if d.get("source_name") == "mangadex" and d.get("source_id") and d.get("cover_filename"):
             d["cover_url"] = f"/api/proxy/cover/{d['source_id']}/{d['cover_filename']}"
         else:
             d["cover_url"] = None
@@ -743,6 +743,14 @@ def get_series_by_path(conn: sqlite3.Connection, path: str) -> dict | None:
 def get_linked_series(conn: sqlite3.Connection) -> list[dict]:
     """Return series that have at least one source linked."""
     return [s for s in get_all_series(conn) if s["linked"]]
+
+
+def mangadex_id_for_series(series: dict) -> str | None:
+    """Return the canonical MangaDex UUID, including Suwayomi companions."""
+    source_name = series.get("source_name") or series.get("source") or "mangadex"
+    if source_name == "mangadex":
+        return series.get("source_id")
+    return series.get("mangadex_id")
 
 
 def insert_series(

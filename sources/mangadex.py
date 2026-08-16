@@ -170,7 +170,7 @@ class MangaDexSource:
         total_vols = _parse_last_volume(attr)
         if not total_vols:
             try:
-                agg = self._api_get(f"/manga/{manga_id}/aggregate", {})
+                agg = self.get_aggregate(manga_id)
                 total_vols = _tankobon_count_from_aggregate(agg)
             except Exception:
                 total_vols = 0
@@ -194,6 +194,11 @@ class MangaDexSource:
 
     def get_web_url(self, manga_id: str) -> str:
         return f"https://mangadex.org/title/{manga_id}"
+
+    def get_aggregate(self, manga_id: str, language: str | None = None) -> dict:
+        """Fetch canonical chapter-to-volume buckets, optionally by language."""
+        params = {"translatedLanguage[]": language} if language else {}
+        return self._api_get(f"/manga/{manga_id}/aggregate", params, timeout=15)
 
     def get_chapter_web_url(self, chapter_id: str) -> str:
         return f"https://mangadex.org/chapter/{chapter_id}"
@@ -266,7 +271,7 @@ class MangaDexSource:
         if n:
             return n
         try:
-            agg = self._api_get(f"/manga/{manga_id}/aggregate", {}, timeout=15)
+            agg = self.get_aggregate(manga_id)
         except Exception:
             return 0
         return _tankobon_count_from_aggregate(agg)
@@ -307,11 +312,7 @@ class MangaDexSource:
             time.sleep(0.2)
 
         try:
-            agg = self._api_get(
-                f"/manga/{manga_id}/aggregate",
-                {"translatedLanguage[]": language},
-                timeout=15,
-            )
+            agg = self.get_aggregate(manga_id, language)
             canonical: set[float] = set()
             for vol in agg.get("volumes", {}).values():
                 for ch_key in vol.get("chapters", {}).keys():

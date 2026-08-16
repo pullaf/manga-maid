@@ -67,6 +67,68 @@ def test_smoke_post_unlink_unknown_series(web_client):
     assert r.status_code == 404
 
 
+def _seed_suwayomi_series(monkeypatch, *, path="library/Test", companion="mdx-uuid"):
+    import db
+    import web.app as appmod
+
+    conn = appmod._get_conn()
+    db.insert_series(
+        conn,
+        path=path,
+        title="Test",
+        language="en",
+        start_chapter=0,
+        source="suwayomi:123",
+        source_id="456",
+        mangadex_id=companion,
+    )
+    appmod._cover_cache.clear()
+    return appmod
+
+
+def test_dashboard_cover_prefers_suwayomi_thumbnail(web_client, monkeypatch):
+    appmod = _seed_suwayomi_series(monkeypatch)
+
+    class Client:
+        def download_page(self, path):
+            assert path == "/api/v1/manga/456/thumbnail"
+            return b"native-cover"
+
+    monkeypatch.setattr(appmod, "get_suwayomi_client", lambda: Client())
+    monkeypatch.setattr(
+        appmod._mdx, "_api_get",
+        lambda *args, **kwargs: pytest.fail("MangaDex should not be queried"),
+    )
+
+    response = web_client.get("/api/series/library/Test/cover")
+    assert response.status_code == 200
+    assert response.json()["url"] == "/api/proxy/suwayomi/thumbnail/456"
+
+
+def test_dashboard_cover_falls_back_to_mangadex_companion(web_client, monkeypatch):
+    appmod = _seed_suwayomi_series(monkeypatch)
+
+    class Client:
+        def download_page(self, path):
+            raise OSError("thumbnail unavailable")
+
+    monkeypatch.setattr(appmod, "get_suwayomi_client", lambda: Client())
+    monkeypatch.setattr(
+        appmod._mdx,
+        "_api_get",
+        lambda path, params, timeout=15: {
+            "data": {"relationships": [{
+                "type": "cover_art",
+                "attributes": {"fileName": "cover.jpg"},
+            }]}
+        },
+    )
+
+    response = web_client.get("/api/series/library/Test/cover")
+    assert response.status_code == 200
+    assert response.json()["url"] == "/api/proxy/cover/mdx-uuid/cover.jpg"
+
+
 @pytest.mark.parametrize("method,path", TIER_A_NETWORK)
 def test_smoke_network_routes_skipped(method, path):
     pytest.skip("Tier A network bucket: add httpx mock or pytest --run-network")

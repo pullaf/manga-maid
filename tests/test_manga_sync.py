@@ -5,6 +5,46 @@ from unittest.mock import MagicMock, patch
 import manga_sync
 
 
+def test_companion_mangadex_id_is_shared_for_suwayomi_features():
+    assert manga_sync.mangadex_id_for_series({
+        "source_name": "suwayomi:123",
+        "source_id": "456",
+        "mangadex_id": "mdx-uuid",
+    }) == "mdx-uuid"
+
+
+def test_primary_mangadex_id_is_shared_for_mangadex_features():
+    assert manga_sync.mangadex_id_for_series({
+        "source_name": "mangadex",
+        "source_id": "mdx-uuid",
+        "mangadex_id": "mdx-uuid",
+    }) == "mdx-uuid"
+
+
+def test_suwayomi_companion_is_eligible_for_download_volume_remap():
+    series = {
+        "id": 7,
+        "source_name": "suwayomi:123",
+        "source_id": "456",
+        "mangadex_id": "mdx-uuid",
+    }
+    assert manga_sync._aggregate_remap_mdx_id(
+        series, [{"id": 1}], MagicMock(), 7
+    ) == "mdx-uuid"
+
+
+def test_suwayomi_without_companion_skips_mangadex_volume_remap():
+    series = {
+        "id": 7,
+        "source_name": "suwayomi:123",
+        "source_id": "456",
+        "mangadex_id": None,
+    }
+    assert manga_sync._aggregate_remap_mdx_id(
+        series, [{"id": 1}], MagicMock(), 7
+    ) is None
+
+
 # ---------------------------------------------------------------------------
 # _mdx_download
 # ---------------------------------------------------------------------------

@@ -1,32 +1,38 @@
-## What's changed
+## Manga Maid 2.2.0
 
-### Fix: PUID/PGID containers fail to start (no UI, no logs)
+This release improves MangaDex companion integration for series downloaded
+through Suwayomi and fixes missing cover art on the dashboard.
 
-Two issues combined to silently break containers running as a non-root user
-(`PUID`/`PGID` set to anything other than 0):
+### Fixed
 
-1. **`chown /manga` hung on NAS/NFS/SMB mounts** — the entrypoint tried to
-   `chown` the manga root directory to the target user, which blocks
-   indefinitely on network-backed volumes (TrueNAS, Synology, etc.)
+- Dashboard covers now prefer the series' native Suwayomi thumbnail.
+- If the Suwayomi thumbnail is unavailable, the dashboard falls back to the
+  linked MangaDex companion cover.
+- Cover resolution now uses the companion MangaDex UUID instead of mistakenly
+  sending a Suwayomi manga ID to MangaDex.
+- Resolved MangaDex companion cover metadata is retained for later requests.
 
-2. **Database created as root** — the cron-schedule check ran a Python snippet
-   as root, which called `load_settings()` and created the SQLite database
-   owned by `root`. When uvicorn then started as the target user it couldn't
-   write to the database, silently aborting startup.
+### Improved
 
-**v2.1.4 fixes all three:**
-- Removed the `chown` on the manga root entirely — the write-permission check
-  that follows it is sufficient
-- The schedule snippet now runs as the target user (`$RUNAS python3`), so the
-  database is created with the correct ownership from the start
-- The crontab file is now written to `DATA_DIR` instead of `/tmp` — on
-  container runtimes that run the entrypoint as the target user (TrueNAS SCALE,
-  k8s with `securityContext.runAsUser`), `/tmp` may not be writable
+- Normal Suwayomi syncs now refresh chapter-to-volume mappings from the linked
+  MangaDex companion.
+- Companion mappings follow the existing volume-remap schedule: immediately
+  when chapters are waiting to download, and periodically while on-disk
+  chapters remain unmapped.
+- Fix Files can consequently include `vol.N` in existing chapter filenames
+  after a normal sync, provided the chapter naming pattern contains `%4` and
+  MangaDex assigns the chapter to a volume.
+- Series details and chapter-gap checks now share the same companion-aware
+  MangaDex ID and aggregate-fetching logic used by sync and cover handling.
 
-Users running as root (default, no `PUID`/`PGID` set) are unaffected.
+### Upgrade notes
+
+After upgrading, run a normal sync and then open **Fix Files** to update
+existing chapter filenames. Chapters that MangaDex reports without a volume
+remain unchanged.
 
 ---
 
-**Docker image:** `ghcr.io/pullaf/manga-maid:2.1.4`
+**Docker image:** `ghcr.io/pullaf/manga-maid:2.2.0`
 
-**Full changelog:** https://github.com/pullaf/manga-maid/compare/v2.1.2...v2.1.4
+**Full changelog:** https://github.com/pullaf/manga-maid/compare/v2.1.7...v2.2.0
