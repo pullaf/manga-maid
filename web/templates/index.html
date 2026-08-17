@@ -391,13 +391,21 @@
         {% if not vols and not chs %}-{% endif %}
         {% if s.config.get("status") == "completed" and (vols or chs) %}<span class="badge-complete">complete</span>{% endif %}
       </div>
+      {% if s.last_sync_error %}
+      <div class="mt-2 rounded-lg px-2 py-1.5 text-xs flex items-center gap-2"
+           style="color:#f87171;background:rgba(248,113,113,.09);border:1px solid rgba(248,113,113,.25)">
+        <span class="truncate flex-1" title="{{ s.last_sync_error }}">Source error · {{ s.last_sync_error }}</span>
+        <button type="button" class="shrink-0 underline" style="color:#fca5a5"
+                hx-get="/api/help/source-sync-error" hx-target="#modal-body" hx-swap="innerHTML">How do I fix this?</button>
+      </div>
+      {% endif %}
       <div class="card-actions">
         {% if s.linked %}
         <button class="act-btn accent" onclick="seriesSync(this)" data-path="{{ s.path }}">Sync</button>
         <a href="/series/{{ s.path }}" class="act-btn muted"
            style="text-decoration:none;display:inline-flex;align-items:center">Details</a>
         {% if (s.source_name or '').startswith('suwayomi:') %}
-          <span class="source-tag">{{ source_labels.get(s.source_name, 'Source') }}</span>
+          <span class="source-tag" title="{{ s.source_name }}">{{ s.source_display_name }}</span>
         {% else %}
         <a href="https://mangadex.org/title/{{ s.config.id }}" target="_blank" rel="noopener"
            class="act-btn muted" style="text-decoration:none;display:inline-flex;align-items:center" title="View on MangaDex">MangaDex ↗</a>
@@ -445,13 +453,20 @@
       {% endif %}
       <span>{% set vols = s.volume_count or 0 %}{% set chs = s.chapter_count or 0 %}{% if vols %}{{ vols }} vol{{ 's' if vols != 1 }}{% endif %}{% if vols and chs %} · {% endif %}{% if chs %}{{ chs }} ch{{ 's' if chs != 1 }}{% endif %}{% if not vols and not chs %}-{% endif %}{% if s.config.get("status") == "completed" and (vols or chs) %} <span class="badge-complete">complete</span>{% endif %}</span>
     </div>
+    {% if s.last_sync_error %}
+    <div class="flex items-center gap-2 text-xs" style="color:#f87171">
+      <span class="truncate" title="{{ s.last_sync_error }}">Source error · {{ s.last_sync_error }}</span>
+      <button type="button" class="shrink-0 underline" style="color:#fca5a5"
+              hx-get="/api/help/source-sync-error" hx-target="#modal-body" hx-swap="innerHTML">How do I fix this?</button>
+    </div>
+    {% endif %}
     <div class="list-actions">
       {% if s.linked %}
       <button class="act-btn accent" onclick="seriesSync(this)" data-path="{{ s.path }}">Sync</button>
       <a href="/series/{{ s.path }}" class="act-btn muted"
          style="text-decoration:none;display:inline-flex;align-items:center">Details</a>
       {% if (s.source_name or '').startswith('suwayomi:') %}
-        <span class="source-tag">{{ source_labels.get(s.source_name, 'Source') }}</span>
+        <span class="source-tag" title="{{ s.source_name }}">{{ s.source_display_name }}</span>
       {% else %}
       <a href="https://mangadex.org/title/{{ s.config.id }}" target="_blank" rel="noopener"
          class="act-btn muted" style="text-decoration:none;display:inline-flex;align-items:center" title="View on MangaDex">MangaDex ↗</a>
@@ -713,6 +728,12 @@ function seriesSync(btn) {
           } else if (payload.type === 'status') {
             if (payload.status === 'queued') btn.textContent = 'Queued';
             if (payload.status === 'running') btn.textContent = 'Running';
+            if (payload.status === 'failed' && payload.error_summary) {
+              const line = document.createElement('div');
+              line.textContent = '[job] failed: ' + payload.error_summary;
+              log.appendChild(line);
+              log.scrollTop = log.scrollHeight;
+            }
             if (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled' || payload.status === 'missing') {
               es.close();
               btn.disabled = false;

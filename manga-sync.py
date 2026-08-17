@@ -51,6 +51,7 @@ from db import (                                        # noqa: E402
     assign_chapter_to_volume, apply_aggregate_volume_mapping,
     weekly_mdx_aggregate_volume_remap_due, touch_series_aggregate_volume_remap_at,
     scan_disk_files, log_rename, mangadex_id_for_series,
+    set_series_sync_error, clear_series_sync_error,
 )
 from comicinfo import (                                 # noqa: E402
     build_comicinfo_xml, count_pages, inject_comicinfo,
@@ -186,6 +187,26 @@ def _series_preferred_groups(series_row: dict) -> list[str]:
     if pg is not None:
         return list(pg)
     return preferred_groups_list_from_row(series_row)
+
+
+class SeriesSyncError(RuntimeError):
+    """An actionable failure for one series; safe to show in the UI."""
+
+
+def _friendly_sync_error(exc: Exception) -> str:
+    message = str(exc).replace("\r", " ").replace("\n", " ")
+    message = " ".join(message.split())
+    if "Collection is empty" in message and "fetchChapters" in message:
+        return (
+            "Suwayomi could not fetch chapters because the source returned an empty manga "
+            "collection. The extension/title may be unavailable or Suwayomi's local entry "
+            "may need to be refreshed or re-added."
+        )
+    match = re.search(r"'message':\s*'([^']+)'", message)
+    if match:
+        message = match.group(1)
+    message = re.sub(r"^Suwayomi GQL error:\s*", "", message).strip()
+    return message[:500] or exc.__class__.__name__
 
 
 def _sync_chapters_to_db(
@@ -1275,8 +1296,10 @@ def _sync_one_series(
     try:
         _sync_chapters_to_db(source, manga_id, language, prefs, series_id, conn)
     except Exception as e:
-        _log(f"[{name}] feed error: {e}")
-        return False
+        summary = _friendly_sync_error(e)
+        _log(f"[{name}] feed error: {summary}")
+        raise SeriesSyncError(summary) from e
+    clear_series_sync_error(conn, series_id)
 
     to_download = get_chapters_to_download(conn, series_id, start_chapter)
 
@@ -1296,7 +1319,9 @@ def _sync_one_series(
     if aggregate_mdx_id:
         try:
             mdx_source = source if isinstance(source, MangaDexSource) else MangaDexSource()
-            agg = mdx_source.get_aggregate(aggregate_mdx_id, language)
+            agg = mdx_source.get_aggregate_with_language_fallback(
+                aggregate_mdx_id, language
+            )
             apply_aggregate_volume_mapping(conn, series_id, agg)
             touch_series_aggregate_volume_remap_at(conn, series_id)
             _log(f"[{name}] MD aggregate volume remap applied")
@@ -1670,6 +1695,7 @@ def main(
         return
 
     any_downloaded = False
+    failures: list[tuple[str, str]] = []
     processed = 0
     downloads: list[tuple[str, int]] = []
     skip_feed_counts: dict[str, int] = {"not_configured": 0, "paused": 0}
@@ -1704,7 +1730,11 @@ def main(
                 name = series_row.get("name") or os.path.basename(series_row["path"])
                 downloads.append((name, count))
         except Exception as e:
-            _log(f"[{series_row.get('name', series_row['path'])}] error: {e}")
+            name = series_row.get("name") or os.path.basename(series_row["path"])
+            summary = _friendly_sync_error(e)
+            set_series_sync_error(conn, series_row["id"], summary)
+            failures.append((name, summary))
+            _log(f"[{name}] error: {summary}")
 
     stems_renamed = int(side_fx.get("chapter_stems_renamed") or 0)
     if kavita_client and settings.get("auto_scan") and (any_downloaded or stems_renamed):
@@ -1749,7 +1779,10 @@ def main(
         if pz:
             parts.append(f"{pz} paused")
         segments.append(f"feed skipped: {', '.join(parts)}")
-    msg = "[sync] completed - " + "; ".join(segments)
+    if failures:
+        segments.append(f"{len(failures)} failed")
+    outcome = "failed" if failures else "completed"
+    msg = f"[sync] {outcome} - " + "; ".join(segments)
     _log(msg)
     try:
         import db as _db_mod
@@ -1757,6 +1790,7 @@ def main(
     except Exception:
         pass
     conn.close()
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
@@ -1790,7 +1824,7 @@ if __name__ == "__main__":
         help="Force rewrite ComicInfo.xml for all chapter/volume files in a series (requires --series)",
     )
     args = parser.parse_args()
-    main(
+    raise SystemExit(main(
         series_filter=args.series,
         covers_only=args.covers_only,
         compact_volumes=args.compact_volumes,
@@ -1798,4 +1832,4 @@ if __name__ == "__main__":
         normalize_volume_filenames=args.normalize_volume_filenames,
         regenerate_comicinfo=args.regenerate_comicinfo,
         notify=args.notify,
-    )
+    ))

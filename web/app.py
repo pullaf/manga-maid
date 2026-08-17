@@ -144,6 +144,25 @@ def _enabled_source_keys() -> set[str]:
     return set(load_settings().get("enabled_sources") or [])
 
 
+def _source_labels() -> dict[str, str]:
+    """Resolve installed Suwayomi extension keys to their display names."""
+    return {
+        f"suwayomi:{s['id']}": s.get("displayName") or s.get("name") or f"Suwayomi source {s['id']}"
+        for s in _get_suwayomi_sources()
+    }
+
+
+def _source_display_name(source_name: str | None, labels: dict[str, str]) -> str:
+    """Human-readable source name that remains useful while Suwayomi is offline."""
+    key = (source_name or "").strip()
+    if key == "mangadex":
+        return "MangaDex"
+    if key.startswith("suwayomi:"):
+        source_id = key.split(":", 1)[1]
+        return labels.get(key) or f"Suwayomi source {source_id}"
+    return key or "Local"
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI):
     # Hermetic pytest: skip workers, crontab, telemetry, startup reconcile.
@@ -398,10 +417,13 @@ async def _run_job(worker_conn, job: dict) -> None:
         _db.finish_job(worker_conn, job_id, success=False, exit_code=1, error_summary=str(e))
         return
     _worker_current_proc = proc
+    process_error_summary = None
 
     async for line in proc.stdout:
         text = line.decode(errors="replace").rstrip()
         if text:
+            if " feed error:" in text or "] error:" in text or "[sync] failed" in text:
+                process_error_summary = text[-1000:]
             with contextlib.suppress(Exception):
                 _db.append_job_log(worker_conn, job_id, text)
         if job_id in _cancel_requested_job_ids and proc.returncode is None:
@@ -427,7 +449,7 @@ async def _run_job(worker_conn, job: dict) -> None:
             job_id,
             success=False,
             exit_code=proc.returncode,
-            error_summary=f"exit {proc.returncode}",
+            error_summary=process_error_summary or f"exit {proc.returncode}",
         )
 
 
@@ -873,11 +895,9 @@ async def dashboard(request: Request):
     linked_count = sum(1 for s in series if s["linked"])
     settings     = load_settings()
     suwayomi_url = (settings.get("suwayomi_url") or "").strip().rstrip("/")
-    raw_sources  = _get_suwayomi_sources() if suwayomi_url else []
-    source_labels = {
-        f"suwayomi:{s['id']}": s.get("displayName") or s.get("name") or f"suwayomi:{s['id']}"
-        for s in raw_sources
-    }
+    source_labels = _source_labels() if suwayomi_url else {}
+    for item in all_s:
+        item["source_display_name"] = _source_display_name(item.get("source_name"), source_labels)
     return templates.TemplateResponse(request=request, name="index.html",
         context={"series": series, "ignored_series": ignored_series,
                  "active": "dashboard",
@@ -892,6 +912,15 @@ async def dashboard(request: Request):
 async def series_page(request: Request):
     return templates.TemplateResponse(request=request, name="series.html",
         context={"active": "series", "no_root_folders": _no_rf()})
+
+
+@app.get("/api/help/source-sync-error", response_class=HTMLResponse)
+async def source_sync_error_help(request: Request):
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/source_sync_error_help.html",
+        context={},
+    )
 
 
 @app.get("/series/{path:path}", response_class=HTMLResponse)
@@ -966,7 +995,7 @@ async def series_details_page(request: Request, path: str):
             lang = (row.get("language") or "en").strip() or "en"
             agg = await loop.run_in_executor(
                 None,
-                lambda mid=mdx_lookup_id, lg=lang: _mdx.get_aggregate(mid, lg),
+                lambda mid=mdx_lookup_id, lg=lang: _mdx.get_aggregate_with_language_fallback(mid, lg),
             )
             _apply_volume_mapping(conn, row["id"], agg)
         except Exception:
@@ -977,6 +1006,7 @@ async def series_details_page(request: Request, path: str):
 
     all_chapters = _db.get_chapters(conn, row["id"])
     chapters = [c for c in all_chapters if c.get("path")]
+    unmapped_chapter_count = sum(1 for c in chapters if not c.get("volume_id"))
     volumes = [
         v for v in _db.get_volumes(conn, row["id"])
         if v.get("path")
@@ -1028,11 +1058,14 @@ async def series_details_page(request: Request, path: str):
 
     settings     = load_settings()
     suwayomi_url = (settings.get("suwayomi_url") or "").strip().rstrip("/")
-    raw_sources  = _get_suwayomi_sources() if suwayomi_url else []
-    source_labels = {
-        f"suwayomi:{s['id']}": s.get("displayName") or s.get("name") or f"suwayomi:{s['id']}"
-        for s in raw_sources
-    }
+    source_labels = _source_labels() if suwayomi_url else {}
+    row["source_display_name"] = _source_display_name(row.get("source_name"), source_labels)
+    if row.get("source_name") == "mangadex":
+        row["source_web_url"] = f"https://mangadex.org/title/{row['source_id']}"
+    elif (row.get("source_name") or "").startswith("suwayomi:") and suwayomi_url:
+        row["source_web_url"] = f"{suwayomi_url}/manga/{row['source_id']}"
+    else:
+        row["source_web_url"] = None
     return templates.TemplateResponse(
         request=request,
         name="series_detail.html",
@@ -1045,6 +1078,7 @@ async def series_details_page(request: Request, path: str):
             "source_volumes": source_volumes,
             "have_chapters": covered_chapters,
             "have_volumes": have_volumes,
+            "unmapped_chapter_count": unmapped_chapter_count,
             "chapter_ok": chapter_ok,
             "volume_ok": volume_ok,
             "compact_volume_count": compact_volume_count,

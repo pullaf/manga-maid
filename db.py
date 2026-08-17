@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS series (
     sync_configured          INTEGER NOT NULL DEFAULT 1,
     sync_paused              INTEGER NOT NULL DEFAULT 0,
     ignored                  INTEGER NOT NULL DEFAULT 0,
+    last_sync_error          TEXT,
+    last_sync_error_at       TEXT,
     created_at               TEXT    NOT NULL,
     updated_at               TEXT    NOT NULL
 );
@@ -222,6 +224,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE series ADD COLUMN last_aggregate_volume_remap_at TEXT"
         )
+    if "last_sync_error" not in cols:
+        conn.execute("ALTER TABLE series ADD COLUMN last_sync_error TEXT")
+    if "last_sync_error_at" not in cols:
+        conn.execute("ALTER TABLE series ADD COLUMN last_sync_error_at TEXT")
 
     # ``since`` (skip <= N) → ``start_chapter`` (download where >= N). Convert
     # the value so the resulting download set is unchanged: 0 stays 0; any
@@ -645,6 +651,7 @@ def get_all_series(conn: sqlite3.Connection) -> list[dict]:
             s.preferred_groups_json, s.start_chapter,
             s.exclude_from_fix, s.merge_volumes_override, s.sync_configured, s.sync_paused,
             s.ignored, s.updated_at, s.mangadex_id,
+            s.last_sync_error, s.last_sync_error_at,
             ss.source  AS source_name,
             ss.source_id,
             (SELECT MAX(c.created_at) FROM chapters c WHERE c.series_id = s.id) AS latest_chapter_at,
@@ -751,6 +758,22 @@ def mangadex_id_for_series(series: dict) -> str | None:
     if source_name == "mangadex":
         return series.get("source_id")
     return series.get("mangadex_id")
+
+
+def set_series_sync_error(conn: sqlite3.Connection, series_id: int, message: str) -> None:
+    conn.execute(
+        "UPDATE series SET last_sync_error=?, last_sync_error_at=? WHERE id=?",
+        (str(message).strip()[:1000], _now(), series_id),
+    )
+    conn.commit()
+
+
+def clear_series_sync_error(conn: sqlite3.Connection, series_id: int) -> None:
+    conn.execute(
+        "UPDATE series SET last_sync_error=NULL, last_sync_error_at=NULL WHERE id=?",
+        (series_id,),
+    )
+    conn.commit()
 
 
 def insert_series(

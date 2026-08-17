@@ -200,6 +200,45 @@ class MangaDexSource:
         params = {"translatedLanguage[]": language} if language else {}
         return self._api_get(f"/manga/{manga_id}/aggregate", params, timeout=15)
 
+    def get_aggregate_with_language_fallback(self, manga_id: str, language: str) -> dict:
+        """Prefer language-specific volume mappings, filling gaps from all languages."""
+        preferred = self.get_aggregate(manga_id, language)
+        try:
+            fallback = self.get_aggregate(manga_id)
+        except Exception:
+            return preferred
+
+        preferred_volumes = preferred.get("volumes") or {}
+        merged_volumes = {
+            key: {**value, "chapters": dict(value.get("chapters") or {})}
+            for key, value in preferred_volumes.items()
+        }
+        assigned = {
+            str(chapter)
+            for volume, data in preferred_volumes.items()
+            if volume not in ("none", "0")
+            for chapter in (data.get("chapters") or {})
+        }
+
+        for volume, data in (fallback.get("volumes") or {}).items():
+            if volume in ("none", "0"):
+                continue
+            missing = {
+                str(chapter): chapter_data
+                for chapter, chapter_data in (data.get("chapters") or {}).items()
+                if str(chapter) not in assigned
+            }
+            if not missing:
+                continue
+            target = merged_volumes.setdefault(
+                volume,
+                {**data, "chapters": {}},
+            )
+            target.setdefault("chapters", {}).update(missing)
+            assigned.update(missing)
+
+        return {**preferred, "volumes": merged_volumes}
+
     def get_chapter_web_url(self, chapter_id: str) -> str:
         return f"https://mangadex.org/chapter/{chapter_id}"
 

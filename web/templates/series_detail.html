@@ -200,6 +200,17 @@
 </div>
 {% endif %}
 
+{% if series.last_sync_error %}
+<div class="mb-4 rounded-xl border px-4 py-3"
+     style="background:rgba(248,113,113,.08);border-color:rgba(248,113,113,.35)">
+  <p class="text-sm font-semibold" style="color:#f87171;font-family:'Syne',sans-serif">Sync source error</p>
+  <p class="text-xs mt-1 leading-relaxed" style="color:var(--text-muted)">{{ series.last_sync_error }}</p>
+  {% if series.last_sync_error_at %}<p class="text-xs mt-1" style="color:var(--text-dim)">Last failed: {{ series.last_sync_error_at }}</p>{% endif %}
+  <button type="button" class="text-xs mt-2 underline" style="color:#fca5a5"
+          hx-get="/api/help/source-sync-error" hx-target="#modal-body" hx-swap="innerHTML">How do I fix this?</button>
+</div>
+{% endif %}
+
 <div style="margin-bottom:24px">
   <div id="detail-actions" data-series-path="{{ series.path }}">
     {% set _is_suwayomi = (series.source_name or '').__contains__('suwayomi') %}
@@ -296,6 +307,17 @@
       <div class="space-y-2 text-sm">
         <div style="color:var(--text-muted)">Path: <span style="color:var(--text);word-break:break-all">{{ series.path }}</span></div>
         <div style="color:var(--text-muted)">Linked: <span style="color:var(--text)">{{ "Yes" if series.linked else "No" }}</span></div>
+        {% if series.linked %}
+        <div style="color:var(--text-muted)">Sync source:
+          {% if series.source_web_url %}<a href="{{ series.source_web_url }}" target="_blank" rel="noopener" style="color:var(--accent-light)">{{ series.source_display_name }} ↗</a>{% else %}<span style="color:var(--text)">{{ series.source_display_name }}</span>{% endif %}
+        </div>
+        <div style="color:var(--text-muted)">Source key: <code style="color:var(--text);font-size:12px">{{ series.source_name }}</code></div>
+        {% if _is_suwayomi %}
+        <div style="color:var(--text-muted)">MangaDex companion:
+          {% if series.mangadex_id %}<a href="https://mangadex.org/title/{{ series.mangadex_id }}" target="_blank" rel="noopener" style="color:var(--accent-light)">{{ series.mangadex_id }} ↗</a>{% else %}<span style="color:var(--text-dim)">Not linked</span>{% endif %}
+        </div>
+        {% endif %}
+        {% endif %}
         <div style="color:var(--text-muted)">Series language: <span style="color:var(--text)">{{ (series.language or "en")|upper }}</span></div>
         <div style="color:var(--text-muted)">Exclude from Fix Files: <span style="color:var(--text)">{{ "Yes" if series.exclude_from_fix else "No" }}</span></div>
       </div>
@@ -386,6 +408,11 @@
           <div class="text-xs mt-0.5" style="color:var(--text-muted)">
             You have <span style="color:var(--text)">{{ have_volumes }}</span> / <span style="color:var(--text)">{{ source_volumes or "?" }}</span> from source
           </div>
+          {% if unmapped_chapter_count %}
+          <div class="text-xs mt-1.5 leading-relaxed" style="color:var(--text-dim)">
+            {{ unmapped_chapter_count }} downloaded chapter{{ '' if unmapped_chapter_count == 1 else 's' }} still {{ 'has' if unmapped_chapter_count == 1 else 'have' }} no volume information. Manga Maid also checked MangaDex entries in other languages, but older chapters may not be listed there.
+          </div>
+          {% endif %}
         </div>
         {% endif %}
       </div>
@@ -818,6 +845,12 @@ function bindSeriesJobStream(jobId, path, btn) {
     if (payload.type === 'status') {
       if (payload.status === 'queued' && btn) btn.textContent = 'Queued';
       if (payload.status === 'running' && btn) btn.textContent = 'Running';
+      if (payload.status === 'failed' && payload.error_summary) {
+        var errorLine = document.createElement('div');
+        errorLine.textContent = '[job] failed: ' + payload.error_summary;
+        log.appendChild(errorLine);
+        log.scrollTop = log.scrollHeight;
+      }
       appendDetailJobStatusHint(log, payload.status);
       if (payload.status === 'completed' || payload.status === 'failed' || payload.status === 'cancelled' || payload.status === 'missing') {
         es.close();

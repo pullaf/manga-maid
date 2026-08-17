@@ -1,0 +1,29 @@
+<div class="space-y-5">
+  <div>
+    <h2 class="text-lg font-bold" style="font-family:'Syne',sans-serif;color:var(--text)">Fix this sync source</h2>
+    <p class="text-sm mt-2 leading-relaxed" style="color:var(--text-muted)">
+      Manga Maid could not get this title's chapters from Suwayomi. A linked MangaDex title can provide covers and volume information, but chapters still come from Suwayomi.
+    </p>
+  </div>
+
+  <ol class="space-y-3 text-sm list-decimal pl-5" style="color:var(--text-muted)">
+    <li>Open Suwayomi and update the extension used for this title.</li>
+    <li>In Suwayomi, remove the title from your library, search for it again, and add it back.</li>
+    <li>Return to Manga Maid and try <strong style="color:var(--text)">Sync</strong> again.</li>
+    <li>
+      If it still fails, open the title's Details page in Manga Maid and choose
+      <strong style="color:var(--text)">Unlink from source</strong>. Then search for the title again and link it to the same existing folder. Re-select the MangaDex companion if needed.
+    </li>
+    <li>If the title is gone from that extension, choose another Suwayomi source.</li>
+  </ol>
+
+  <div class="rounded-lg border px-3 py-2.5 text-xs leading-relaxed"
+       style="border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.07);color:#fbbf24">
+    Your downloaded files are kept when you use <strong>Unlink from source</strong>. Do not choose <strong>Delete series &amp; all files</strong>.
+  </div>
+
+  <div class="flex justify-end">
+    <button type="button" onclick="closeModal()" class="text-sm px-4 py-2 rounded-lg border"
+            style="border-color:var(--border-mid);color:var(--text-muted)">Close</button>
+  </div>
+</div>

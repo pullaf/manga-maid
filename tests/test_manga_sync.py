@@ -45,6 +45,41 @@ def test_suwayomi_without_companion_skips_mangadex_volume_remap():
     ) is None
 
 
+def test_suwayomi_empty_collection_error_is_actionable_and_short():
+    raw = RuntimeError(
+        "Suwayomi GQL error: [{'message': 'Exception while fetching data "
+        "(/fetchChapters) : Collection is empty.\\njava.util.NoSuchElementException'}]"
+    )
+    summary = manga_sync._friendly_sync_error(raw)
+    assert "source returned an empty manga collection" in summary
+    assert "java.util" not in summary
+    assert len(summary) < 300
+
+
+def test_aggregate_language_fallback_fills_only_missing_chapters():
+    from sources.mangadex import MangaDexSource
+
+    preferred = {"result": "ok", "volumes": {
+        "none": {"volume": "none", "chapters": {"20": {"chapter": "20"}}},
+        "1": {"volume": "1", "chapters": {"1": {"chapter": "1", "id": "preferred"}}},
+    }}
+    all_languages = {"result": "ok", "volumes": {
+        "2": {"volume": "2", "chapters": {
+            "1": {"chapter": "1", "id": "fallback-conflict"},
+            "20": {"chapter": "20", "id": "fallback-fill"},
+        }},
+        "3": {"volume": "3", "chapters": {"30": {"chapter": "30"}}},
+    }}
+    source = MangaDexSource()
+    with patch.object(source, "get_aggregate", side_effect=[preferred, all_languages]):
+        merged = source.get_aggregate_with_language_fallback("id", "en")
+
+    assert merged["volumes"]["1"]["chapters"]["1"]["id"] == "preferred"
+    assert "1" not in merged["volumes"]["2"]["chapters"]
+    assert merged["volumes"]["2"]["chapters"]["20"]["id"] == "fallback-fill"
+    assert "30" in merged["volumes"]["3"]["chapters"]
+
+
 # ---------------------------------------------------------------------------
 # _mdx_download
 # ---------------------------------------------------------------------------
