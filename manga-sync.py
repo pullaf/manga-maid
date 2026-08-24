@@ -54,13 +54,15 @@ from db import (                                        # noqa: E402
     set_series_sync_error, clear_series_sync_error,
 )
 from comicinfo import (                                 # noqa: E402
+    replace_volume_cover,
     build_comicinfo_xml, count_pages, inject_comicinfo,
     merge_chapters_into_volume, read_first_image_bytes,
 )
 from sync_config import load_settings, sanitize_volume_naming  # noqa: E402
 from kavita import KavitaClient                        # noqa: E402
 from file_permissions import apply_file_permission_mask # noqa: E402
-from naming import apply_naming_template, floor_int_str # noqa: E402
+from naming import apply_naming_template, floor_int_str, format_num, safe_filename_token # noqa: E402
+import locales as loc                                   # noqa: E402
 from sources.mangadex import (                          # noqa: E402
     MangaDexSource, _ChapterData, MDEX_COVERS,
 )
@@ -119,22 +121,167 @@ def _get_source(source_name: str):
     return MangaDexSource()
 
 
-def fetch_volume_covers(manga_id: str) -> dict[str, str]:
-    """Map volume number string → MangaDex cover URL (.512.jpg), for tests and tooling."""
-    return MangaDexSource().get_volume_covers(manga_id)
+_series_locale_prefs   = loc.series_locale_prefs
+_cached_title_pool     = loc.cached_title_pool
+resolve_series_titles  = loc.resolve_series_titles
 
 
-def _ensure_volume_cover_urls(conn, series_id: int, manga_id: str):
-    """Cache per-volume cover URLs in the DB."""
+def _series_display_title(conn, series_row: dict, settings: dict) -> str:
+    """Resolved title for this series, matching ComicInfo ``Series``."""
     try:
-        for vol_str, url in fetch_volume_covers(manga_id).items():
-            try:
-                upsert_volume(conn, series_id, float(vol_str), cover_url=url)
-            except (ValueError, TypeError):
-                pass
-        conn.commit()
+        meta = get_series_metadata(
+            conn, series_row["id"], series_row.get("source_name") or "mangadex") or {}
+    except Exception:
+        meta = {}
+    fallback = series_row.get("name") or os.path.basename(series_row.get("path") or "")
+    return resolve_series_titles(series_row, meta, settings, fallback)[0] or fallback
+
+
+def _cover_args(conn, series_row: dict, settings: dict) -> tuple[str, str | None]:
+    """``(cover preference, original language)`` for the Kavita/embed cover paths."""
+    meta = {}
+    try:
+        meta = get_series_metadata(
+            conn, series_row["id"], series_row.get("source_name") or "mangadex"
+        ) or {}
     except Exception:
         pass
+    pref = loc.effective_preference(
+        series_row.get("cover_language_override"),
+        (settings or {}).get("cover_language"), loc.ORIGINAL,
+    )
+    # Without an original language, ``original`` degrades to English - wrong for
+    # a Suwayomi series whose covers come from a MangaDex companion.
+    return pref, meta.get("original_language")
+
+
+def fetch_volume_covers(
+    manga_id: str, preference: str | None = None, original_language: str | None = None,
+) -> dict[str, tuple[str, str | None]]:
+    """Map volume number string → ``(cover URL, locale)``, for tests and tooling."""
+    return MangaDexSource().get_volume_covers(manga_id, preference, original_language)
+
+
+def _ensure_volume_cover_urls(
+    conn, series_id: int, manga_id: str,
+    preference: str | None = None, original_language: str | None = None,
+    settings: dict | None = None, label: str = "", explicit: bool = False,
+    manage_all: bool = False,
+) -> list[float]:
+    """Cache per-volume cover URLs (and the locale each came from) in the DB.
+
+    Returns the volumes whose cover changed, and re-embeds them when ``settings``
+    is supplied so archives already on disk do not keep a stale cover.
+    """
+    try:
+        placeholders = _volumes_with_placeholder_covers(conn, series_id)
+        covers  = fetch_volume_covers(manga_id, preference, original_language)
+        changed = _store_volume_covers(conn, series_id, covers)
+    except Exception:
+        return []
+    # Replacing our own placeholder needs no permission - real cover art simply
+    # arrived after the volume was built. Swapping real art for other real art
+    # is a user decision and stays gated.
+    targets = changed if explicit else [v for v in changed if v in placeholders]
+    if targets and settings is not None:
+        try:
+            _reembed_volume_covers(conn, series_id, targets, settings,
+                                   label or "covers", manage_all)
+        except Exception:
+            pass
+    return changed
+
+
+def _volumes_with_placeholder_covers(conn, series_id: int) -> set[float]:
+    """Volumes whose cover is the provisional first-page fallback."""
+    return {
+        r["volume_num"] for r in conn.execute(
+            "SELECT volume_num FROM volumes WHERE series_id=? AND cover_locale=?",
+            (series_id, loc.PLACEHOLDER_COVER),
+        )
+    }
+
+
+def _store_volume_covers(conn, series_id: int, covers: dict) -> list[float]:
+    """Persist cover URL + locale per volume; returns volumes whose cover changed.
+
+    A volume whose cover only existed in a fallback locale is upgraded here once
+    the preferred locale is uploaded - the stored ``cover_locale`` is what makes
+    that detectable without re-downloading every cover. The returned list drives
+    re-embedding, so an archive already on disk does not keep a stale cover.
+    """
+    changed: list[float] = []
+    for vol_str, entry in (covers or {}).items():
+        url, locale = entry if isinstance(entry, tuple) else (entry, None)
+        try:
+            vol_num = float(vol_str)
+        except (ValueError, TypeError):
+            continue
+        existing = get_volume(conn, series_id, vol_num) or {}
+        # Includes the first-URL case: an imported archive has no stored cover
+        # yet, and is exactly what a cover-language choice should fix.
+        if existing.get("cover_url") != url:
+            changed.append(vol_num)
+        upsert_volume(conn, series_id, vol_num, cover_url=url, cover_locale=locale)
+    conn.commit()
+    return changed
+
+
+def _download_cover(url: str) -> bytes | None:
+    """Fetch a MangaDex cover; the CDN requires a Referer."""
+    try:
+        req = request.Request(url, headers={
+            "Referer": "https://mangadex.org/", "User-Agent": "Mozilla/5.0",
+        })
+        return request.urlopen(req, timeout=15).read()
+    except Exception:
+        return None
+
+
+def _reembed_volume_covers(
+    conn, series_id: int, vol_nums, settings: dict, label: str,
+    manage_all: bool = False,
+) -> int:
+    """Rewrite the embedded cover of volumes whose cover art changed.
+
+    Covers are otherwise only written when a volume is first merged, so a
+    language change or a fallback upgrade would update the DB and Kavita while
+    the archive on disk kept the old image indefinitely.
+    """
+    n = 0
+    for vol_num in vol_nums or []:
+        row = get_volume(conn, series_id, vol_num) or {}
+        rel, url = row.get("path"), row.get("cover_url")
+        if not rel or not url:
+            continue
+        # Only ever overwrite cover bytes in archives we built. A placeholder
+        # is a copy of page 0001, still present, and real cover art can be
+        # re-downloaded - so nothing is lost. The original image inside an
+        # imported archive cannot be recovered, so that needs explicit consent.
+        if not manage_all and row.get("origin") != "merged":
+            continue
+        abs_path = os.path.join(MANGA_ROOT, rel)
+        if not os.path.isfile(abs_path):
+            continue
+        data = _download_cover(url)
+        if not data:
+            continue
+        # Archives we did not build nearly always carry their cover as page 1
+        # already, so inserting one would duplicate it. Only add a cover slot
+        # when the user has explicitly asked us to manage their existing files.
+        if replace_volume_cover(abs_path, data,
+                                file_permission_mask=settings.get("file_permission_mask"),
+                                insert_if_missing=manage_all):
+            try:
+                upsert_volume(conn, series_id, vol_num,
+                              file_size=os.path.getsize(abs_path))
+                conn.commit()
+            except OSError:
+                pass
+            n += 1
+            _log(f"[{label}] cover re-embedded: vol.{format_num(vol_num)} "
+                 f"({row.get('cover_locale') or 'unknown'})")
+    return n
 
 
 # ---------------------------------------------------------------------------
@@ -144,23 +291,48 @@ def _ensure_volume_cover_urls(conn, series_id: int, manga_id: str):
 def _fetch_and_cache_meta(
     source: MangaDexSource, manga_id: str, series_id: int,
     source_key: str, language: str, conn,
+    series_row: dict | None = None, settings: dict | None = None,
 ) -> dict:
     try:
         meta = source.get_metadata(manga_id)
+        orig_lang = meta.get("original_language")
 
         # MangaDex: also cache per-volume cover URLs for the merge step
         if isinstance(source, MangaDexSource):
             try:
-                for vol_str, url in source.get_volume_covers(manga_id).items():
-                    try:
-                        upsert_volume(conn, series_id, float(vol_str), cover_url=url)
-                    except (ValueError, TypeError):
-                        pass
-                conn.commit()
+                cover_pref = loc.effective_preference(
+                    (series_row or {}).get("cover_language_override"),
+                    (settings or {}).get("cover_language"), loc.ORIGINAL,
+                )
+                changed = _store_volume_covers(conn, series_id, source.get_volume_covers(
+                    manga_id, cover_pref, orig_lang))
+                if changed and settings is not None and \
+                        _has_explicit_cover_locale(series_row, settings):
+                    _reembed_volume_covers(
+                        conn, series_id, changed, settings,
+                        (series_row or {}).get("name") or "covers",
+                        _manages_existing_files(series_row))
             except Exception:
                 pass
 
+        # Non-MangaDex sources expose one title and no locale info. When a
+        # MangaDex companion is linked for metadata, take the locale fields from
+        # there so title/filename preferences work for Suwayomi series too.
+        titles = meta.get("titles") or {}
+        if not isinstance(source, MangaDexSource):
+            companion = mangadex_id_for_series(series_row or {})
+            if companion:
+                try:
+                    mdx_meta = MangaDexSource().get_metadata(companion)
+                    if mdx_meta.get("titles"):
+                        titles    = mdx_meta["titles"]
+                        orig_lang = mdx_meta.get("original_language") or orig_lang
+                except Exception as e:
+                    _log(f"  [warn] companion metadata fetch failed: {e}")
+
         upsert_series_metadata(conn, series_id, source_key,
+            titles_json=json.dumps(titles, ensure_ascii=False),
+            original_language=orig_lang,
             title=meta["title"],
             description=meta["description"],
             tags=meta["tags"],
@@ -621,8 +793,13 @@ def refresh_volume_comicinfo_embeds(series_row: dict, conn, settings: dict | Non
     language    = series_row.get("language", "en")
     manga_id    = series_row.get("source_id")
     series_web  = _get_source(source_name).get_web_url(manga_id) if manga_id else None
-    series_title = (meta or {}).get("title") or os.path.basename(series_dir)
+    series_title, filename_title = resolve_series_titles(
+        series_row, meta, settings, os.path.basename(series_dir))
     label       = series_row.get("name", series_path)
+
+    # Bring existing filenames in line first, so the rows read below carry the
+    # post-rename paths and Kavita sees one consistently-named series.
+    _rename_volume_stems_for_locale(conn, series_row, settings or {}, meta, label)
 
     file_permission_mask = (settings or {}).get("file_permission_mask")
     rows = conn.execute(
@@ -683,11 +860,13 @@ def _merge_volume_batch(
     preferred_group: str | None,
     settings: dict,
     series_web: str | None = None,
+    series_row: dict | None = None,
 ) -> tuple[int, list[str]]:
     """Merge listed volumes; returns (success_count, error_messages)."""
     volume_naming = sanitize_volume_naming(settings.get("volume_naming"))
     file_format   = settings.get("file_format", "cbz")
-    series_title  = (meta or {}).get("title") or os.path.basename(series_dir)
+    series_title, filename_title = resolve_series_titles(
+        series_row, meta, settings, os.path.basename(series_dir))
     merged = 0
     errors: list[str] = []
 
@@ -720,7 +899,7 @@ def _merge_volume_batch(
         # Never pass chapter span into the filename template (Kavita); span is
         # only in ComicInfo summary.
         base_name  = apply_naming_template(volume_naming, language=language or "en",
-                                          group=group_name, title=series_title,
+                                          group=group_name, title=filename_title,
                                           volume_num=vol_num)
         out_name   = base_name if base_name.endswith(f".{file_format}") \
                      else f"{base_name}.{file_format}"
@@ -746,19 +925,14 @@ def _merge_volume_batch(
             page_count=None,
         )
 
-        cover_bytes = None
-        cover_url   = vol_row.get("cover_url")
-        if cover_url:
-            try:
-                req = request.Request(cover_url, headers={
-                    "Referer":    "https://mangadex.org/",
-                    "User-Agent": "Mozilla/5.0",
-                })
-                cover_bytes = request.urlopen(req, timeout=15).read()
-            except Exception:
-                pass
+        cover_url    = vol_row.get("cover_url")
+        cover_bytes  = _download_cover(cover_url) if cover_url else None
+        # No cover art published for this volume yet: use the first page so the
+        # archive is not coverless, and mark it as provisional.
+        used_placeholder = False
         if not cover_bytes and ch_paths:
             cover_bytes = read_first_image_bytes(ch_paths[0])
+            used_placeholder = bool(cover_bytes)
 
         _log(f"  merging vol.{int(vol_num)} "
              f"({len(ch_paths)} ch) → {out_name}"
@@ -774,6 +948,9 @@ def _merge_volume_batch(
             rel_out  = os.path.relpath(out_path, MANGA_ROOT)
             vol_id   = vol_row["id"]
             mark_volume_merged(conn, vol_id, rel_out, os.path.getsize(out_path))
+            if used_placeholder:
+                upsert_volume(conn, series_id, vol_num,
+                              cover_locale=loc.PLACEHOLDER_COVER)
             mark_volume_comicinfo(conn, vol_id)
 
             for ch_row, ch_path in zip(ch_rows, ch_paths):
@@ -811,7 +988,11 @@ def compact_series_volumes(series_row: dict, conn, settings: dict) -> tuple[int,
 
     scan_disk_files(series_dir, series_id, conn)
     if manga_id and isinstance(source, MangaDexSource):
-        _ensure_volume_cover_urls(conn, series_id, manga_id)
+        cpref, colang = _cover_args(conn, series_row, settings)
+        _ensure_volume_cover_urls(conn, series_id, manga_id, cpref, colang,
+                                  settings, label,
+                                  _has_explicit_cover_locale(series_row, settings),
+                                  _manages_existing_files(series_row))
 
     meta = get_series_metadata(conn, series_id, source_name) or {}
     vol_nums = get_volumes_needing_compact(conn, series_id)
@@ -828,6 +1009,7 @@ def compact_series_volumes(series_row: dict, conn, settings: dict) -> tuple[int,
         _pg[0] if _pg else None,
         settings,
         series_web=series_web,
+        series_row=series_row,
     )
     scan_disk_files(series_dir, series_id, conn)
     return merged, errors
@@ -844,6 +1026,8 @@ def _ensure_comicinfo_all(
     force_overwrite: bool = False,
     file_permission_mask: str | None = None,
     side_fx: dict | None = None,
+    series_row: dict | None = None,
+    settings: dict | None = None,
 ):
     ch_rows, vol_rows = get_files_missing_comicinfo(conn, series_id)
     if not ch_rows and not vol_rows:
@@ -851,7 +1035,8 @@ def _ensure_comicinfo_all(
     label = series_label or os.path.basename(series_dir)
     _log(f"[{label}] ComicInfo pass: {len(ch_rows)} chapter file(s), {len(vol_rows)} volume file(s)")
 
-    series_title   = (meta or {}).get("title") or os.path.basename(series_dir)
+    series_title, filename_title = resolve_series_titles(
+        series_row, meta, settings, os.path.basename(series_dir))
     description    = (meta or {}).get("description")
     authors        = (meta or {}).get("authors") or []
     artists        = (meta or {}).get("artists") or []
@@ -1013,11 +1198,12 @@ def _aggregate_remap_mdx_id(
     return None
 
 
-def _volume_cover_urls_by_canonical_key(raw: dict[str, str]) -> dict[str, str]:
+def _volume_cover_urls_by_canonical_key(raw: dict) -> dict[str, str]:
     """Re-key MD cover map so ``17`` and ``17.0`` (and JSON float quirks) resolve the same URL."""
     out: dict[str, str] = {}
-    for k, url in raw.items():
-        ck = _normalize_volume_cover_key(k)
+    for k, entry in (raw or {}).items():
+        url = entry[0] if isinstance(entry, tuple) else entry
+        ck  = _normalize_volume_cover_key(k)
         if ck and url:
             out[ck] = url
     return out
@@ -1041,17 +1227,33 @@ def _kavita_set_covers(
     conn=None,
     series_id: int | None = None,
     force: bool = False,
+    cover_preference: str | None = None,
+    original_language: str | None = None,
+    display_title: str | None = None,
 ):
     series_name = os.path.basename(series_dir)
     try:
         covers = _volume_cover_urls_by_canonical_key(
-            MangaDexSource().get_volume_covers(manga_id)
+            MangaDexSource().get_volume_covers(manga_id, cover_preference,
+                                               original_language)
         )
         if not covers:
             return
-        series = client.search_series(series_name)
+        # Kavita names a series from ComicInfo ``Series``, which a title
+        # preference changes, while the folder keeps its original name. Search
+        # matches exactly, so try the resolved title before the folder name.
+        series = None
+        tried: list[str] = []
+        for candidate in (display_title, series_name):
+            candidate = (candidate or "").strip()
+            if not candidate or candidate in tried:
+                continue
+            tried.append(candidate)
+            series = client.search_series(candidate)
+            if series:
+                break
         if not series:
-            _log(f"[kavita] series not found: {series_name}")
+            _log(f"[kavita] series not found: {' / '.join(tried) or series_name}")
             return
         for vol in client.get_volumes(series["id"]):
             vol_raw = vol.get("number", "")
@@ -1148,6 +1350,9 @@ def _rename_tracked_chapter_stems_for_template(
     language = series_row.get("language", "en")
     ch_naming = settings.get("chapter_naming", "%3 ch.%5")
     name = series_row.get("name") or os.path.basename(series_row["path"])
+    _meta = get_series_metadata(
+        conn, series_id, series_row.get("source_name") or "mangadex") or {}
+    name = _filename_title_for(series_row, _meta, settings, name)
     rows = conn.execute(
         """
         SELECT c.id, c.path, c.chapter_num, c.title, c.group_name, v.volume_num
@@ -1231,6 +1436,266 @@ def _rename_tracked_chapter_stems_for_template(
     return n_done
 
 
+def _manages_existing_files(series_row: dict) -> bool:
+    """Whether pre-existing files in this folder may be rewritten."""
+    return bool((series_row or {}).get("manage_existing_files"))
+
+
+def _row_is_ours(row, kind: str) -> bool:
+    """Whether Manga Maid created this file.
+
+    Volumes we merged carry ``origin='merged'``; chapters we fetched carry
+    ``status='downloaded'``. Anything else was in the folder already - the
+    common case being a user who owns the first volumes in print and syncs the
+    rest. Rows predating these columns read as not-ours, which is the safe way
+    round: we decline to rewrite rather than guess.
+
+    Only cover writes consult this. Renames are reversible and recorded in
+    ``rename_log``; overwriting cover bytes inside an archive we did not build
+    is not, because the original image cannot be recovered.
+    """
+    if kind == "volume":
+        return (row["origin"] if "origin" in row.keys() else None) == "merged"
+    return (row["status"] if "status" in row.keys() else None) == "downloaded"
+
+
+def _has_explicit_cover_locale(series_row: dict, settings: dict) -> bool:
+    """Whether the user actually chose a cover language for this series.
+
+    Gates rewriting archives already on disk. Unset still resolves to
+    ``original`` when a volume is merged, but nothing existing is touched -
+    inserting cover art into imported files nobody asked about would be a
+    surprising thing for an update to do.
+    """
+    return bool(
+        (series_row or {}).get("cover_language_override")
+        or (settings or {}).get("cover_language")
+    )
+
+
+def _has_explicit_filename_locale(series_row: dict, settings: dict) -> bool:
+    """Whether the user actually chose a filename language for this series.
+
+    Gates the rename pass: on upgrade nobody has chosen anything, so no library
+    gets renamed as a side effect of installing this. Renaming only happens once
+    someone picks a locale, which is exactly when they expect their existing
+    files to be brought in line.
+    """
+    pref = loc.filename_preference(
+        series_row.get("filename_language_override"),
+        (settings or {}).get("filename_language"),
+        loc.effective_preference(
+            series_row.get("title_language_override"),
+            (settings or {}).get("title_language"), loc.LEGACY,
+        ),
+    )
+    return pref != loc.LEGACY
+
+
+def _filename_title_for(series_row: dict, meta: dict, settings: dict, fallback: str) -> str:
+    """Title to substitute for ``%3``.
+
+    Falls back to the folder name unless a filename language was actually
+    chosen, preserving the long-standing behaviour for anyone who has not opted
+    in - chapter stems have always been named from the folder.
+    """
+    if not _has_explicit_filename_locale(series_row, settings or {}):
+        return fallback
+    _, filename_title = resolve_series_titles(series_row, meta, settings, fallback)
+    return filename_title or fallback
+
+
+def _known_title_variants(series_row: dict, meta: dict, series_dir: str) -> list[str]:
+    """Every title this series may currently be filed under, longest first.
+
+    Used to locate the title inside an existing filename. Longest-first matters
+    so ``Made in Abyss Official`` is not half-replaced by ``Made in Abyss``.
+    """
+    variants = {os.path.basename(series_dir), (meta or {}).get("title") or ""}
+    variants.update(_cached_title_pool(meta).values())
+    return sorted((v.strip() for v in variants if v and v.strip()),
+                  key=len, reverse=True)
+
+
+def _restem_with_title(stem: str, variants: list[str], new_title: str) -> str | None:
+    """Swap the series title inside ``stem``, leaving every other token alone.
+
+    Returns ``None`` when no known title is present - a stem we cannot parse is
+    left untouched rather than rebuilt from the template, which would silently
+    drop scanlation groups or any manual naming the user applied.
+    """
+    safe_new = safe_filename_token(new_title)
+    for variant in variants:
+        safe_old = safe_filename_token(variant)
+        if safe_old and safe_old in stem:
+            if safe_old == safe_new:
+                return None
+            return stem.replace(safe_old, safe_new)
+    return None
+
+
+def _manages_existing_files(series_row: dict) -> bool:
+    """Whether pre-existing files in this folder may be rewritten."""
+    return bool((series_row or {}).get("manage_existing_files"))
+
+
+def _row_is_ours(row, kind: str) -> bool:
+    """Whether Manga Maid created this file.
+
+    Volumes we merged carry ``origin='merged'``; chapters we fetched carry
+    ``status='downloaded'``. Anything else was in the folder already - the
+    common case being a user who owns the first volumes in print and syncs the
+    rest. Rows predating these columns read as not-ours, which is the safe way
+    round: we decline to rewrite rather than guess.
+
+    Only cover writes consult this. Renames are reversible and recorded in
+    ``rename_log``; overwriting cover bytes inside an archive we did not build
+    is not, because the original image cannot be recovered.
+    """
+    if kind == "volume":
+        return (row["origin"] if "origin" in row.keys() else None) == "merged"
+    return (row["status"] if "status" in row.keys() else None) == "downloaded"
+
+
+def _has_explicit_cover_locale(series_row: dict, settings: dict) -> bool:
+    """Whether the user actually chose a cover language for this series.
+
+    Gates rewriting archives already on disk. Unset still resolves to
+    ``original`` when a volume is merged, but nothing existing is touched -
+    inserting cover art into imported files nobody asked about would be a
+    surprising thing for an update to do.
+    """
+    return bool(
+        (series_row or {}).get("cover_language_override")
+        or (settings or {}).get("cover_language")
+    )
+
+
+def _has_explicit_filename_locale(series_row: dict, settings: dict) -> bool:
+    """Whether the user actually chose a filename language for this series.
+
+    Gates the rename pass: on upgrade nobody has chosen anything, so no library
+    gets renamed as a side effect of installing this. Renaming only happens once
+    someone picks a locale, which is exactly when they expect their existing
+    files to be brought in line.
+    """
+    pref = loc.filename_preference(
+        series_row.get("filename_language_override"),
+        (settings or {}).get("filename_language"),
+        loc.effective_preference(
+            series_row.get("title_language_override"),
+            (settings or {}).get("title_language"), loc.LEGACY,
+        ),
+    )
+    return pref != loc.LEGACY
+
+
+def _rename_stems_for_locale(
+    conn,
+    series_row: dict,
+    settings: dict,
+    meta: dict,
+    label: str,
+    side_fx: dict | None = None,
+    kind: str = "volume",
+) -> int:
+    """Rename existing CBZs to the chosen filename language.
+
+    Covers both merged volumes and loose chapters: the filename setting names a
+    title, and both templates substitute one, so honouring it for only half the
+    library would leave a series filed under two different names.
+
+    Applies to every file in the series, including ones that were already in the
+    folder: a rename is reversible and recorded in ``rename_log``, so the cost of
+    getting it wrong is low and a half-renamed series is worse.
+    """
+    if series_row.get("exclude_from_fix"):
+        return 0
+    if not _has_explicit_filename_locale(series_row, settings):
+        return 0
+
+    series_id  = series_row["id"]
+    series_dir = os.path.join(MANGA_ROOT, series_row["path"])
+    _, filename_title = resolve_series_titles(
+        series_row, meta, settings, os.path.basename(series_dir))
+    if not filename_title:
+        return 0
+    variants = _known_title_variants(series_row, meta, series_dir)
+
+    is_volume = kind == "volume"
+    unit = "vol" if is_volume else "ch"
+    rows = conn.execute(
+        "SELECT id, volume_num AS num, path, origin FROM volumes "
+        "WHERE series_id=? AND path IS NOT NULL ORDER BY volume_num"
+        if is_volume else
+        "SELECT id, chapter_num AS num, path, status FROM chapters "
+        "WHERE series_id=? AND path IS NOT NULL ORDER BY chapter_num",
+        (series_id,),
+    ).fetchall()
+    n_done = 0
+    for r in rows:
+        old_rel = (r["path"] or "").strip()
+        if not old_rel:
+            continue
+        old_abs = os.path.join(MANGA_ROOT, old_rel)
+        if not os.path.isfile(old_abs):
+            continue
+        cur_stem = os.path.splitext(os.path.basename(old_abs))[0]
+        desired  = _restem_with_title(cur_stem, variants, filename_title)
+        if not desired or desired == cur_stem:
+            continue
+        ext     = os.path.splitext(old_abs)[1]
+        new_abs = os.path.join(os.path.dirname(old_abs), desired + ext)
+        if os.path.abspath(old_abs) == os.path.abspath(new_abs):
+            continue
+        if os.path.exists(new_abs):
+            _log(f"[{label}] {kind} stem skip (target exists): {desired}{ext}")
+            continue
+        try:
+            os.rename(old_abs, new_abs)
+        except OSError as e:
+            if _is_permission_errno(e):
+                _bump_library_write_denied(side_fx)
+                _log(
+                    f"[{label}] {kind} stem rename blocked by filesystem permissions "
+                    f"({unit}.{format_num(r['num'])}): {e} — file: {old_abs}"
+                )
+            else:
+                _log(f"[{label}] {kind} stem rename failed "
+                     f"{unit}.{format_num(r['num'])}: {e}")
+            continue
+        rel_new = os.path.relpath(new_abs, MANGA_ROOT)
+        if is_volume:
+            # Clear has_comicinfo so the ComicInfo pass rewrites <Series> with
+            # the new title, the way the chapter stem rename already does.
+            conn.execute("UPDATE volumes SET path=?, file_size=?, has_comicinfo=0 "
+                         "WHERE id=?",
+                         (rel_new, os.path.getsize(new_abs), r["id"]))
+            log_rename(conn, old_rel, rel_new, "rename", "volume_stem_locale",
+                       series_id=series_id, volume_id=r["id"])
+        else:
+            conn.execute("UPDATE chapters SET path=?, file_size=?, has_comicinfo=0 "
+                         "WHERE id=?",
+                         (rel_new, os.path.getsize(new_abs), r["id"]))
+            log_rename(conn, old_rel, rel_new, "rename", "chapter_stem_locale",
+                       series_id=series_id, chapter_id=r["id"])
+        conn.commit()
+        apply_file_permission_mask(new_abs, settings.get("file_permission_mask"))
+        n_done += 1
+        _log(f"[{label}] {kind} stem: {unit}.{format_num(r['num'])} "
+             f"{os.path.basename(old_rel)} → {desired}{ext}")
+    if n_done and side_fx is not None:
+        key = "volume_stems_renamed" if is_volume else "chapter_stems_renamed"
+        side_fx[key] = side_fx.get(key, 0) + n_done
+    return n_done
+
+
+def _rename_volume_stems_for_locale(conn, series_row, settings, meta, label,
+                                    side_fx=None) -> int:
+    return _rename_stems_for_locale(conn, series_row, settings, meta, label,
+                                    side_fx, kind="volume")
+
+
 def _sync_one_series(
     series_row: dict,
     conn,
@@ -1273,6 +1738,7 @@ def _sync_one_series(
             series_web=series_web, series_label=name,
             file_permission_mask=file_permission_mask,
             side_fx=side_fx,
+            series_row=series_row, settings=settings,
         )
         update_source_sync_time(conn, series_id, source_name)
         return 0
@@ -1286,6 +1752,7 @@ def _sync_one_series(
             series_web=series_web, series_label=name,
             file_permission_mask=file_permission_mask,
             side_fx=side_fx,
+            series_row=series_row, settings=settings,
         )
         update_source_sync_time(conn, series_id, source_name)
         return 0
@@ -1334,6 +1801,9 @@ def _sync_one_series(
         )
         if side_fx is not None and m:
             side_fx["chapter_stems_renamed"] = side_fx.get("chapter_stems_renamed", 0) + m
+        for _kind in ("volume", "chapter"):
+            _rename_stems_for_locale(conn, series_row, settings, meta, name,
+                                     side_fx, kind=_kind)
         return m
 
     stem_renames = _chapter_stem_sync_pass()
@@ -1345,13 +1815,19 @@ def _sync_one_series(
             series_web=series_web, series_label=name,
             file_permission_mask=file_permission_mask,
             side_fx=side_fx,
+            series_row=series_row, settings=settings,
         )
         if kavita_client and settings.get("auto_covers"):
             mdx_id = mangadex_id_for_series(series_row)
             if mdx_id:
                 try:
+                    cpref, colang = _cover_args(conn, series_row, settings)
                     _kavita_set_covers(kavita_client, series_dir, mdx_id,
-                                       conn=conn, series_id=series_id)
+                                       conn=conn, series_id=series_id,
+                                       cover_preference=cpref,
+                                       original_language=colang,
+                                       display_title=_series_display_title(
+                                           conn, series_row, settings))
                 except Exception as e:
                     _log(f"[{name}] kavita covers: {e}")
         return False
@@ -1386,7 +1862,7 @@ def _sync_one_series(
             ch_naming,
             language=language,
             group=ch_row.get("group_name") or "",
-            title=name,
+            title=_filename_title_for(series_row, meta, settings, name),
             volume_num=vol_num,
             chapter_num=ch_row["chapter_num"],
             chapter_title=ch_row.get("title") or "",
@@ -1487,14 +1963,19 @@ def _sync_one_series(
         series_web=series_web, series_label=name,
         file_permission_mask=file_permission_mask,
         side_fx=side_fx,
+        series_row=series_row, settings=settings,
     )
 
     # Kavita covers
     if kavita_client and settings.get("auto_covers"):
         mdx_id_for_covers = mangadex_id_for_series(series_row)
         if mdx_id_for_covers:
+            cpref, colang = _cover_args(conn, series_row, settings)
             _kavita_set_covers(kavita_client, series_dir, mdx_id_for_covers,
-                               conn=conn, series_id=series_id)
+                               conn=conn, series_id=series_id,
+                               cover_preference=cpref, original_language=colang,
+                               display_title=_series_display_title(
+                                   conn, series_row, settings))
 
     update_source_sync_time(conn, series_id, source_name)
     _log(f"[{name}] done - {downloaded}/{len(to_download)} downloaded")
@@ -1574,10 +2055,15 @@ def main(
         for s in series_list:
             mdx_id = mangadex_id_for_series(s)
             if mdx_id and kavita_client:
+                cpref, colang = _cover_args(conn, s, settings)
                 _kavita_set_covers(kavita_client,
                                    os.path.join(MANGA_ROOT, s["path"]),
                                    mdx_id,
-                                   conn=conn, series_id=s["id"], force=True)
+                                   conn=conn, series_id=s["id"], force=True,
+                                   cover_preference=cpref,
+                                   original_language=colang,
+                                   display_title=_series_display_title(
+                                       conn, s, settings))
         conn.close()
         return
 
@@ -1687,6 +2173,7 @@ def main(
             row.get("language", "en"),
             series_web=(_src.get_web_url(row["source_id"]) if row.get("source_id") else None),
             series_label=row.get("name", row["path"]),
+            series_row=row, settings=settings,
             force_overwrite=True,
             file_permission_mask=settings.get("file_permission_mask"),
         )
@@ -1718,6 +2205,7 @@ def main(
                 series_web=None,
                 series_label=series_name,
                 file_permission_mask=settings.get("file_permission_mask"),
+                series_row=series_row, settings=settings,
             )
             continue
 
@@ -1727,8 +2215,8 @@ def main(
             )
             if count:
                 any_downloaded = True
-                name = series_row.get("name") or os.path.basename(series_row["path"])
-                downloads.append((name, count))
+                downloads.append(
+                    (_series_display_title(conn, series_row, settings), count))
         except Exception as e:
             name = series_row.get("name") or os.path.basename(series_row["path"])
             summary = _friendly_sync_error(e)

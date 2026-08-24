@@ -5,7 +5,19 @@
   <p class="text-sm mt-1" style="color:var(--text-muted)">Download behaviour and Kavita integration</p>
 </div>
 
-<form method="post" action="/api/settings" class="space-y-6 max-w-xl">
+{% if languages_changed %}
+<div id="languages-saved" class="max-w-xl mb-4 rounded-lg px-3 py-2.5 text-xs flex items-start gap-2"
+     style="background:rgba(139,92,246,.10);border:1px solid rgba(139,92,246,.35);color:var(--text-muted)">
+  <span class="shrink-0 font-bold" style="color:var(--accent-light)">i</span>
+  <span>
+    Language preferences saved. Titles here are already updated. Run a sync or
+    <a href="/fix" style="text-decoration:underline;color:var(--accent-light)">Fix Files</a>
+    to apply them to your files.
+  </span>
+</div>
+{% endif %}
+
+<form id="settings-form" method="post" action="/api/settings" class="space-y-6 max-w-xl">
 
   <!-- Root Folders -->
   <div class="rounded-xl border p-6 space-y-4"
@@ -123,6 +135,78 @@
           <span class="text-xs" style="color:var(--text-dim)">{{ meaning }}</span>
         </div>
         {% endfor %}
+      </div>
+    </div>
+
+    <!-- Language preferences -->
+    <div class="space-y-3 pt-1">
+      <div>
+        <h3 class="text-xs font-medium mb-1" style="color:var(--text-muted)">Language preferences</h3>
+        <p class="text-xs mb-3" style="color:var(--text-dim)">
+          Independent of the per-series chapter language. Anything unavailable in your chosen
+          language falls back to the original. Individual series can override these.
+        </p>
+      </div>
+
+      {% if not settings.title_language and not settings.filename_language %}
+      <div class="rounded-lg px-3 py-2.5 text-xs flex items-start gap-2"
+           style="background:rgba(250,204,21,.08);border:1px solid rgba(250,204,21,.35);color:var(--text-muted)">
+        <span class="shrink-0 font-bold" style="color:#facc15">!</span>
+        <span>Titles are currently left as MangaDex returned them when each series was linked.
+        Choosing a language re-titles your library and <strong>renames existing files</strong> on
+        the next sync or Fix Files run.</span>
+      </div>
+      {% endif %}
+
+      <div>
+        <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Series title</label>
+        <select name="title_language"
+                class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+          <option value="" {% if not settings.title_language %}selected{% endif %}>Leave as-is (no re-titling)</option>
+          <option value="original" {% if settings.title_language == 'original' %}selected{% endif %}>Original language</option>
+          {% for opt in locale_options %}
+          <option value="{{ opt.code }}" {% if settings.title_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+          {% endfor %}
+        </select>
+        <p class="text-xs mt-1.5" style="color:var(--text-dim)">
+          Shown in Kavita and written to ComicInfo <code class="text-[11px]">Series</code>.
+        </p>
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Volume cover art</label>
+        <select name="cover_language"
+                class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+          <option value="" {% if not settings.cover_language %}selected{% endif %}>Leave as-is (original, new volumes only)</option>
+          <option value="original" {% if settings.cover_language == 'original' %}selected{% endif %}>Original language</option>
+          {% for opt in locale_options %}
+          <option value="{{ opt.code }}" {% if settings.cover_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+          {% endfor %}
+        </select>
+        <p class="text-xs mt-1.5" style="color:var(--text-dim)">
+          Which edition&rsquo;s covers to embed. Choosing a language rewrites covers in volumes
+          Manga Maid built. Files you imported are never modified, but still get the right cover
+          in Kavita.
+        </p>
+      </div>
+
+      <div>
+        <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Title used in filenames</label>
+        <select name="filename_language"
+                class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+          <option value="" {% if not settings.filename_language %}selected{% endif %}>Leave as-is (no renaming)</option>
+          <option value="match_title" {% if settings.filename_language == 'match_title' %}selected{% endif %}>Match the series title</option>
+          <option value="romanized" {% if settings.filename_language == 'romanized' %}selected{% endif %}>Romanized</option>
+          <option value="original" {% if settings.filename_language == 'original' %}selected{% endif %}>Original language</option>
+          {% for opt in locale_options %}
+          <option value="{{ opt.code }}" {% if settings.filename_language == opt.code %}selected{% endif %}>{{ opt.label }}</option>
+          {% endfor %}
+        </select>
+        <p class="text-xs mt-1.5" style="color:var(--text-dim)">
+          Substituted for <code class="text-[11px]">%3</code> in the chapter and volume
+          templates. <strong>Romanized</strong> keeps non-Latin scripts off the filesystem while
+          Kavita still shows the native title.
+        </p>
       </div>
     </div>
 
@@ -311,14 +395,91 @@
     </label>
   </div>
 
-  <button type="submit"
+  <button type="submit" id="settings-save"
           class="w-full bg-violet-600 hover:bg-violet-700 text-white text-sm font-semibold py-2.5 rounded-lg transition-colors"
           style="font-family:'Syne',sans-serif">
     Save Settings
   </button>
 </form>
 
+<div id="unsaved-bar" hidden
+     style="position:fixed;left:0;right:0;bottom:0;z-index:40;padding:10px 16px;
+            background:var(--surface);border-top:1px solid var(--border);
+            box-shadow:0 -4px 16px rgba(0,0,0,.18)">
+  <div class="max-w-xl mx-auto flex items-center justify-between gap-3">
+    <span class="text-xs font-medium" style="color:var(--text-muted)">Unsaved changes</span>
+    <div class="flex items-center gap-2">
+      <button type="button" id="unsaved-reset"
+              class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
+              style="border-color:var(--border-mid);color:var(--text-muted)">Discard</button>
+      <button type="button" id="unsaved-save"
+              class="text-xs px-4 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-700 text-white font-semibold transition-colors"
+              style="font-family:'Syne',sans-serif">Save Settings</button>
+    </div>
+  </div>
+</div>
+
 <script>
+/* ── Unsaved changes bar ──────────────────────
+   The page is long enough that the save button sits below the fold, so a sticky
+   bar appears once anything differs from what was loaded.
+
+   The baseline cannot be taken at load: the cron and toggle initialisers below
+   normalise form values after this runs, which would read as an edit. Instead
+   it is captured on the first pointer or key event inside the form, which fires
+   before any handler changes a value. Several controls are custom toggles that
+   assign to hidden inputs directly and fire no event, so state is polled. */
+(function () {
+  var form = document.getElementById('settings-form');
+  var bar  = document.getElementById('unsaved-bar');
+  if (!form || !bar) return;
+
+  var snapshot = function () {
+    return new URLSearchParams(new FormData(form)).toString();
+  };
+  var baseline = snapshot();
+  var armed    = false;
+
+  function arm() {
+    if (armed) return;
+    baseline = snapshot();   // captured before the handler mutates anything
+    armed = true;
+  }
+  ['pointerdown', 'keydown'].forEach(function (evt) {
+    form.addEventListener(evt, arm, true);
+  });
+
+  function render() {
+    var dirty = armed && snapshot() !== baseline;
+    if (dirty === !bar.hidden) return;
+    bar.hidden = !dirty;
+    document.body.style.paddingBottom = dirty ? (bar.offsetHeight + 16) + 'px' : '';
+  }
+
+  form.addEventListener('input', render);
+  form.addEventListener('change', render);
+  setInterval(render, 400);
+
+  document.getElementById('unsaved-save')
+    .addEventListener('click', function () {
+      armed = false;                      // let the submit through cleanly
+      form.requestSubmit();
+    });
+  document.getElementById('unsaved-reset')
+    .addEventListener('click', function () {
+      armed = false;
+      window.location.reload();
+    });
+  form.addEventListener('submit', function () { armed = false; });
+
+  window.addEventListener('beforeunload', function (e) {
+    if (armed && snapshot() !== baseline) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  var banner = document.getElementById('languages-saved');
+  if (banner) setTimeout(function () { banner.remove(); }, 12000);
+})();
+
 /* ── Root folders ─────────────────────────── */
 const _rfRoot = {{ manga_root | tojson }};
 let _rfFolders = {{ settings.root_folders | tojson }};

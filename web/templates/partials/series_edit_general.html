@@ -42,6 +42,92 @@
     </select>
   </div>
 
+  {% if has_pool %}
+  <div class="space-y-3 pt-1" style="border-top:1px solid var(--border)">
+    <div class="pt-3">
+      <h3 class="text-xs font-medium" style="color:var(--text-muted)">Language preferences</h3>
+      <p class="text-xs mt-1" style="color:var(--text-dim)">
+        Separate from the series language above, so English chapters can have Japanese covers.
+        Anything left on <em>Use default</em> follows Settings.
+      </p>
+    </div>
+
+    <div>
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Series title</label>
+      <select name="title_language_override"
+              class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+        <option value="" {% if not title_override %}selected{% endif %}>
+          Use default{% if global_title %} ({{ global_title }}){% else %} (leave as-is){% endif %}
+        </option>
+        <option value="original" {% if title_override == 'original' %}selected{% endif %}>
+          Original{% if original_label %} &middot; {{ original_label }}{% endif %}
+        </option>
+        {% for opt in title_choices %}
+        <option value="{{ opt.code }}" {% if title_override == opt.code %}selected{% endif %}>
+          {{ opt.label }} &middot; {{ opt.title }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Volume cover art</label>
+      <select name="cover_language_override"
+              class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+        <option value="" {% if not cover_override %}selected{% endif %}>
+          Use default{% if global_cover %} ({{ global_cover }}){% endif %}
+        </option>
+        <option value="original" {% if cover_override == 'original' %}selected{% endif %}>
+          Original{% if original_label %} &middot; {{ original_label }}{% endif %}
+        </option>
+        {% for opt in cover_choices %}
+        <option value="{{ opt.code }}" {% if cover_override == opt.code %}selected{% endif %}>
+          {{ opt.label }}{% if opt.total %} &middot; {{ opt.count }} of {{ opt.total }} volume{{ '' if opt.total == 1 else 's' }}{% endif %}
+        </option>
+        {% endfor %}
+      </select>
+      <p class="text-xs mt-1.5" style="color:var(--text-dim)">
+        Volumes with no cover in this language keep the original, and switch over if one is
+        uploaded later.
+      </p>
+    </div>
+
+    <label class="flex items-start gap-2.5 cursor-pointer">
+      <input type="checkbox" name="manage_existing_files" value="true" class="mt-0.5"
+             {% if manage_existing_files %}checked{% endif %}>
+      <span class="text-xs" style="color:var(--text-muted)">
+        Replace cover art in files that were already here
+        <span class="block mt-0.5" style="color:var(--text-dim)">
+          Off by default, since the original image cannot be recovered. Manga Maid otherwise
+          only rewrites covers in volumes it built itself.
+        </span>
+      </span>
+    </label>
+
+    <div>
+      <label class="block text-xs font-medium mb-1.5" style="color:var(--text-muted)">Title used in filenames</label>
+      <select name="filename_language_override"
+              class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+        <option value="" {% if not filename_override %}selected{% endif %}>
+          Use default{% if global_filename %} ({{ global_filename }}){% else %} (leave as-is){% endif %}
+        </option>
+        <option value="match_title" {% if filename_override == 'match_title' %}selected{% endif %}>Match the series title</option>
+        <option value="romanized" {% if filename_override == 'romanized' %}selected{% endif %}>Romanized</option>
+        {% for opt in title_choices %}
+        <option value="{{ opt.code }}" {% if filename_override == opt.code %}selected{% endif %}>
+          {{ opt.label }} &middot; {{ opt.title }}
+        </option>
+        {% endfor %}
+      </select>
+      <p class="text-xs mt-1.5" style="color:var(--text-dim)">
+        Renames this series&rsquo; existing chapter and volume files on the next sync or Fix
+        Files run. Only the title changes; scanlation group and numbering are left alone.
+      </p>
+    </div>
+  </div>
+  {% endif %}
+
+
   <div class="pt-1">
     <div class="flex items-start justify-between gap-3">
       <span>
@@ -85,11 +171,28 @@ function toggleEditGeneralExclude(btn) {
   var form = document.getElementById('series-edit-general-form');
   if (!form || form.dataset.bound === '1') return;
   form.dataset.bound = '1';
+  // Snapshot the language controls so the reload can flag what changed.
+  var langFields = ['title_language_override', 'cover_language_override',
+                    'filename_language_override'];
+  function langState() {
+    return langFields.map(function (n) {
+      var el = form.elements[n];
+      return el ? el.value : '';
+    }).join('|');
+  }
+  var langBefore = langState();
+
   form.addEventListener('htmx:afterRequest', function(e) {
     if (!e.detail) return;
     var errEl = document.getElementById('series-edit-general-error');
     if (e.detail.successful) {
       if (typeof closeModal === 'function') closeModal();
+      if (langState() !== langBefore) {
+        var u = new URL(window.location.href);
+        u.searchParams.set('languages', 'changed');
+        window.location.href = u.toString();
+        return;
+      }
       window.location.reload();
       return;
     }

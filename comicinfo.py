@@ -152,6 +152,65 @@ def inject_comicinfo(
                     os.unlink(tmp_path)
 
 
+def replace_volume_cover(
+    cbz_path: str,
+    cover_image_bytes: bytes,
+    file_permission_mask: str | None = None,
+    insert_if_missing: bool = False,
+) -> bool:
+    """Swap the embedded cover page inside an existing volume CBZ.
+
+    ``merge_chapters_into_volume`` writes the cover as ``0000.jpg``, ahead of the
+    ``0001``-numbered pages, so volumes this app built always have a slot to
+    replace. Archives imported from elsewhere may not; ``insert_if_missing``
+    adds one, which is what makes a cover-language choice apply to a library
+    that was scanned in rather than merged here.
+
+    Page order and the ComicInfo block are otherwise untouched.
+    """
+    if not os.path.exists(cbz_path) or not cover_image_bytes:
+        return False
+    tmp_path: str | None = None
+    try:
+        with zipfile.ZipFile(cbz_path, "r") as zin:
+            names = zin.namelist()
+            cover_name = next(
+                (n for n in names
+                 if os.path.splitext(os.path.basename(n))[0] == "0000"
+                 and os.path.splitext(n)[1].lower() in _IMAGE_EXTS),
+                None,
+            )
+            if not cover_name and not insert_if_missing:
+                return False
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=os.path.dirname(cbz_path), suffix=".tmp"
+            )
+            os.close(fd)
+
+            with zipfile.ZipFile(tmp_path, "w", compression=zipfile.ZIP_STORED) as zout:
+                if not cover_name:
+                    # Written first so it sorts ahead of the existing pages.
+                    zout.writestr("0000.jpg", cover_image_bytes)
+                for name in names:
+                    if cover_name and name == cover_name:
+                        zout.writestr(name, cover_image_bytes)
+                    else:
+                        zout.writestr(name, zin.read(name))
+
+        shutil.move(tmp_path, cbz_path)
+        tmp_path = None
+        apply_file_permission_mask(cbz_path, file_permission_mask)
+        return True
+    except Exception:
+        return False
+    finally:
+        if tmp_path:
+            with contextlib.suppress(OSError):
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+
+
 def merge_chapters_into_volume(
     chapter_paths: list[str],
     output_path: str,

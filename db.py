@@ -42,6 +42,14 @@ CREATE TABLE IF NOT EXISTS series (
     start_chapter            REAL    NOT NULL DEFAULT 0,
     exclude_from_fix         INTEGER NOT NULL DEFAULT 0,
     merge_volumes_override   INTEGER,
+    -- Locale preferences. NULL = inherit the global setting; otherwise
+    -- ``original``, ``romanized`` (filename only), or a locale code.
+    title_language_override    TEXT,
+    cover_language_override    TEXT,
+    filename_language_override TEXT,
+    -- 0: only rewrite files Manga Maid created. 1: also manage files that were
+    -- already in the folder when the series was linked.
+    manage_existing_files      INTEGER NOT NULL DEFAULT 0,
     sync_configured          INTEGER NOT NULL DEFAULT 1,
     sync_paused              INTEGER NOT NULL DEFAULT 0,
     ignored                  INTEGER NOT NULL DEFAULT 0,
@@ -74,6 +82,10 @@ CREATE TABLE IF NOT EXISTS series_metadata (
     content_rating TEXT,
     total_volumes  INTEGER,
     cover_filename TEXT,
+    -- Full ``locale -> title`` pool, so flipping a title/filename preference
+    -- re-resolves from cache instead of refetching the whole library.
+    titles_json       TEXT,
+    original_language TEXT,
     fetched_at     TEXT    NOT NULL,
     PRIMARY KEY(series_id, source)
 );
@@ -85,6 +97,12 @@ CREATE TABLE IF NOT EXISTS volumes (
     title         TEXT,
     description   TEXT,
     cover_url     TEXT,
+    -- Locale ``cover_url`` was picked from; lets a fallback cover be upgraded
+    -- once the preferred locale is uploaded, without re-fetching every volume.
+    cover_locale  TEXT,
+    -- ``merged`` when Manga Maid built this archive. NULL means it was adopted
+    -- from disk (or predates the column), which gates whether we rewrite it.
+    origin        TEXT,
     path          TEXT,
     has_comicinfo INTEGER NOT NULL DEFAULT 0,
     file_size     INTEGER,
@@ -192,6 +210,13 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE series ADD COLUMN merge_volumes_override INTEGER"
         )
+    for col in ("title_language_override", "cover_language_override",
+                "filename_language_override"):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE series ADD COLUMN {col} TEXT")
+    if "manage_existing_files" not in cols:
+        conn.execute("ALTER TABLE series ADD COLUMN manage_existing_files "
+                     "INTEGER NOT NULL DEFAULT 0")
     if "preferred_groups_json" not in cols:
         conn.execute("ALTER TABLE series ADD COLUMN preferred_groups_json TEXT")
         _migrate_preferred_groups_json(conn)
@@ -280,6 +305,16 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     vol_cols = {row[1] for row in conn.execute("PRAGMA table_info(volumes)")}
     if "kavita_cover_url" not in vol_cols:
         conn.execute("ALTER TABLE volumes ADD COLUMN kavita_cover_url TEXT")
+    if "cover_locale" not in vol_cols:
+        conn.execute("ALTER TABLE volumes ADD COLUMN cover_locale TEXT")
+    if "origin" not in vol_cols:
+        conn.execute("ALTER TABLE volumes ADD COLUMN origin TEXT")
+
+    sm_cols = {row[1] for row in conn.execute("PRAGMA table_info(series_metadata)")}
+    if "titles_json" not in sm_cols:
+        conn.execute("ALTER TABLE series_metadata ADD COLUMN titles_json TEXT")
+    if "original_language" not in sm_cols:
+        conn.execute("ALTER TABLE series_metadata ADD COLUMN original_language TEXT")
 
 
 def _migrate_preferred_groups_json(conn: sqlite3.Connection) -> None:
@@ -651,12 +686,17 @@ def get_all_series(conn: sqlite3.Connection) -> list[dict]:
             s.preferred_groups_json, s.start_chapter,
             s.exclude_from_fix, s.merge_volumes_override, s.sync_configured, s.sync_paused,
             s.ignored, s.updated_at, s.mangadex_id,
+            s.title_language_override, s.cover_language_override,
+            s.filename_language_override, s.manage_existing_files,
             s.last_sync_error, s.last_sync_error_at,
             ss.source  AS source_name,
             ss.source_id,
             (SELECT MAX(c.created_at) FROM chapters c WHERE c.series_id = s.id) AS latest_chapter_at,
             sm.description, sm.tags, sm.authors, sm.artists,
             sm.year, sm.status, sm.content_rating, sm.total_volumes, sm.cover_filename,
+            -- Title resolution inputs, so callers rendering a list do not need
+            -- one metadata query per series.
+            sm.title AS meta_title, sm.titles_json, sm.original_language,
             (SELECT COUNT(*) FROM chapters c
              WHERE c.series_id = s.id AND c.path IS NOT NULL) AS chapter_count,
             (SELECT COUNT(*) FROM (
@@ -1046,6 +1086,74 @@ def update_source_sync_time(conn: sqlite3.Connection, series_id: int, source: st
 # Metadata
 # ---------------------------------------------------------------------------
 
+_LOCALE_OVERRIDE_COLUMNS = (
+    "title_language_override",
+    "cover_language_override",
+    "filename_language_override",
+)
+
+
+def set_manage_existing_files(
+    conn: sqlite3.Connection, path: str, enabled: bool
+) -> None:
+    """Whether pre-existing files in this series' folder may be rewritten."""
+    conn.execute(
+        "UPDATE series SET manage_existing_files=?, updated_at=? WHERE path=?",
+        (1 if enabled else 0, _now(), path),
+    )
+    conn.commit()
+
+
+def set_series_locale_overrides(
+    conn: sqlite3.Connection, path: str, **overrides: str | None
+) -> None:
+    """Set per-series locale overrides; blank/``None`` clears back to inherit.
+
+    Kept separate from ``update_series`` so a rename and a preference change do
+    not have to travel together - the series edit form does both, the link
+    preview only the latter.
+    """
+    sets, values = [], []
+    for col in _LOCALE_OVERRIDE_COLUMNS:
+        if col in overrides:
+            value = (overrides[col] or "").strip() or None
+            sets.append(f"{col}=?")
+            values.append(value)
+    if not sets:
+        return
+    conn.execute(
+        f"UPDATE series SET {', '.join(sets)}, updated_at=? WHERE path=?",
+        values + [_now(), path],
+    )
+    conn.commit()
+
+
+def observed_locales(conn: sqlite3.Connection) -> list[str]:
+    """Locale codes actually present in the library, for the settings picker.
+
+    Unions title-pool keys with the locales covers were picked from, so the
+    global dropdown grows past the seed list as a library fills out.
+    """
+    found: set[str] = set()
+    try:
+        for row in conn.execute(
+            "SELECT titles_json FROM series_metadata WHERE titles_json IS NOT NULL"
+        ):
+            try:
+                pool = json.loads(row["titles_json"] or "{}")
+            except (ValueError, TypeError):
+                continue
+            if isinstance(pool, dict):
+                found.update(pool)
+        for row in conn.execute(
+            "SELECT DISTINCT cover_locale FROM volumes WHERE cover_locale IS NOT NULL"
+        ):
+            found.add(row["cover_locale"])
+    except sqlite3.Error:
+        return []
+    return sorted(c for c in found if c)
+
+
 def upsert_series_metadata(
     conn: sqlite3.Connection, series_id: int, source: str, **fields
 ) -> None:
@@ -1158,8 +1266,10 @@ def get_volumes(conn: sqlite3.Connection, series_id: int) -> list[dict]:
 def mark_volume_merged(
     conn: sqlite3.Connection, volume_id: int, path: str, file_size: int
 ):
+    """Record a volume archive Manga Maid built, tagging it as ours to manage."""
     conn.execute("""
-        UPDATE volumes SET path=?, file_size=?, last_seen=? WHERE id=?
+        UPDATE volumes SET path=?, file_size=?, last_seen=?, origin='merged'
+        WHERE id=?
     """, (path, file_size, _now(), volume_id))
     conn.commit()
 

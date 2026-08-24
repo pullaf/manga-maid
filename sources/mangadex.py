@@ -7,6 +7,8 @@ import json
 import time
 from urllib import error as urlerror, parse, request
 
+import locales as loc
+
 from .base import MangaResult, SeriesMetadata
 
 MDEX_BASE       = "https://api.mangadex.org"
@@ -25,6 +27,25 @@ def _group_name_from_rel(chapter_data: dict) -> str:
         if rel["type"] == "scanlation_group":
             return rel.get("attributes", {}).get("name", "") or ""
     return ""
+
+
+def _title_pool(attr: dict) -> dict[str, str]:
+    """Merge ``title`` and ``altTitles`` into one ``locale -> title`` map.
+
+    ``attributes.title`` is a single-locale map that is often the romanization
+    rather than English (``{"ja-ro": "..."}``), with everything else living in
+    ``altTitles`` as a list of single-key dicts. The primary title wins, and
+    ``altTitles`` may repeat a locale - first one wins there.
+    """
+    pool: dict[str, str] = {}
+    for code, value in (attr.get("title") or {}).items():
+        if code and (value or "").strip():
+            pool[code] = value.strip()
+    for entry in attr.get("altTitles") or []:
+        for code, value in (entry or {}).items():
+            if code and (value or "").strip() and code not in pool:
+                pool[code] = value.strip()
+    return pool
 
 
 def _tankobon_count_from_aggregate(agg) -> int:
@@ -101,7 +122,9 @@ class MangaDexSource:
     # Protocol: search
     # ------------------------------------------------------------------
 
-    def search(self, query: str) -> list[MangaResult]:
+    def search(self, query: str, title_preference: str | None = None) -> list[MangaResult]:
+        """Search by title. ``title_preference`` resolves each result's own
+        title pool, so results read the same way the library does."""
         data = self._api_get("/manga", {
             "title": query, "limit": 10,
             "includes[]": "cover_art", "order[relevance]": "desc",
@@ -109,8 +132,13 @@ class MangaDexSource:
         results: list[MangaResult] = []
         for item in data.get("data", []):
             attr  = item["attributes"]
+            pool  = _title_pool(attr)
             title = (attr.get("title") or {}).get("en") or \
                     next(iter((attr.get("title") or {}).values()), "Unknown")
+            if title_preference and title_preference != loc.LEGACY:
+                resolved = loc.resolve_title(
+                    pool, title_preference, attr.get("originalLanguage"))[1]
+                title = resolved or title
             fname = None
             for rel in item.get("relationships", []):
                 if rel["type"] == "cover_art":
@@ -139,7 +167,10 @@ class MangaDexSource:
         })
         attr = data["data"]["attributes"]
 
-        titles = attr.get("title") or {}
+        titles = _title_pool(attr)
+        # Unresolved: the caller applies the user's title preference. Keep the
+        # legacy en-first pick as the stored default so existing series that
+        # have not been re-resolved yet read the same as before.
         title  = titles.get("en") or next(iter(titles.values()), "")
 
         desc_map    = attr.get("description") or {}
@@ -186,6 +217,9 @@ class MangaDexSource:
             content_rating=attr.get("contentRating"),
             total_volumes=total_vols,
             cover_filename=cover_filename,
+            titles=titles,
+            original_language=attr.get("originalLanguage"),
+            available_locales=[c for c in titles if loc.is_content_locale(c)],
         )
 
     # ------------------------------------------------------------------
@@ -268,13 +302,18 @@ class MangaDexSource:
                 break
             time.sleep(0.4)
 
-    def get_volume_covers(self, manga_id: str) -> dict[str, str]:
-        """Map volume number string → MangaDex cover URL (.512.jpg).
+    def get_volume_cover_variants(self, manga_id: str) -> dict[str, dict[str, str]]:
+        """Map volume number string -> ``{locale: cover URL}`` (.512.jpg).
 
         Paginates: the MD ``/cover`` list can exceed ``limit`` (variants, locales,
         re-uploads), so the first page alone may omit high-numbered volumes.
+
+        Every locale is kept rather than filtering server-side with ``locales[]``,
+        because a volume may exist in only one locale - the newest volume is
+        typically original-language only until a translated edition ships - and
+        filtering would silently drop it.
         """
-        covers: dict[str, str] = {}
+        variants: dict[str, dict[str, str]] = {}
         offset, limit = 0, 100
         while True:
             data = self._api_get("/cover", {
@@ -285,17 +324,44 @@ class MangaDexSource:
             })
             batch = data.get("data", [])
             for item in batch:
-                attr  = item["attributes"]
-                vol   = attr.get("volume")
-                fname = attr.get("fileName")
+                attr   = item["attributes"]
+                vol    = attr.get("volume")
+                fname  = attr.get("fileName")
+                locale = attr.get("locale") or ""
                 if vol and fname:
-                    covers[str(vol)] = f"{MDEX_COVERS}/{manga_id}/{fname}.512.jpg"
+                    variants.setdefault(str(vol), {}).setdefault(
+                        locale, f"{MDEX_COVERS}/{manga_id}/{fname}.512.jpg"
+                    )
             total = int(data.get("total") or 0)
             offset += len(batch)
             if offset >= total or not batch:
                 break
             time.sleep(0.25)
-        return covers
+        return variants
+
+    def get_volume_covers(
+        self,
+        manga_id: str,
+        preference: str | None = None,
+        original_language: str | None = None,
+    ) -> dict[str, tuple[str, str | None]]:
+        """Map volume number string -> ``(cover URL, locale)`` for ``preference``.
+
+        Volumes with nothing in the preferred locale fall back per the resolver,
+        so a series can be localized overall while its newest volume still ships
+        the original cover. The locale is returned so callers can persist it and
+        upgrade later, once a preferred-locale cover is uploaded.
+        """
+        out: dict[str, tuple[str, str | None]] = {}
+        for vol, by_locale in self.get_volume_cover_variants(manga_id).items():
+            code = loc.resolve_locale(list(by_locale), preference, original_language)
+            if code is not None:
+                out[vol] = (by_locale[code], code)
+            elif by_locale:
+                # Only non-content locales available - better a cover than none.
+                first = next(iter(by_locale))
+                out[vol] = (by_locale[first], None)
+        return out
 
     def get_lang_chapter_count(self, manga_id: str, lang: str) -> tuple[str, int]:
         data = self._api_get(f"/manga/{manga_id}/feed", {

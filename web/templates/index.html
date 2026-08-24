@@ -356,20 +356,20 @@
        data-path="{{ s.path }}"
        data-details-url="/series/{{ s.path }}"
        data-has-cover="{{ 'yes' if s.cover_url else 'no' }}"
-       data-sort-name="{{ s.name | lower }}"
+       data-sort-name="{{ (s.display_title or s.name) | lower }}"
        data-sort-latest="{{ s.latest_chapter_at or '' }}">
     <div class="cover-wrap">
       {% if s.cover_url %}
-      <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.name }}"
+      <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.display_title or s.name }}"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-      <div class="cover-placeholder" style="display:none;font-size:22px">{{ s.name[0].upper() }}</div>
+      <div class="cover-placeholder" style="display:none;font-size:22px">{{ (s.display_title or s.name)[0].upper() }}</div>
       {% elif s.linked %}
-      <div class="cover-placeholder cover-lazy" data-path="{{ s.path }}" style="font-size:32px">{{ s.name[0].upper() }}</div>
+      <div class="cover-placeholder cover-lazy" data-path="{{ s.path }}" style="font-size:32px">{{ (s.display_title or s.name)[0].upper() }}</div>
       {% else %}
-      <div class="cover-placeholder" style="font-size:32px">{{ s.name[0].upper() }}</div>
+      <div class="cover-placeholder" style="font-size:32px">{{ (s.display_title or s.name)[0].upper() }}</div>
       {% endif %}
       <div class="cover-overlay"></div>
-      <a href="/series/{{ s.path }}" class="cover-title" style="text-decoration:none">{{ s.name }}</a>
+      <a href="/series/{{ s.path }}" class="cover-title" style="text-decoration:none">{{ s.display_title or s.name }}</a>
     </div>
     <div class="card-body">
       <div class="card-meta">
@@ -428,20 +428,20 @@
        data-path="{{ s.path }}"
        data-details-url="/series/{{ s.path }}"
        data-has-cover="{{ 'yes' if s.cover_url else 'no' }}"
-       data-sort-name="{{ s.name | lower }}"
+       data-sort-name="{{ (s.display_title or s.name) | lower }}"
        data-sort-latest="{{ s.latest_chapter_at or '' }}">
     <div class="cover-wrap">
       {% if s.cover_url %}
-      <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.name }}"
+      <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.display_title or s.name }}"
            onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-      <div class="cover-placeholder" style="display:none;font-size:13px">{{ s.name[0].upper() }}</div>
+      <div class="cover-placeholder" style="display:none;font-size:13px">{{ (s.display_title or s.name)[0].upper() }}</div>
       {% elif s.linked %}
-      <div class="cover-placeholder cover-lazy" data-path="{{ s.path }}" style="font-size:18px">{{ s.name[0].upper() }}</div>
+      <div class="cover-placeholder cover-lazy" data-path="{{ s.path }}" style="font-size:18px">{{ (s.display_title or s.name)[0].upper() }}</div>
       {% else %}
-      <div class="cover-placeholder" style="font-size:18px">{{ s.name[0].upper() }}</div>
+      <div class="cover-placeholder" style="font-size:18px">{{ (s.display_title or s.name)[0].upper() }}</div>
       {% endif %}
     </div>
-    <a href="/series/{{ s.path }}" class="list-name" title="{{ s.name }}" style="text-decoration:none">{{ s.name }}</a>
+    <a href="/series/{{ s.path }}" class="list-name" title="{{ s.display_title or s.name }}" style="text-decoration:none">{{ s.display_title or s.name }}</a>
     <div class="list-meta">
       {% if s.linked %}
       <span style="color:var(--accent-light);font-weight:600">{{ s.config.get("language","en").upper() }}</span>
@@ -501,14 +501,14 @@
       <div class="sc-grid unlinked" style="opacity:.55;border-color:rgba(251,191,36,.15)">
         <div class="cover-wrap">
           {% if s.cover_url %}
-          <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.name }}"
+          <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.display_title or s.name }}"
                onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-          <div class="cover-placeholder" style="display:none;font-size:22px">{{ s.name[0].upper() }}</div>
+          <div class="cover-placeholder" style="display:none;font-size:22px">{{ (s.display_title or s.name)[0].upper() }}</div>
           {% else %}
-          <div class="cover-placeholder" style="font-size:32px">{{ s.name[0].upper() }}</div>
+          <div class="cover-placeholder" style="font-size:32px">{{ (s.display_title or s.name)[0].upper() }}</div>
           {% endif %}
           <div class="cover-overlay"></div>
-          <a href="/series/{{ s.path }}" class="cover-title" style="text-decoration:none">{{ s.name }}</a>
+          <a href="/series/{{ s.path }}" class="cover-title" style="text-decoration:none">{{ s.display_title or s.name }}</a>
         </div>
         <div class="card-body">
           <div class="card-meta">
@@ -528,14 +528,14 @@
       <div class="sc-list unlinked" style="opacity:.65">
         <div class="cover-wrap">
           {% if s.cover_url %}
-          <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.name }}"
+          <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.display_title or s.name }}"
                onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-          <div class="cover-placeholder" style="display:none;font-size:13px">{{ s.name[0].upper() }}</div>
+          <div class="cover-placeholder" style="display:none;font-size:13px">{{ (s.display_title or s.name)[0].upper() }}</div>
           {% else %}
-          <div class="cover-placeholder" style="font-size:18px">{{ s.name[0].upper() }}</div>
+          <div class="cover-placeholder" style="font-size:18px">{{ (s.display_title or s.name)[0].upper() }}</div>
           {% endif %}
         </div>
-        <a href="/series/{{ s.path }}" class="list-name" title="{{ s.name }}" style="text-decoration:none">{{ s.name }}</a>
+        <a href="/series/{{ s.path }}" class="list-name" title="{{ s.display_title or s.name }}" style="text-decoration:none">{{ s.display_title or s.name }}</a>
         <div class="list-meta">
           <span class="badge-local" style="background:rgba(148,163,184,.1);color:var(--text-dim);border-color:rgba(148,163,184,.2)">IGNORED</span>
         </div>

@@ -374,6 +374,11 @@ class SuwayomiSource:
             content_rating=None,
             total_volumes=0,
             cover_filename=None,
+            # Suwayomi exposes one title and no locale metadata, so the pool has
+            # a single entry and every preference resolves to it.
+            titles={"en": manga.get("title") or ""} if manga.get("title") else {},
+            original_language=None,
+            available_locales=[],
         )
 
     # ------------------------------------------------------------------

@@ -170,9 +170,26 @@
   #action-bar-dynamic:not(:empty) { padding-bottom: 4px; margin-bottom: 0; }
 </style>
 
+{% if languages_changed %}
+<div id="languages-saved" class="mb-4 rounded-lg px-3 py-2.5 text-xs flex items-start gap-2"
+     style="background:rgba(139,92,246,.10);border:1px solid rgba(139,92,246,.35);color:var(--text-muted)">
+  <span class="shrink-0 font-bold" style="color:var(--accent-light)">i</span>
+  <span>
+    Language preferences saved. The title here is already updated. Run a sync or Fix Files
+    to apply them to this series&rsquo; files.
+  </span>
+</div>
+<script>setTimeout(function(){var b=document.getElementById('languages-saved'); if(b) b.remove();}, 12000);</script>
+{% endif %}
+
 <div class="mb-6 flex items-start justify-between gap-3">
   <div>
-    <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">{{ series.name }}</h1>
+    <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">{{ series.display_title or series.name }}</h1>
+    {% if series.display_title and series.display_title != series.name %}
+    <p class="text-xs mt-1" style="color:var(--text-dim)">
+      Folder: {{ series.name }}
+    </p>
+    {% endif %}
   </div>
   <a href="/"
      class="text-xs px-3 py-1.5 rounded-lg border transition-colors"
@@ -281,7 +298,7 @@
                   id="btn-detail-remove-series"
                   hx-post="/api/series/{{ series.path }}/unlink"
                   hx-swap="none"
-                  hx-confirm="Unlink '{{ series.name }}' from its source? Local files stay on disk.">Unlink from source</button>
+                  hx-confirm="Unlink '{{ series.display_title or series.name }}' from its source? Local files stay on disk.">Unlink from source</button>
           {% endif %}
           {% if series.ignored %}
           <button type="button" class="dropdown-item dropdown-item--accent"
@@ -753,8 +770,8 @@ function seriesDetailApiUrl(path, suffix) {
 async function toggleIgnored(ignore) {
   var path = document.getElementById('detail-actions').dataset.seriesPath;
   var msg = ignore
-    ? 'Stop managing "{{ series.name }}"? It will be hidden from the dashboard and excluded from all automatic sync and Fix Files jobs. Files and source link stay on disk.'
-    : 'Resume managing "{{ series.name }}"? It will reappear on the dashboard and be included in automatic jobs.';
+    ? 'Stop managing "{{ series.display_title or series.name }}"? It will be hidden from the dashboard and excluded from all automatic sync and Fix Files jobs. Files and source link stay on disk.'
+    : 'Resume managing "{{ series.display_title or series.name }}"? It will reappear on the dashboard and be included in automatic jobs.';
   var ok = await window.appConfirm(msg, ignore);
   if (!ok) return;
   var log = document.getElementById('detail-action-log');

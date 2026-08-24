@@ -112,6 +112,7 @@ from comicinfo import (                                # noqa: E402
 from comicinfo_defs import MANGA_VALUES, AGE_RATING_VALUES  # noqa: E402
 from file_permissions import sanitize_file_permission_mask   # noqa: E402
 from naming import apply_naming_template, format_num, floor_int_str  # noqa: E402
+import locales as loc                                   # noqa: E402
 from sources.mangadex import MangaDexSource, MDEX_COVERS              # noqa: E402
 
 _mdx = MangaDexSource()
@@ -698,7 +699,8 @@ def _group_fix_entries(issues: list, dup_groups: list, series_rows: list[dict]) 
         if key not in grouped:
             grouped[key] = {
                 "series_path": series["path"] if series else "",
-                "series_title": series["name"] if series else "Unknown Series",
+                "series_title": (series.get("display_title") or series["name"])
+                                 if series else "Unknown Series",
                 "issues": [],
                 "dup_groups": [],
             }
@@ -769,7 +771,7 @@ def get_subdirs() -> list[str]:
 # ---------------------------------------------------------------------------
 
 def mdex_search(query: str):
-    results = _mdx.search(query)
+    results = _mdx.search(query, load_settings().get("title_language"))
     # Reshape to legacy dict format expected by existing templates
     return [
         {"id": r["manga_id"], "title": r["title"], "cover_url": r["thumbnail_url"],
@@ -896,7 +898,9 @@ async def dashboard(request: Request):
     settings     = load_settings()
     suwayomi_url = (settings.get("suwayomi_url") or "").strip().rstrip("/")
     source_labels = _source_labels() if suwayomi_url else {}
+    _conn = _get_conn()
     for item in all_s:
+        item["display_title"] = _display_title(_conn, item, settings)
         item["source_display_name"] = _source_display_name(item.get("source_name"), source_labels)
     return templates.TemplateResponse(request=request, name="index.html",
         context={"series": series, "ignored_series": ignored_series,
@@ -1057,6 +1061,8 @@ async def series_details_page(request: Request, path: str):
     delete_tracked_file_count = len(chapters) + len(volumes)
 
     settings     = load_settings()
+    row["display_title"] = _display_title(conn, row, settings)
+    languages_changed = request.query_params.get("languages") == "changed"
     suwayomi_url = (settings.get("suwayomi_url") or "").strip().rstrip("/")
     source_labels = _source_labels() if suwayomi_url else {}
     row["source_display_name"] = _source_display_name(row.get("source_name"), source_labels)
@@ -1072,6 +1078,7 @@ async def series_details_page(request: Request, path: str):
         context={
             "active": "dashboard",
             "series": row,
+            "languages_changed": languages_changed,
             "chapters": chapters,
             "volumes": volumes,
             "source_chapters": source_chapters,
@@ -1109,6 +1116,7 @@ async def jobs_page(request: Request):
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     settings  = load_settings()
+    languages_changed = request.query_params.get("languages") == "changed"
     configured = settings.get("root_folders") or []
     try:
         existing = sorted(
@@ -1118,9 +1126,15 @@ async def settings_page(request: Request):
     except OSError:
         existing = []
     available_dirs = [d for d in existing if d not in configured]
+    locale_options = [
+        {"code": c, "label": loc.locale_label(c)}
+        for c in loc.picker_locales(_db.observed_locales(_get_conn()))
+    ]
     return templates.TemplateResponse(request=request, name="settings.html",
         context={"settings": settings, "active": "settings",
                  "available_dirs": available_dirs, "manga_root": MANGA_ROOT,
+                 "locale_options": locale_options,
+                 "languages_changed": languages_changed,
                  "no_root_folders": not configured})
 
 
@@ -1144,6 +1158,9 @@ async def save_settings_endpoint(
     suwayomi_username:  str = Form(""),
     suwayomi_password:  str = Form(""),
     telemetry_enabled:  str = Form("true"),
+    title_language:     str = Form(""),
+    cover_language:     str = Form(""),
+    filename_language:  str = Form(""),
 ):
     try:
         root_folders = json.loads(root_folders_json)
@@ -1182,6 +1199,10 @@ async def save_settings_endpoint(
         "suwayomi_password":  effective_pw,
         "suwayomi_auth_mode": "",  # force re-probe after credentials change
         "telemetry_enabled":  telemetry_enabled == "true",
+        "title_language":     _clean_locale_pref(title_language),
+        "cover_language":     _clean_locale_pref(cover_language),
+        "filename_language":  _clean_locale_pref(filename_language,
+                                                 extra=(loc.MATCH_TITLE,)),
     })
     # Bust Suwayomi caches so new URL/credentials take effect immediately
     _suwayomi_cache["ts"] = 0.0
@@ -1194,7 +1215,35 @@ async def save_settings_endpoint(
     if list(before.get("root_folders") or []) != seen:
         with contextlib.suppress(Exception):
             _enqueue_reconcile_job("settings_root_folders_changed")
-    return RedirectResponse("/settings", status_code=303)
+    # Language changes show up in the UI at once but only reach files on the
+    # next sync, so tell the user rather than leaving them wondering.
+    languages_changed = any(
+        (before.get(key) or "") != (after or "")
+        for key, after in (
+            ("title_language",    _clean_locale_pref(title_language)),
+            ("cover_language",    _clean_locale_pref(cover_language)),
+            ("filename_language", _clean_locale_pref(
+                filename_language, extra=(loc.MATCH_TITLE,))),
+        )
+    )
+    if languages_changed:
+        # Force the next sync to refetch pools for series linked before locale
+        # support, so the new preference actually has locales to resolve against.
+        # One connection: _get_conn() opens a fresh one each call, and two would
+        # deadlock on the write lock.
+        with contextlib.suppress(Exception):
+            _conn = _get_conn()
+            try:
+                _conn.execute(
+                    "UPDATE series_metadata SET fetched_at='1970-01-01T00:00:00' "
+                    "WHERE titles_json IS NULL "
+                    "   OR TRIM(COALESCE(titles_json,'')) IN ('', '{}')"
+                )
+                _conn.commit()
+            finally:
+                _conn.close()
+    target = "/settings?languages=changed" if languages_changed else "/settings"
+    return RedirectResponse(target, status_code=303)
 
 
 @app.post("/api/settings/test-webhook")
@@ -1240,9 +1289,18 @@ async def webhook_preview():
     ]
     conn = _get_conn()
     row = conn.execute(
-        "SELECT title FROM series WHERE title IS NOT NULL ORDER BY RANDOM() LIMIT 1"
+        "SELECT path FROM series WHERE title IS NOT NULL ORDER BY RANDOM() LIMIT 1"
     ).fetchone()
-    title = row["title"] if row else _FALLBACKS[0]
+    title = _FALLBACKS[0]
+    if row:
+        series = _db.get_series_by_path(conn, row["path"])
+        if series:
+            # %3 is the filename title, which can differ from the folder name.
+            settings = load_settings()
+            meta = _db.get_series_metadata(
+                conn, series["id"], series.get("source_name") or "mangadex") or {}
+            title = loc.resolve_series_titles(
+                series, meta, settings, series.get("name") or "")[1] or series["name"]
     import random as _random
     count = _random.randint(1, 3)
     return JSONResponse({"title": title, "count": count})
@@ -1393,6 +1451,9 @@ async def disable_source(source_id: str):
 async def fix_page(request: Request, series: str = ""):
     conn = _get_conn()
     series_rows = _db.get_all_series(conn)
+    _fix_settings = load_settings()
+    for _row in series_rows:
+        _row["display_title"] = _display_title(conn, _row, _fix_settings)
     excluded = _exclude_fix_series_paths(conn)
     issues = [
         t for t in _fix.scan(MANGA_ROOT)
@@ -1465,7 +1526,8 @@ async def search(request: Request, q: str = ""):
 
     async def _search_mdx():
         try:
-            res = await loop.run_in_executor(None, lambda: _mdx.search(q))
+            _pref = load_settings().get("title_language")
+            res = await loop.run_in_executor(None, lambda: _mdx.search(q, _pref))
             return {"source_key": "mangadex", "source_name": "MangaDex", "error": None,
                     "results": [{"id": r["manga_id"], "title": r["title"],
                                  "cover_url": r["thumbnail_url"], "status": r["status"],
@@ -1516,7 +1578,8 @@ async def search_mdx_companion(request: Request, q: str = ""):
         return HTMLResponse("")
     loop = asyncio.get_event_loop()
     try:
-        results = await loop.run_in_executor(None, lambda: _mdx.search(q))
+        _pref = load_settings().get("title_language")
+        results = await loop.run_in_executor(None, lambda: _mdx.search(q, _pref))
     except Exception as e:
         return HTMLResponse(f'<p class="text-xs px-2 py-1" style="color:var(--danger)">Search failed: {e}</p>')
     return templates.TemplateResponse(request=request, name="partials/mdx_companion_results.html",
@@ -1537,6 +1600,16 @@ async def get_manga_setup(request: Request, manga_id: str):
     attr   = manga_data["attributes"]
     title  = (attr.get("title") or {}).get("en") or \
              next(iter((attr.get("title") or {}).values()), "Unknown")
+    title_pool = _mdx_title_pool(attr)
+    orig_lang  = attr.get("originalLanguage")
+    _settings  = load_settings()
+    # Folder name is a filesystem name, so follow the filename preference.
+    _fname_pref = loc.filename_preference(
+        None, _settings.get("filename_language"),
+        loc.effective_preference(None, _settings.get("title_language"), loc.LEGACY))
+    if _fname_pref != loc.LEGACY:
+        title = loc.resolve_title(title_pool, _fname_pref, orig_lang,
+                                  allow_romanized=True)[1] or title
     status = attr.get("status", "unknown")
     year   = attr.get("year")
     available_langs = attr.get("availableTranslatedLanguages") or []
@@ -1561,6 +1634,14 @@ async def get_manga_setup(request: Request, manga_id: str):
     default_lang = next(iter(lang_counts), "en")
     groups_data  = await _fetch_groups(manga_id, default_lang)
 
+    # Cover coverage per locale, so the picker can show "14 of 15 volumes"
+    # rather than implying every volume has a translated cover.
+    try:
+        variants = await loop.run_in_executor(
+            None, _mdx.get_volume_cover_variants, manga_id)
+    except Exception:
+        variants = {}
+
     existing = _get_conn().execute(
         "SELECT s.path FROM series s JOIN series_sources ss ON s.id = ss.series_id "
         "WHERE ss.source = 'mangadex' AND ss.source_id = ?", (manga_id,)
@@ -1570,6 +1651,11 @@ async def get_manga_setup(request: Request, manga_id: str):
                  "cover_url": cover_url, "cover_filename": cover_filename or "",
                  "lang_counts": lang_counts, "default_lang": default_lang,
                  "subdirs": get_subdirs(), "existing_path": existing["path"] if existing else None,
+                 "title_choices": _title_choices(title_pool, orig_lang),
+                 "cover_choices": _cover_choices(variants),
+                 "original_language": orig_lang,
+                 "original_label": loc.locale_label(orig_lang or ""),
+                 "settings": load_settings(),
                  **groups_data})
 
 
@@ -1757,6 +1843,171 @@ async def proxy_cover(manga_id: str, filename: str):
 # API - series CRUD
 # ---------------------------------------------------------------------------
 
+def _ensure_title_pool(conn, row: dict, manga_id: str) -> None:
+    """Fetch and cache the title pool for a series that has none yet."""
+    source_name = row.get("source_name") or "mangadex"
+    try:
+        meta = _db.get_series_metadata(conn, row["id"], source_name) or {}
+        if (meta.get("titles_json") or "").strip() not in ("", "{}"):
+            return
+        fetched = _mdx.get_metadata(manga_id)
+        if not fetched.get("titles"):
+            return
+        _db.upsert_series_metadata(
+            conn, row["id"], source_name,
+            titles_json=json.dumps(fetched["titles"], ensure_ascii=False),
+            original_language=fetched.get("original_language"),
+        )
+        conn.commit()
+    except Exception:
+        pass
+
+
+def _display_title(conn, row: dict, settings: dict | None = None) -> str:
+    """Resolved series title for the UI, matching what sync writes to ComicInfo.
+
+    Read straight from cached metadata, so changing a language preference is
+    reflected immediately rather than only after the next sync.
+
+    Rows from ``get_all_series`` carry the resolution inputs already, which keeps
+    list pages to a single query instead of one per series.
+    """
+    if "titles_json" in row and "meta_title" in row:
+        meta = {
+            "title":             row.get("meta_title"),
+            "titles_json":       row.get("titles_json"),
+            "original_language": row.get("original_language"),
+        }
+    else:
+        try:
+            meta = _db.get_series_metadata(
+                conn, row["id"], row.get("source_name") or "mangadex") or {}
+        except Exception:
+            meta = {}
+    fallback = row.get("name") or os.path.basename(row.get("path") or "")
+    display, _ = loc.resolve_series_titles(
+        row, meta, settings if settings is not None else load_settings(), fallback)
+    return display or fallback
+
+
+def _mdx_title_pool(attr: dict) -> dict[str, str]:
+    """Same merge the source adapter does, for routes holding raw API attributes."""
+    from sources.mangadex import _title_pool
+    return _title_pool(attr)
+
+
+def _title_choices(pool: dict, original_language: str | None) -> list[dict]:
+    """Picker options for a title pool, each carrying the title it resolves to.
+
+    The point is an informed choice: the user sees "Solo Leveling" next to
+    "English" rather than picking a language code blind.
+    """
+    pool = {k: v for k, v in (pool or {}).items() if loc.is_content_locale(k) and v}
+    if not pool:
+        return []
+    ro = loc.romanized_code(original_language)
+    # Original first, then its romanization, then English, then the rest by name.
+    def rank(code: str):
+        for i, special in enumerate((original_language, ro, "en")):
+            if special and code == special:
+                return (i, "")
+        return (3, loc.locale_label(code))
+    return [
+        {"code": code, "label": loc.locale_label(code), "title": pool[code]}
+        for code in sorted(pool, key=rank)
+    ]
+
+
+def _cover_choices(variants: dict) -> list[dict]:
+    """Cover picker options: locale, and how many volumes actually have it.
+
+    Coverage is the honest part - a locale covering 14 of 15 volumes means the
+    remaining volume falls back, and the user should see that before choosing.
+    """
+    total = len(variants or {})
+    counts: dict[str, int] = {}
+    for by_locale in (variants or {}).values():
+        for code in by_locale:
+            if loc.is_content_locale(code):
+                counts[code] = counts.get(code, 0) + 1
+    return [
+        {"code": code, "label": loc.locale_label(code),
+         "count": counts[code], "total": total,
+         "partial": counts[code] < total}
+        for code in sorted(counts, key=lambda c: (-counts[c], loc.locale_label(c)))
+    ]
+
+
+def _series_locale_context(conn, row: dict, variants: dict | None = None) -> dict:
+    """Locale picker state for one series: choices, overrides, inherited values.
+
+    ``variants`` is the live cover map when the caller could fetch one. Cover
+    choices must come from cover art that actually exists - the title pool is a
+    much wider set, and offering a locale with no covers in it is a lie.
+    """
+    source_name = row.get("source_name") or "mangadex"
+    meta = {}
+    try:
+        meta = _db.get_series_metadata(conn, row["id"], source_name) or {}
+    except Exception:
+        pass
+    try:
+        pool = json.loads(meta.get("titles_json") or "{}")
+    except (ValueError, TypeError):
+        pool = {}
+    if not isinstance(pool, dict) or not pool:
+        pool = {}
+    settings = load_settings()
+    if variants:
+        cover_choices = _cover_choices(variants)
+    else:
+        # Offline fallback: the locales we have actually stored covers from.
+        seen = []
+        try:
+            for r in conn.execute(
+                "SELECT DISTINCT cover_locale FROM volumes "
+                "WHERE series_id=? AND cover_locale IS NOT NULL", (row["id"],)
+            ):
+                seen.append(r["cover_locale"])
+        except Exception:
+            pass
+        cover_choices = [
+            {"code": c, "label": loc.locale_label(c), "count": 0, "total": 0,
+             "partial": False}
+            for c in dict.fromkeys(seen) if loc.is_content_locale(c)
+        ]
+    return {
+        "title_choices":  _title_choices(pool, meta.get("original_language")),
+        "cover_choices":  cover_choices,
+        "original_language": meta.get("original_language"),
+        "original_label": loc.locale_label(meta.get("original_language") or ""),
+        "manage_existing_files": bool(row.get("manage_existing_files")),
+        "title_override":    row.get("title_language_override") or "",
+        "cover_override":    row.get("cover_language_override") or "",
+        "filename_override": row.get("filename_language_override") or "",
+        "global_title":    settings.get("title_language") or "",
+        "global_cover":    settings.get("cover_language") or "",
+        "global_filename": settings.get("filename_language") or "",
+        "has_pool": bool(pool),
+    }
+
+
+def _clean_locale_pref(raw: str | None, default: str = "", extra=()) -> str:
+    """Validate a locale preference: a sentinel, or a plausible locale code.
+
+    Rejects anything unrecognised rather than storing it, so a hand-crafted POST
+    cannot put a value in the DB that the resolver would silently ignore.
+    """
+    value = (raw or "").strip().lower()
+    if not value:
+        return default
+    if value in (loc.ORIGINAL, loc.ROMANIZED, loc.LEGACY) or value in extra:
+        return value
+    if loc.is_content_locale(value) and re.fullmatch(r"[a-z]{2,3}(-[a-z]{2,3})?", value):
+        return value
+    return default
+
+
 def _parse_merge_volumes_override(raw: str | None) -> int | None:
     if raw is None:
         return None
@@ -1784,6 +2035,9 @@ async def add_series(
     merge_volumes_override: str = Form(""),
     source_key:     str   = Form("mangadex"),
     mangadex_id:    str   = Form(""),
+    title_language_override:    str = Form(""),
+    cover_language_override:    str = Form(""),
+    filename_language_override: str = Form(""),
 ):
     _require_root_folders()
     parts      = [p for p in [subfolder.strip("/"), title] if p]
@@ -1847,6 +2101,13 @@ async def add_series(
         sync_configured=sync_conf,
         mangadex_id=mdx_id or None,
     ))
+    _db.set_series_locale_overrides(
+        _get_conn(), rel_path,
+        title_language_override=_clean_locale_pref(title_language_override),
+        cover_language_override=_clean_locale_pref(cover_language_override),
+        filename_language_override=_clean_locale_pref(
+            filename_language_override, extra=(loc.MATCH_TITLE,)),
+    )
     _db.increment_usage(conn, "source_links")
     if link_only:
         return JSONResponse({"ok": True, "path": rel_path}, status_code=201)
@@ -2089,7 +2350,8 @@ async def mdx_companion_search_form(request: Request, path: str):
     if not row:
         raise HTTPException(404, "Series not found")
     return templates.TemplateResponse(request=request, name="partials/mdx_companion_link.html",
-        context={"path": path, "series_name": row.get("title") or path.split("/")[-1]})
+        context={"path": path,
+                 "series_name": _display_title(conn, row) or path.split("/")[-1]})
 
 
 @app.get("/api/series/{path:path}/edit", response_class=HTMLResponse)
@@ -2114,6 +2376,19 @@ async def edit_series_form(request: Request, path: str):
     manga_id = (row["config"].get("id", "") or "") if is_mdx else ""
     lang_norm = (row.get("language") or "en").strip().lower()
 
+    # Live cover availability, so the cover picker shows real per-locale coverage.
+    cover_variants: dict = {}
+    if is_mdx and manga_id:
+        loop = asyncio.get_event_loop()
+        try:
+            cover_variants = await loop.run_in_executor(
+                None, _mdx.get_volume_cover_variants, manga_id)
+        except Exception:
+            cover_variants = {}
+        # Series linked before locale support have no cached title pool, and the
+        # metadata TTL can be days out. Backfill now rather than hiding the UI.
+        await loop.run_in_executor(None, _ensure_title_pool, conn, row, manga_id)
+
     return templates.TemplateResponse(request=request, name="partials/series_edit_general.html",
         context={
             "path":                path,
@@ -2128,6 +2403,7 @@ async def edit_series_form(request: Request, path: str):
             "folder_name":         folder_name,
             "subfolder":           subfolder,
             "subdirs":             get_subdirs(),
+            **_series_locale_context(conn, row, cover_variants),
         })
 
 
@@ -2224,6 +2500,10 @@ async def update_series(
     exclude_from_fix: str = Form("false"),
     merge_volumes_override: str = Form(""),
     mark_sync_configured: str = Form(""),
+    title_language_override:    str = Form(""),
+    cover_language_override:    str = Form(""),
+    filename_language_override: str = Form(""),
+    manage_existing_files:      str = Form("false"),
 ):
     _require_root_folders()
     # path here is the URL route parameter (old path)
@@ -2263,6 +2543,15 @@ async def update_series(
         preferred_groups_json=preferred_groups_json.strip() or None,
         sync_configured=sync_conf,
     ))
+    _db.set_manage_existing_files(
+        _get_conn(), new_rel, manage_existing_files == "true")
+    _db.set_series_locale_overrides(
+        _get_conn(), new_rel,
+        title_language_override=_clean_locale_pref(title_language_override),
+        cover_language_override=_clean_locale_pref(cover_language_override),
+        filename_language_override=_clean_locale_pref(
+            filename_language_override, extra=(loc.MATCH_TITLE,)),
+    )
     return Response(status_code=204)
 
 
@@ -2791,7 +3080,7 @@ async def get_chapter_comicinfo(path: str, chapter_id: int):
     xml = read_comicinfo_xml(abs_f)
     fields = parse_comicinfo_fields(xml)
     if not fields.get("Series"):
-        fields["Series"] = row.get("name") or row.get("title") or ""
+        fields["Series"] = _display_title(conn, row) or row.get("title") or ""
     if not fields.get("Manga"):
         fields["Manga"] = "YesAndRightToLeft"
     if not fields.get("Number") and r["chapter_num"] is not None:
@@ -2828,7 +3117,7 @@ async def update_chapter_comicinfo(path: str, chapter_id: int, body: ComicInfoUp
         raise HTTPException(404, "Chapter archive missing on disk")
     fields = dict(body.fields or {})
     if not str(fields.get("Series", "")).strip():
-        fields["Series"] = row.get("name") or row.get("title") or ""
+        fields["Series"] = _display_title(conn, row) or row.get("title") or ""
     _validate_comicinfo_fields(fields)
     xml = _comicinfo_fields_to_xml(fields)
     ok = inject_comicinfo(
@@ -2862,7 +3151,7 @@ async def get_volume_comicinfo(path: str, volume_id: int):
     xml = read_comicinfo_xml(abs_f)
     fields = parse_comicinfo_fields(xml)
     if not fields.get("Series"):
-        fields["Series"] = row.get("name") or row.get("title") or ""
+        fields["Series"] = _display_title(conn, row) or row.get("title") or ""
     if not fields.get("Manga"):
         fields["Manga"] = "YesAndRightToLeft"
     if not fields.get("Volume") and r["volume_num"] is not None:
@@ -2897,7 +3186,7 @@ async def update_volume_comicinfo(path: str, volume_id: int, body: ComicInfoUpda
         raise HTTPException(404, "Volume archive missing on disk")
     fields = dict(body.fields or {})
     if not str(fields.get("Series", "")).strip():
-        fields["Series"] = row.get("name") or row.get("title") or ""
+        fields["Series"] = _display_title(conn, row) or row.get("title") or ""
     _validate_comicinfo_fields(fields)
     xml = _comicinfo_fields_to_xml(fields)
     ok = inject_comicinfo(

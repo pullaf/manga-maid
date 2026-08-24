@@ -1,4 +1,5 @@
 """Tests for manga-sync.py - imported as manga_sync via conftest."""
+import json
 import os
 from unittest.mock import MagicMock, patch
 
@@ -150,8 +151,8 @@ def test_fetch_volume_covers():
     from sources.mangadex import MangaDexSource
     with patch.object(MangaDexSource, "_api_get", return_value=mock_data):
         covers = manga_sync.fetch_volume_covers("manga-id")
-    assert covers["1"] == "https://uploads.mangadex.org/covers/manga-id/cover1.jpg.512.jpg"
-    assert covers["2"] == "https://uploads.mangadex.org/covers/manga-id/cover2.jpg.512.jpg"
+    assert covers["1"][0] == "https://uploads.mangadex.org/covers/manga-id/cover1.jpg.512.jpg"
+    assert covers["2"][0] == "https://uploads.mangadex.org/covers/manga-id/cover2.jpg.512.jpg"
     assert "3" in covers
 
 
@@ -424,3 +425,651 @@ def test_junk_chapter_file_cleared(tmp_path, monkeypatch):
     assert row["status"] == "known"
     assert row["file_size"] is None
     assert not bad.exists()
+
+
+# ---------------------------------------------------------------------------
+# Cover locale selection
+# ---------------------------------------------------------------------------
+
+def _cover_page(entries):
+    return {"data": [{"attributes": a} for a in entries], "total": len(entries)}
+
+
+# Mirrors the real shape: every volume localized except the newest, which is
+# still original-language only until a translated edition ships.
+_MIXED_LOCALE_COVERS = _cover_page([
+    {"volume": "1", "fileName": "v1-ja.jpg",   "locale": "ja"},
+    {"volume": "1", "fileName": "v1-en.jpg",   "locale": "en"},
+    {"volume": "1", "fileName": "v1-esla.jpg", "locale": "es-la"},
+    {"volume": "2", "fileName": "v2-ja.jpg",   "locale": "ja"},
+])
+
+
+def _covers_with(preference, original_language="ja", data=None):
+    from sources.mangadex import MangaDexSource
+    with patch.object(MangaDexSource, "_api_get",
+                      return_value=data or _MIXED_LOCALE_COVERS):
+        return manga_sync.fetch_volume_covers("mid", preference, original_language)
+
+
+def test_cover_preference_picks_requested_locale():
+    covers = _covers_with("en")
+    assert covers["1"][1] == "en"
+    assert covers["1"][0].endswith("v1-en.jpg.512.jpg")
+
+
+def test_cover_preference_falls_back_per_volume():
+    """A localized series can still have an original-language newest volume."""
+    covers = _covers_with("en")
+    assert covers["2"][1] == "ja"
+    assert covers["2"][0].endswith("v2-ja.jpg.512.jpg")
+
+
+def test_cover_original_preference():
+    covers = _covers_with("original")
+    assert covers["1"][1] == "ja"
+    assert covers["2"][1] == "ja"
+
+
+def test_cover_selection_is_deterministic_regardless_of_api_order():
+    """Previously last-writer-wins: whichever locale the API listed last won."""
+    reversed_page = {"data": list(reversed(_MIXED_LOCALE_COVERS["data"])), "total": 4}
+    assert _covers_with("en")["1"] == _covers_with("en", data=reversed_page)["1"]
+
+
+def test_cover_variants_keep_every_locale():
+    from sources.mangadex import MangaDexSource
+    with patch.object(MangaDexSource, "_api_get", return_value=_MIXED_LOCALE_COVERS):
+        variants = MangaDexSource().get_volume_cover_variants("mid")
+    assert set(variants["1"]) == {"ja", "en", "es-la"}
+    assert set(variants["2"]) == {"ja"}
+
+
+# ---------------------------------------------------------------------------
+# Title resolution / upgrade safety
+# ---------------------------------------------------------------------------
+
+# A cached series whose stored title is the romanization but whose pool has a
+# very different English alt title - the shape that would rename a library on
+# upgrade if unset preferences re-resolved instead of reusing the cached title.
+_META = {
+    "title": "Na Honjaman Level-Up",
+    "original_language": "ko",
+    "titles_json": json.dumps({
+        "ko-ro": "Na Honjaman Level-Up",
+        "ko":    "나 혼자만 레벨업",
+        "en":    "Solo Leveling",
+    }),
+}
+
+
+def _titles(series_row=None, settings=None):
+    return manga_sync.resolve_series_titles(
+        series_row or {}, _META, settings or {}, "Folder Name")
+
+
+def test_upgrade_with_nothing_configured_changes_nothing():
+    display, filename = _titles()
+    assert display == "Na Honjaman Level-Up"
+    assert filename == "Na Honjaman Level-Up"
+
+
+def test_global_preference_applies_once_chosen():
+    display, filename = _titles(settings={"title_language": "en"})
+    assert display == "Solo Leveling"
+    assert filename == "Solo Leveling"   # filename follows the title by default
+
+
+def test_series_override_beats_global():
+    display, _ = _titles({"title_language_override": "original"},
+                         {"title_language": "en"})
+    assert display == "나 혼자만 레벨업"
+
+
+def test_filename_can_stay_latin_while_title_is_native():
+    """The point of splitting the axes: no hangul on disk, native in Kavita."""
+    display, filename = _titles(
+        settings={"title_language": "original", "filename_language": "romanized"})
+    assert display == "나 혼자만 레벨업"
+    assert filename == "Na Honjaman Level-Up"
+
+
+def test_unknown_locale_falls_back_rather_than_blanking():
+    display, _ = _titles(settings={"title_language": "sv"})
+    assert display == "나 혼자만 레벨업"      # falls back to the original language
+
+
+def test_missing_pool_falls_back_to_cached_title():
+    """Series linked before the upgrade have no titles_json until refetched."""
+    meta = {"title": "Cached Title"}
+    assert manga_sync.resolve_series_titles({}, meta, {"title_language": "en"}, "x") \
+        == ("Cached Title", "Cached Title")
+
+
+# ---------------------------------------------------------------------------
+# Retroactive volume rename
+# ---------------------------------------------------------------------------
+
+_VARIANTS = ["Na Honjaman Level-Up", "나 혼자만 레벨업", "Solo Leveling"]
+
+
+def test_restem_swaps_only_the_title():
+    """Group tags and volume numbers must survive a locale rename untouched."""
+    assert manga_sync._restem_with_title(
+        "[en Group] Na Honjaman Level-Up vol.1", _VARIANTS, "Solo Leveling") \
+        == "[en Group] Solo Leveling vol.1"
+
+
+def test_restem_leaves_unrecognised_stems_alone():
+    """A manually renamed file is not rebuilt from the template."""
+    assert manga_sync._restem_with_title(
+        "something the user named themselves", _VARIANTS, "Solo Leveling") is None
+
+
+def test_restem_is_a_noop_when_already_correct():
+    assert manga_sync._restem_with_title(
+        "[en] Solo Leveling vol.1", _VARIANTS, "Solo Leveling") is None
+
+
+def test_restem_prefers_the_longest_matching_variant():
+    """A short title must not half-replace a longer one containing it."""
+    variants = sorted(["Abyss", "Made in Abyss"], key=len, reverse=True)
+    assert manga_sync._restem_with_title("Made in Abyss vol.1", variants, "X") \
+        == "X vol.1"
+
+
+def test_restem_sanitises_the_replacement():
+    out = manga_sync._restem_with_title("Solo Leveling vol.1", ["Solo Leveling"],
+                                        "A/B:C")
+    assert "/" not in out and ":" not in out
+
+
+def test_rename_is_gated_on_an_explicit_choice():
+    """Nothing configured: an upgrade must never rename a library."""
+    assert not manga_sync._has_explicit_filename_locale({}, {})
+    assert not manga_sync._has_explicit_filename_locale(
+        {}, {"title_language": "", "filename_language": ""})
+    # A choice at either level, on either axis, enables it.
+    assert manga_sync._has_explicit_filename_locale({}, {"title_language": "en"})
+    assert manga_sync._has_explicit_filename_locale({}, {"filename_language": "romanized"})
+    assert manga_sync._has_explicit_filename_locale(
+        {"title_language_override": "en"}, {})
+    assert manga_sync._has_explicit_filename_locale(
+        {"filename_language_override": "ja-ro"}, {})
+
+
+def test_excluded_series_are_never_renamed(tmp_path):
+    assert manga_sync._rename_volume_stems_for_locale(
+        None, {"exclude_from_fix": 1, "id": 1, "path": "x"},
+        {"title_language": "en"}, _META, "label") == 0
+
+
+# ---------------------------------------------------------------------------
+# Cover re-embedding
+# ---------------------------------------------------------------------------
+
+def _volume_cbz(path, cover=b"OLDCOVER", with_cover=True):
+    import zipfile
+    with zipfile.ZipFile(path, "w") as z:
+        if with_cover:
+            z.writestr("0000.jpg", cover)
+        z.writestr("0001.jpg", b"page1")
+        z.writestr("ComicInfo.xml", "<ComicInfo><Series>S</Series></ComicInfo>")
+    return path
+
+
+def test_replace_volume_cover_swaps_only_the_cover(tmp_path):
+    import zipfile
+    from comicinfo import replace_volume_cover
+    p = _volume_cbz(str(tmp_path / "v1.cbz"))
+    assert replace_volume_cover(p, b"NEWCOVER")
+    with zipfile.ZipFile(p) as z:
+        assert z.read("0000.jpg") == b"NEWCOVER"
+        assert z.read("0001.jpg") == b"page1"          # pages untouched
+        assert "ComicInfo.xml" in z.namelist()         # metadata untouched
+        assert z.namelist() == ["0000.jpg", "0001.jpg", "ComicInfo.xml"]
+
+
+def test_replace_volume_cover_declines_to_insert_by_default(tmp_path):
+    import zipfile
+    from comicinfo import replace_volume_cover
+    p = _volume_cbz(str(tmp_path / "v1.cbz"), with_cover=False)
+    assert replace_volume_cover(p, b"NEW") is False
+    with zipfile.ZipFile(p) as z:
+        assert "0000.jpg" not in z.namelist()
+
+
+def test_replace_volume_cover_can_insert_when_explicitly_asked(tmp_path):
+    """Capability retained, but the sync path deliberately never uses it."""
+    import zipfile
+    from comicinfo import replace_volume_cover
+    p = _volume_cbz(str(tmp_path / "v1.cbz"), with_cover=False)
+    assert replace_volume_cover(p, b"NEWCOVER", insert_if_missing=True)
+    with zipfile.ZipFile(p) as z:
+        assert z.namelist()[0] == "0000.jpg"      # sorts ahead of the pages
+        assert z.read("0000.jpg") == b"NEWCOVER"
+        assert z.read("0001.jpg") == b"page1"
+        assert "ComicInfo.xml" in z.namelist()
+
+
+def test_insert_does_not_duplicate_an_existing_cover_slot(tmp_path):
+    import zipfile
+    from comicinfo import replace_volume_cover
+    p = _volume_cbz(str(tmp_path / "v1.cbz"))
+    assert replace_volume_cover(p, b"NEWCOVER", insert_if_missing=True)
+    with zipfile.ZipFile(p) as z:
+        assert z.namelist().count("0000.jpg") == 1
+        assert z.read("0000.jpg") == b"NEWCOVER"
+
+
+def test_replace_volume_cover_is_safe_on_missing_or_empty(tmp_path):
+    from comicinfo import replace_volume_cover
+    assert replace_volume_cover(str(tmp_path / "nope.cbz"), b"X") is False
+    assert replace_volume_cover(_volume_cbz(str(tmp_path / "v.cbz")), b"") is False
+
+
+def test_store_volume_covers_reports_only_real_changes(tmp_path):
+    import db as dbmod
+    conn = dbmod.init_db(str(tmp_path))
+    dbmod.insert_series(conn, path="S", title="S", language="en", start_chapter=0)
+    sid = dbmod.get_series_by_path(conn, "S")["id"]
+
+    first = manga_sync._store_volume_covers(conn, sid, {"1": ("http://a", "ja")})
+    assert first == [1.0]            # imported volume gaining its first cover
+    same = manga_sync._store_volume_covers(conn, sid, {"1": ("http://a", "ja")})
+    assert same == []                                     # idempotent
+    changed = manga_sync._store_volume_covers(conn, sid, {"1": ("http://b", "en")})
+    assert changed == [1.0]                               # locale upgraded
+    assert dbmod.get_volume(conn, sid, 1.0)["cover_locale"] == "en"
+
+
+def test_reembed_rewrites_covers_for_changed_volumes(tmp_path, monkeypatch):
+    import zipfile
+    import db as dbmod
+    conn = dbmod.init_db(str(tmp_path))
+    root = tmp_path / "manga"; (root / "S").mkdir(parents=True)
+    monkeypatch.setattr(manga_sync, "MANGA_ROOT", str(root))
+    monkeypatch.setattr(manga_sync, "_download_cover", lambda url: b"NEWCOVER")
+
+    dbmod.insert_series(conn, path="S", title="S", language="en", start_chapter=0)
+    sid = dbmod.get_series_by_path(conn, "S")["id"]
+    cbz = _volume_cbz(str(root / "S" / "v1.cbz"))
+    dbmod.upsert_volume(conn, sid, 1.0, path="S/v1.cbz", origin="merged",
+                        cover_url="http://new", cover_locale="en")
+    conn.commit()
+
+    assert manga_sync._reembed_volume_covers(conn, sid, [1.0], {}, "S") == 1
+    with zipfile.ZipFile(cbz) as z:
+        assert z.read("0000.jpg") == b"NEWCOVER"
+
+
+def test_reembed_skips_volumes_with_no_file_on_disk(tmp_path, monkeypatch):
+    import db as dbmod
+    conn = dbmod.init_db(str(tmp_path))
+    monkeypatch.setattr(manga_sync, "MANGA_ROOT", str(tmp_path / "manga"))
+    monkeypatch.setattr(manga_sync, "_download_cover", lambda url: b"X")
+    dbmod.insert_series(conn, path="S", title="S", language="en", start_chapter=0)
+    sid = dbmod.get_series_by_path(conn, "S")["id"]
+    dbmod.upsert_volume(conn, sid, 1.0, path="S/gone.cbz", cover_url="http://x")
+    conn.commit()
+    assert manga_sync._reembed_volume_covers(conn, sid, [1.0], {}, "S") == 0
+
+
+def test_reembed_survives_a_failed_download(tmp_path, monkeypatch):
+    import db as dbmod
+    conn = dbmod.init_db(str(tmp_path))
+    root = tmp_path / "manga"; (root / "S").mkdir(parents=True)
+    monkeypatch.setattr(manga_sync, "MANGA_ROOT", str(root))
+    monkeypatch.setattr(manga_sync, "_download_cover", lambda url: None)
+    dbmod.insert_series(conn, path="S", title="S", language="en", start_chapter=0)
+    sid = dbmod.get_series_by_path(conn, "S")["id"]
+    _volume_cbz(str(root / "S" / "v1.cbz"))
+    dbmod.upsert_volume(conn, sid, 1.0, path="S/v1.cbz", cover_url="http://x")
+    conn.commit()
+    assert manga_sync._reembed_volume_covers(conn, sid, [1.0], {}, "S") == 0
+
+
+# ---------------------------------------------------------------------------
+# Chapter filenames follow the same setting as volumes
+# ---------------------------------------------------------------------------
+
+def test_chapter_filename_title_respects_the_gate():
+    """Unset: keep the long-standing folder-name behaviour."""
+    assert manga_sync._filename_title_for({}, _META, {}, "Folder Name") == "Folder Name"
+
+
+def test_chapter_filename_title_uses_the_chosen_locale():
+    assert manga_sync._filename_title_for(
+        {}, _META, {"title_language": "en"}, "Folder Name") == "Solo Leveling"
+    assert manga_sync._filename_title_for(
+        {}, _META, {"filename_language": "romanized"}, "Folder Name") \
+        == "Na Honjaman Level-Up"
+
+
+# ---------------------------------------------------------------------------
+# Suwayomi + MangaDex companion
+# ---------------------------------------------------------------------------
+
+class _FakeSuwayomiSource:
+    """Stands in for a non-MangaDex source: one title, no locale metadata."""
+    def get_metadata(self, manga_id):
+        return {
+            "title": "Solo Leveling Ragnarok", "description": None, "tags": [],
+            "authors": [], "artists": [], "year": None, "status": None,
+            "content_rating": None, "total_volumes": 0, "cover_filename": None,
+            "titles": {"en": "Solo Leveling Ragnarok"},
+            "original_language": None, "available_locales": [],
+        }
+
+
+_MDX_COMPANION_META = {
+    "title": "x", "description": None, "tags": [], "authors": [], "artists": [],
+    "year": None, "status": None, "content_rating": None, "total_volumes": 0,
+    "cover_filename": None,
+    "titles": {"ko-ro": "Na Honjaman Level-Up", "ko": "나 혼자만 레벨업",
+               "en": "Solo Leveling"},
+    "original_language": "ko", "available_locales": ["ko-ro", "ko", "en"],
+}
+
+
+def _companion_series(tmp_path):
+    import db as dbmod
+    conn = dbmod.init_db(str(tmp_path))
+    dbmod.insert_series(conn, path="S", title="S", language="en", start_chapter=0,
+                        source="suwayomi:1", source_id="42")
+    conn.execute("UPDATE series SET mangadex_id=? WHERE path='S'", ("mdx-uuid",))
+    conn.commit()
+    return conn, dbmod.get_series_by_path(conn, "S")
+
+
+def test_companion_supplies_locales_for_a_suwayomi_series(tmp_path):
+    """MangaDex linked for metadata must drive title locales, not just covers."""
+    from sources.mangadex import MangaDexSource
+    conn, row = _companion_series(tmp_path)
+    with patch.object(MangaDexSource, "get_metadata", return_value=_MDX_COMPANION_META):
+        meta = manga_sync._fetch_and_cache_meta(
+            _FakeSuwayomiSource(), "42", row["id"], "suwayomi:1", "en", conn,
+            row, {})
+    assert meta["original_language"] == "ko"
+    assert json.loads(meta["titles_json"])["en"] == "Solo Leveling"
+
+    disp, _ = manga_sync.resolve_series_titles(row, meta, {"title_language": "en"}, "S")
+    assert disp == "Solo Leveling"
+    disp, _ = manga_sync.resolve_series_titles(row, meta, {"title_language": "original"}, "S")
+    assert disp == "나 혼자만 레벨업"
+
+
+def test_companion_covers_get_the_right_original_language(tmp_path):
+    """Without this the 'original' cover preference degrades to English."""
+    from sources.mangadex import MangaDexSource
+    conn, row = _companion_series(tmp_path)
+    with patch.object(MangaDexSource, "get_metadata", return_value=_MDX_COMPANION_META):
+        manga_sync._fetch_and_cache_meta(
+            _FakeSuwayomiSource(), "42", row["id"], "suwayomi:1", "en", conn, row, {})
+    pref, orig = manga_sync._cover_args(conn, row, {"cover_language": "original"})
+    assert (pref, orig) == ("original", "ko")
+
+
+def test_suwayomi_without_a_companion_still_works(tmp_path):
+    """No companion: every preference collapses to the single available title."""
+    conn, row = _companion_series(tmp_path)
+    conn.execute("UPDATE series SET mangadex_id=NULL WHERE path='S'"); conn.commit()
+    row = dict(row); row["mangadex_id"] = None
+    meta = manga_sync._fetch_and_cache_meta(
+        _FakeSuwayomiSource(), "42", row["id"], "suwayomi:1", "en", conn, row, {})
+    disp, fname = manga_sync.resolve_series_titles(
+        row, meta, {"title_language": "ja"}, "S")
+    assert disp == fname == "Solo Leveling Ragnarok"
+
+
+def test_cover_rewrites_need_an_explicit_choice():
+    """Upgrading must not insert or replace covers in archives already on disk."""
+    assert not manga_sync._has_explicit_cover_locale({}, {})
+    assert not manga_sync._has_explicit_cover_locale({}, {"cover_language": ""})
+    assert manga_sync._has_explicit_cover_locale({}, {"cover_language": "original"})
+    assert manga_sync._has_explicit_cover_locale({}, {"cover_language": "en"})
+    assert manga_sync._has_explicit_cover_locale(
+        {"cover_language_override": "ja"}, {})
+
+
+def test_unset_cover_language_still_resolves_for_new_merges(tmp_path):
+    """Unset means 'do not rewrite', not 'have no preference'."""
+    import db as dbmod
+    conn = dbmod.init_db(str(tmp_path))
+    dbmod.insert_series(conn, path="S", title="S", language="en", start_chapter=0,
+                        source="mangadex", source_id="x")
+    row = dbmod.get_series_by_path(conn, "S")
+    dbmod.upsert_series_metadata(conn, row["id"], "mangadex", original_language="ja")
+    conn.commit()
+    pref, orig = manga_sync._cover_args(conn, row, {"cover_language": ""})
+    assert (pref, orig) == ("original", "ja")
+
+
+# ---------------------------------------------------------------------------
+# Cover art published after the volume was merged
+# ---------------------------------------------------------------------------
+
+def _series_with_volume(tmp_path, monkeypatch, cover_locale=None, cover_url=None):
+    import db as dbmod
+    conn = dbmod.init_db(str(tmp_path))
+    root = tmp_path / "manga"; (root / "S").mkdir(parents=True)
+    monkeypatch.setattr(manga_sync, "MANGA_ROOT", str(root))
+    dbmod.insert_series(conn, path="S", title="S", language="en", start_chapter=0,
+                        source="mangadex", source_id="mid")
+    sid = dbmod.get_series_by_path(conn, "S")["id"]
+    _volume_cbz(str(root / "S" / "v1.cbz"), cover=b"FIRSTPAGE")
+    dbmod.upsert_volume(conn, sid, 1.0, path="S/v1.cbz", origin="merged",
+                        cover_locale=cover_locale, cover_url=cover_url)
+    conn.commit()
+    return conn, sid, str(root / "S" / "v1.cbz")
+
+
+def _late_cover_arrives(conn, sid, monkeypatch, explicit=False):
+    monkeypatch.setattr(manga_sync, "fetch_volume_covers",
+                        lambda *a, **k: {"1": ("http://real", "ja")})
+    monkeypatch.setattr(manga_sync, "_download_cover", lambda url: b"REALCOVER")
+    return manga_sync._ensure_volume_cover_urls(
+        conn, sid, "mid", "original", "ja", {}, "S", explicit)
+
+
+def test_placeholder_cover_is_replaced_when_real_art_arrives(tmp_path, monkeypatch):
+    """Volume merged before the cover was published, with nothing configured."""
+    import zipfile
+    conn, sid, cbz = _series_with_volume(
+        tmp_path, monkeypatch, cover_locale=manga_sync.loc.PLACEHOLDER_COVER)
+    _late_cover_arrives(conn, sid, monkeypatch, explicit=False)
+    with zipfile.ZipFile(cbz) as z:
+        assert z.read("0000.jpg") == b"REALCOVER"
+
+
+def test_real_cover_art_is_not_swapped_without_permission(tmp_path, monkeypatch):
+    """An existing real cover is a user decision; leave it alone when unset."""
+    import zipfile
+    conn, sid, cbz = _series_with_volume(
+        tmp_path, monkeypatch, cover_locale="en", cover_url="http://old")
+    _late_cover_arrives(conn, sid, monkeypatch, explicit=False)
+    with zipfile.ZipFile(cbz) as z:
+        assert z.read("0000.jpg") == b"FIRSTPAGE"     # untouched
+
+
+def test_real_cover_art_is_swapped_once_a_language_is_chosen(tmp_path, monkeypatch):
+    import zipfile
+    conn, sid, cbz = _series_with_volume(
+        tmp_path, monkeypatch, cover_locale="en", cover_url="http://old")
+    _late_cover_arrives(conn, sid, monkeypatch, explicit=True)
+    with zipfile.ZipFile(cbz) as z:
+        assert z.read("0000.jpg") == b"REALCOVER"
+
+
+def test_placeholder_locale_is_never_selectable_as_cover_art():
+    """'page' must not leak into pickers or resolution."""
+    import locales as L
+    assert not L.is_content_locale(L.PLACEHOLDER_COVER)
+    assert L.resolve_locale([L.PLACEHOLDER_COVER], "original", "ja") is None
+    assert L.PLACEHOLDER_COVER not in L.picker_locales([L.PLACEHOLDER_COVER])
+
+
+def test_placeholder_is_cleared_once_real_art_lands(tmp_path, monkeypatch):
+    import db as dbmod
+    conn, sid, _ = _series_with_volume(
+        tmp_path, monkeypatch, cover_locale=manga_sync.loc.PLACEHOLDER_COVER)
+    _late_cover_arrives(conn, sid, monkeypatch, explicit=False)
+    assert dbmod.get_volume(conn, sid, 1.0)["cover_locale"] == "ja"
+
+
+def test_imported_archives_are_never_modified(tmp_path, monkeypatch):
+    """No cover slot means we did not build it; leave the file untouched."""
+    import zipfile
+    import db as dbmod
+    conn = dbmod.init_db(str(tmp_path))
+    root = tmp_path / "manga"; (root / "S").mkdir(parents=True)
+    monkeypatch.setattr(manga_sync, "MANGA_ROOT", str(root))
+    monkeypatch.setattr(manga_sync, "_download_cover", lambda url: b"REALCOVER")
+    dbmod.insert_series(conn, path="S", title="S", language="en", start_chapter=0)
+    sid = dbmod.get_series_by_path(conn, "S")["id"]
+    cbz = _volume_cbz(str(root / "S" / "v1.cbz"), with_cover=False)
+    dbmod.upsert_volume(conn, sid, 1.0, path="S/v1.cbz", cover_url="http://real")
+    conn.commit()
+
+    assert manga_sync._reembed_volume_covers(conn, sid, [1.0], {}, "S") == 0
+    with zipfile.ZipFile(cbz) as z:
+        assert z.namelist() == ["0001.jpg", "ComicInfo.xml"]   # byte-for-byte layout
+
+
+# ---------------------------------------------------------------------------
+# Files that were already in the folder
+# ---------------------------------------------------------------------------
+
+def _mixed_library(tmp_path, monkeypatch, manage_existing=0):
+    """The common shape: volumes the user owns, plus chapters we fetched."""
+    import db as dbmod
+    conn = dbmod.init_db(str(tmp_path))
+    root = tmp_path / "manga"; (root / "S").mkdir(parents=True)
+    monkeypatch.setattr(manga_sync, "MANGA_ROOT", str(root))
+    dbmod.insert_series(conn, path="S", title="S", language="en", start_chapter=0,
+                        source="mangadex", source_id="mid")
+    sid = dbmod.get_series_by_path(conn, "S")["id"]
+    conn.execute("UPDATE series SET manage_existing_files=? WHERE id=?",
+                 (manage_existing, sid))
+
+    for n, origin in ((1.0, None), (2.0, None), (3.0, "merged")):
+        name = f"Na Honjaman Level-Up vol.{int(n)}.cbz"
+        (root / "S" / name).write_bytes(b"x")
+        dbmod.upsert_volume(conn, sid, n, path=f"S/{name}", origin=origin)
+
+    for n, status in ((10.0, "on_disk"), (11.0, "downloaded")):
+        name = f"Na Honjaman Level-Up ch.{int(n)}.cbz"
+        (root / "S" / name).write_bytes(b"x")
+        dbmod.upsert_chapter(conn, sid, n, "mangadex", f"c{int(n)}",
+                             path=f"S/{name}")
+        conn.execute("UPDATE chapters SET status=? WHERE chapter_num=?", (status, n))
+    conn.commit()
+    dbmod.upsert_series_metadata(conn, sid, "mangadex", title="Na Honjaman Level-Up",
+                                 original_language="ko",
+                                 titles_json=_META["titles_json"])
+    conn.commit()
+    return conn, dbmod.get_series_by_path(conn, "S"), root / "S"
+
+
+def _rename_all(conn, row, meta):
+    for kind in ("volume", "chapter"):
+        manga_sync._rename_stems_for_locale(
+            conn, row, {"title_language": "en"}, meta, "S", kind=kind)
+
+
+def test_renames_cover_pre_existing_files_too(tmp_path, monkeypatch):
+    """Renames are reversible and logged, so a series is never half-renamed."""
+    conn, row, d = _mixed_library(tmp_path, monkeypatch)
+    _rename_all(conn, row, _META)
+    assert all(p.name.startswith("Solo Leveling") for p in d.iterdir())
+
+
+def test_renames_are_recorded_so_they_can_be_undone(tmp_path, monkeypatch):
+    conn, row, d = _mixed_library(tmp_path, monkeypatch)
+    _rename_all(conn, row, _META)
+    logged = conn.execute(
+        "SELECT old_path, new_path FROM rename_log WHERE reason LIKE '%_stem_locale'"
+    ).fetchall()
+    assert len(logged) == 5
+    assert all(r["old_path"] and r["new_path"] for r in logged)
+
+
+def test_merging_records_that_the_volume_is_ours(tmp_path):
+    import db as dbmod
+    conn = dbmod.init_db(str(tmp_path))
+    dbmod.insert_series(conn, path="S", title="S", language="en", start_chapter=0)
+    sid = dbmod.get_series_by_path(conn, "S")["id"]
+    vid = dbmod.upsert_volume(conn, sid, 1.0)
+    dbmod.mark_volume_merged(conn, vid, "S/v1.cbz", 123)
+    assert dbmod.get_volume(conn, sid, 1.0)["origin"] == "merged"
+
+
+def test_rows_predating_the_column_are_treated_as_not_ours(tmp_path, monkeypatch):
+    """Safe direction: decline to rewrite rather than guess about old rows."""
+    conn, row, d = _mixed_library(tmp_path, monkeypatch)
+    stale = conn.execute(
+        "SELECT id, volume_num AS num, path, origin FROM volumes WHERE volume_num=1"
+    ).fetchone()
+    assert not manga_sync._row_is_ours(stale, "volume")
+
+
+def test_cover_writes_stay_inside_archives_we_built(tmp_path, monkeypatch):
+    """Overwriting cover bytes we did not write cannot be undone."""
+    import zipfile
+    import db as dbmod
+    conn = dbmod.init_db(str(tmp_path))
+    root = tmp_path / "manga"; (root / "S").mkdir(parents=True)
+    monkeypatch.setattr(manga_sync, "MANGA_ROOT", str(root))
+    monkeypatch.setattr(manga_sync, "_download_cover", lambda url: b"REALCOVER")
+    dbmod.insert_series(conn, path="S", title="S", language="en", start_chapter=0)
+    sid = dbmod.get_series_by_path(conn, "S")["id"]
+
+    theirs = _volume_cbz(str(root / "S" / "theirs.cbz"), cover=b"THEIRART")
+    ours   = _volume_cbz(str(root / "S" / "ours.cbz"), cover=b"PLACEHOLDER")
+    dbmod.upsert_volume(conn, sid, 1.0, path="S/theirs.cbz", cover_url="http://x")
+    dbmod.upsert_volume(conn, sid, 2.0, path="S/ours.cbz", cover_url="http://x",
+                        origin="merged")
+    conn.commit()
+
+    assert manga_sync._reembed_volume_covers(conn, sid, [1.0, 2.0], {}, "S") == 1
+    assert zipfile.ZipFile(theirs).read("0000.jpg") == b"THEIRART"     # preserved
+    assert zipfile.ZipFile(ours).read("0000.jpg") == b"REALCOVER"      # ours
+
+
+def test_opting_in_allows_covering_imported_archives(tmp_path, monkeypatch):
+    import zipfile
+    import db as dbmod
+    conn = dbmod.init_db(str(tmp_path))
+    root = tmp_path / "manga"; (root / "S").mkdir(parents=True)
+    monkeypatch.setattr(manga_sync, "MANGA_ROOT", str(root))
+    monkeypatch.setattr(manga_sync, "_download_cover", lambda url: b"REALCOVER")
+    dbmod.insert_series(conn, path="S", title="S", language="en", start_chapter=0)
+    sid = dbmod.get_series_by_path(conn, "S")["id"]
+    theirs = _volume_cbz(str(root / "S" / "theirs.cbz"), cover=b"THEIRART")
+    dbmod.upsert_volume(conn, sid, 1.0, path="S/theirs.cbz", cover_url="http://x")
+    conn.commit()
+
+    assert manga_sync._reembed_volume_covers(
+        conn, sid, [1.0], {}, "S", manage_all=True) == 1
+    assert zipfile.ZipFile(theirs).read("0000.jpg") == b"REALCOVER"
+
+
+def test_rename_clears_comicinfo_so_series_tag_is_rewritten(tmp_path, monkeypatch):
+    """Renaming without this leaves the old <Series> in the file forever, since
+    the ComicInfo pass only visits files flagged as missing it."""
+    import db as dbmod
+    conn, row, d = _mixed_library(tmp_path, monkeypatch)
+    conn.execute("UPDATE volumes SET has_comicinfo=1")
+    conn.execute("UPDATE chapters SET has_comicinfo=1")
+    conn.commit()
+
+    _rename_all(conn, row, _META)
+
+    renamed_vols = conn.execute(
+        "SELECT has_comicinfo FROM volumes WHERE path LIKE '%Solo Leveling%'"
+    ).fetchall()
+    renamed_chs = conn.execute(
+        "SELECT has_comicinfo FROM chapters WHERE path LIKE '%Solo Leveling%'"
+    ).fetchall()
+    assert renamed_vols and all(r["has_comicinfo"] == 0 for r in renamed_vols)
+    assert renamed_chs and all(r["has_comicinfo"] == 0 for r in renamed_chs)

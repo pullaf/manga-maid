@@ -33,6 +33,12 @@ class SeriesMetadata(TypedDict):
     content_rating: str | None
     total_volumes: int
     cover_filename: str | None
+    # Locale-aware fields. ``titles`` is the full ``locale -> title`` pool so
+    # callers can apply the user's title/filename preference themselves; the
+    # source does not know about settings.
+    titles: dict[str, str]
+    original_language: str | None
+    available_locales: list[str]
 
 
 class Source(Protocol):

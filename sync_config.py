@@ -31,6 +31,15 @@ DEFAULTS = {
     "webhook_url":     "",
     "webhook_platform": "generic",  # generic | discord | ntfy
     "telemetry_enabled": True,
+    # Locale preferences. Per-series ``*_language_override`` columns win when set.
+    # ``original`` / ``romanized`` / a locale code; filename also takes
+    # ``match_title``. Blank means "not chosen yet": titles stay exactly as they
+    # are and files on disk are never rewritten. Upgrading must not rename or
+    # re-cover anyone's library. Covers still resolve to ``original`` when
+    # unset, but only for volumes merged from then on.
+    "title_language":    "",
+    "cover_language":    "",
+    "filename_language": "",
     "suwayomi_url":      "",
     "suwayomi_username": "",
     "suwayomi_password": "",

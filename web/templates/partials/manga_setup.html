@@ -51,6 +51,49 @@
   </div>
   {% endif %}
 
+  <!-- Language preferences -->
+  {% if title_choices %}
+  <div class="space-y-3">
+    <div>
+      <label class="block text-xs font-medium mb-1" style="color:var(--text-muted)">Title &amp; cover language</label>
+      <p class="text-xs mb-2" style="color:var(--text-dim)">
+        Independent of the chapter language above, so English chapters can have Japanese covers.
+        Leave either on <em>Use default</em> to follow Settings.
+      </p>
+    </div>
+
+    <div>
+      <label class="block text-xs mb-1.5" style="color:var(--text-dim)">Series title</label>
+      <select name="title_language_override"
+              class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+        <option value="">Use default{% if settings.title_language %} ({{ settings.title_language }}){% else %} (as listed on MangaDex){% endif %}</option>
+        <option value="original">Original{% if original_label %} &middot; {{ original_label }}{% endif %}</option>
+        {% for opt in title_choices %}
+        <option value="{{ opt.code }}">{{ opt.label }} &middot; {{ opt.title }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div>
+      <label class="block text-xs mb-1.5" style="color:var(--text-dim)">Volume cover art</label>
+      <select name="cover_language_override"
+              class="w-full border rounded-lg px-3 py-2.5 text-sm focus:outline-none">
+        <option value="">Use default{% if settings.cover_language %} ({{ settings.cover_language }}){% endif %}</option>
+        {% for opt in cover_choices %}
+        <option value="{{ opt.code }}">
+          {{ opt.label }} &middot; {{ opt.count }} of {{ opt.total }} volume{{ '' if opt.total == 1 else 's' }}
+        </option>
+        {% endfor %}
+      </select>
+      {% if cover_choices %}
+      <p class="text-xs mt-1.5" style="color:var(--text-dim)">
+        Volumes without a cover in this language keep the original.
+      </p>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+
   <!-- Group picker -->
   <div>
     <div class="flex items-center justify-between mb-2">
