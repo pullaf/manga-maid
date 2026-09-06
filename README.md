@@ -6,6 +6,8 @@ Source code: [github.com/pullaf/manga-maid](https://github.com/pullaf/manga-maid
 
 Includes a **web UI** (port `4649`) for managing series, triggering syncs, browsing logs, and configuring all integrations.
 
+<img width="1310" height="1123" alt="image" src="https://github.com/user-attachments/assets/49b97f4b-ed97-480c-8a47-6dd46e92423d" />
+
 ---
 
 ## Features
