@@ -1928,6 +1928,20 @@ def requeue_running_jobs(
     return ids
 
 
+def requeue_job(conn: sqlite3.Connection, job_id: int) -> bool:
+    """Put a ``running`` job back in the queue (interrupted by shutdown)."""
+    cur = conn.execute(
+        """
+        UPDATE jobs
+        SET status=?, started_at=NULL, ended_at=NULL, exit_code=NULL, error_summary=NULL
+        WHERE id=? AND status=?
+        """,
+        (JOB_STATUS_QUEUED, job_id, JOB_STATUS_RUNNING),
+    )
+    conn.commit()
+    return bool(cur.rowcount)
+
+
 def cancel_queued_job(conn: sqlite3.Connection, job_id: int) -> bool:
     cur = conn.execute(
         """

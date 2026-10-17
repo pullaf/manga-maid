@@ -8,12 +8,14 @@ import json
 import math
 import os
 import re
+import signal
+import socket
 import subprocess
 import sys
 import time
 import zipfile
 from datetime import datetime
-from urllib import parse, request
+from urllib import error as urlerror, parse, request
 
 MANGA_ROOT = os.environ.get("MANGA_ROOT", "/manga")
 DATA_DIR   = os.environ.get("DATA_DIR",   "/data")
@@ -365,7 +367,38 @@ class SeriesSyncError(RuntimeError):
     """An actionable failure for one series; safe to show in the UI."""
 
 
+class ChapterDownloadError(SeriesSyncError):
+    """Some chapters failed to download; the rest of the series sync finished."""
+
+    def __init__(self, message: str, downloaded: int):
+        super().__init__(message)
+        self.downloaded = downloaded
+
+
+def _network_error_reason(exc: BaseException) -> str | None:
+    """Reason text if exc (or its cause chain) is a connection/DNS/timeout failure."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, urlerror.HTTPError):
+            return None  # the server answered; not a network problem
+        if isinstance(cur, urlerror.URLError):
+            return str(cur.reason)
+        if isinstance(cur, (TimeoutError, ConnectionError, socket.gaierror)):
+            return str(cur) or cur.__class__.__name__
+        cur = cur.__cause__ or cur.__context__
+    return None
+
+
 def _friendly_sync_error(exc: Exception) -> str:
+    reason = _network_error_reason(exc)
+    if reason is not None:
+        # "Network error:" prefix is matched by the web UI to pick the help text.
+        return (
+            f"Network error: could not reach the source ({reason}). This is usually "
+            "temporary and clears after the next successful sync."
+        )[:500]
     message = str(exc).replace("\r", " ").replace("\n", " ")
     message = " ".join(message.split())
     if "Collection is empty" in message and "fetchChapters" in message:
@@ -639,6 +672,19 @@ def _cbz_files_in(series_dir: str) -> set[str]:
         return set()
 
 
+@contextlib.contextmanager
+def _removing_partial_files_on_abort(series_dir: str, before: set[str]):
+    """On shutdown (SystemExit from SIGTERM) or Ctrl-C mid-download, delete
+    archives that appeared during the download before re-raising."""
+    try:
+        yield
+    except (SystemExit, KeyboardInterrupt):
+        for leftover in _cbz_files_in(series_dir) - before:
+            with contextlib.suppress(OSError):
+                os.remove(os.path.join(series_dir, leftover))
+        raise
+
+
 def _find_new_file(
     series_dir: str, before: set[str], chapter_num: float
 ) -> str | None:
@@ -654,6 +700,10 @@ def _find_new_file(
     return os.path.join(series_dir, sorted(new_files)[0])
 
 
+# A stalled mdx would otherwise hold the single job worker forever.
+MDX_TIMEOUT_SECONDS = int(os.environ.get("MDX_TIMEOUT_SECONDS", "900"))
+
+
 def _mdx_download(
     ch_row: dict, series_dir: str, file_format: str, chapter_naming: str,
 ) -> bool:
@@ -665,7 +715,14 @@ def _mdx_download(
         "-o", series_dir,
         "--file-name", chapter_naming,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=MDX_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        _log(f"  [warn] mdx ch.{ch_row['chapter_num']}: no result after "
+             f"{MDX_TIMEOUT_SECONDS}s, stopped it")
+        return False
     if result.returncode != 0:
         _log(f"  [warn] mdx ch.{ch_row['chapter_num']}: "
              f"{(result.stderr or result.stdout).strip()}")
@@ -1741,6 +1798,8 @@ def _sync_one_series(
             series_row=series_row, settings=settings,
         )
         update_source_sync_time(conn, series_id, source_name)
+        # Feed is skipped on purpose; an error from an earlier run is stale.
+        clear_series_sync_error(conn, series_id)
         return 0
 
     # User-paused: skip feed polling until manually resumed.
@@ -1755,6 +1814,8 @@ def _sync_one_series(
             series_row=series_row, settings=settings,
         )
         update_source_sync_time(conn, series_id, source_name)
+        # Feed is skipped on purpose; an error from an earlier run is stale.
+        clear_series_sync_error(conn, series_id)
         return 0
 
     _log(f"[{name}] checking for updates…")
@@ -1836,6 +1897,7 @@ def _sync_one_series(
     file_format   = settings.get("file_format", "cbz")
     ch_naming     = settings.get("chapter_naming", "%3 ch.%5")
     downloaded    = 0
+    failed_nums: list[str] = []
     _COMMIT_BATCH = int(os.environ.get("SYNC_COMMIT_BATCH", "1"))
     _uncommitted  = 0
 
@@ -1849,6 +1911,7 @@ def _sync_one_series(
             continue
 
         _log(f"[{name}] ch.{ch_row['chapter_num']}: downloading…")
+        downloaded_before = downloaded
 
         vol_num = None
         if ch_row.get("volume_id"):
@@ -1868,15 +1931,17 @@ def _sync_one_series(
             chapter_title=ch_row.get("title") or "",
         )
 
+        before = _cbz_files_in(series_dir)
         if isinstance(source, SuwayomiSource):
             # Suwayomi (e.g. MANGA Plus extension): pages via Suwayomi REST — not ``mdx``.
-            ok = source.download_chapter(
-                ch_row["source_chapter_id"],
-                series_dir,
-                file_format,
-                desired_stem or f"ch.{ch_row['chapter_num']}",
-                delay=0.0,
-            )
+            with _removing_partial_files_on_abort(series_dir, before):
+                ok = source.download_chapter(
+                    ch_row["source_chapter_id"],
+                    series_dir,
+                    file_format,
+                    desired_stem or f"ch.{ch_row['chapter_num']}",
+                    delay=0.0,
+                )
             if ok:
                 fpath = os.path.join(series_dir, f"{desired_stem or 'ch.' + str(ch_row['chapter_num'])}.{file_format}")
                 if os.path.exists(fpath):
@@ -1903,8 +1968,14 @@ def _sync_one_series(
                 _log(f"[{name}] ch.{ch_row['chapter_num']}: failed")
         else:
             # MangaDex: mdx CLI writes its own filename, then we rename
-            before = _cbz_files_in(series_dir)
-            ok     = _mdx_download(ch_row, series_dir, file_format, ch_naming)
+            with _removing_partial_files_on_abort(series_dir, before):
+                ok = _mdx_download(ch_row, series_dir, file_format, ch_naming)
+            if not ok:
+                # A failed or timed-out run can leave a partial archive that the
+                # next disk scan would count as downloaded.
+                for leftover in _cbz_files_in(series_dir) - before:
+                    with contextlib.suppress(OSError):
+                        os.remove(os.path.join(series_dir, leftover))
             if ok:
                 fpath = _find_new_file(series_dir, before, ch_row["chapter_num"])
                 if fpath:
@@ -1943,6 +2014,8 @@ def _sync_one_series(
             else:
                 _log(f"[{name}] ch.{ch_row['chapter_num']}: failed")
 
+        if downloaded == downloaded_before:
+            failed_nums.append(format_num(ch_row["chapter_num"]))
         if _uncommitted >= _COMMIT_BATCH:
             conn.commit()
             _uncommitted = 0
@@ -1979,6 +2052,13 @@ def _sync_one_series(
 
     update_source_sync_time(conn, series_id, source_name)
     _log(f"[{name}] done - {downloaded}/{len(to_download)} downloaded")
+    if failed_nums:
+        shown = ", ".join(failed_nums[:10]) + (", ..." if len(failed_nums) > 10 else "")
+        raise ChapterDownloadError(
+            f"{len(failed_nums)} chapter(s) failed to download (ch. {shown}). "
+            "They stay queued and will be retried on the next sync.",
+            downloaded=downloaded,
+        )
     return downloaded
 
 
@@ -1991,7 +2071,26 @@ def _send_webhook(url: str, platform: str, items: list[tuple[str, int]]):
         f"• {name} - {count} new chapter{'s' if count != 1 else ''}"
         for name, count in items
     ]
-    text = "New chapters downloaded:\n" + "\n".join(lines)
+    _post_webhook(url, platform, "New chapters downloaded:\n" + "\n".join(lines))
+
+
+def _failure_webhook_text(
+    newly_failing: list[tuple[str, str]], recovered: list[str],
+) -> str:
+    """Only state changes are sent, so a series failing every run pings once."""
+    blocks: list[str] = []
+    if newly_failing:
+        lines = [
+            f"• {name} - {summary[:200] + ('...' if len(summary) > 200 else '')}"
+            for name, summary in newly_failing
+        ]
+        blocks.append("Sync started failing:\n" + "\n".join(lines))
+    if recovered:
+        blocks.append("Sync working again:\n" + "\n".join(f"• {n}" for n in recovered))
+    return "\n\n".join(blocks)
+
+
+def _post_webhook(url: str, platform: str, text: str):
     try:
         if platform == "ntfy":
             body = text.encode()
@@ -2183,6 +2282,8 @@ def main(
 
     any_downloaded = False
     failures: list[tuple[str, str]] = []
+    newly_failing: list[tuple[str, str]] = []
+    recovered: list[str] = []
     processed = 0
     downloads: list[tuple[str, int]] = []
     skip_feed_counts: dict[str, int] = {"not_configured": 0, "paused": 0}
@@ -2209,19 +2310,32 @@ def main(
             )
             continue
 
+        had_error = bool(series_row.get("last_sync_error"))
+        skipped_before = sum(skip_feed_counts.values())
         try:
             count = _sync_one_series(
                 series_row, conn, settings, kavita_client, skip_feed_counts, side_fx
             )
+            # A skipped feed (paused / not configured) clears the error without
+            # proving anything works, so it is not a recovery.
+            if had_error and sum(skip_feed_counts.values()) == skipped_before:
+                recovered.append(_series_display_title(conn, series_row, settings))
             if count:
                 any_downloaded = True
                 downloads.append(
                     (_series_display_title(conn, series_row, settings), count))
         except Exception as e:
             name = series_row.get("name") or os.path.basename(series_row["path"])
+            if isinstance(e, ChapterDownloadError) and e.downloaded:
+                any_downloaded = True
+                downloads.append(
+                    (_series_display_title(conn, series_row, settings), e.downloaded))
             summary = _friendly_sync_error(e)
             set_series_sync_error(conn, series_row["id"], summary)
             failures.append((name, summary))
+            if not had_error:
+                newly_failing.append(
+                    (_series_display_title(conn, series_row, settings), summary))
             _log(f"[{name}] error: {summary}")
 
     stems_renamed = int(side_fx.get("chapter_stems_renamed") or 0)
@@ -2247,10 +2361,13 @@ def main(
             "otherwise fix ownership (e.g. host chown/chmod or Docker PUID/PGID) on the bind mount."
         )
 
-    if notify and downloads:
-        wurl = settings.get("webhook_url", "").strip()
-        if wurl:
-            _send_webhook(wurl, settings.get("webhook_platform", "generic"), downloads)
+    wurl = (settings.get("webhook_url") or "").strip() if notify else ""
+    if wurl:
+        platform = settings.get("webhook_platform", "generic")
+        if downloads and settings.get("webhook_notify_downloads", True):
+            _send_webhook(wurl, platform, downloads)
+        if (newly_failing or recovered) and settings.get("webhook_notify_failures", True):
+            _post_webhook(wurl, platform, _failure_webhook_text(newly_failing, recovered))
 
     segments: list[str] = [f"processed {processed} series"]
     if downloads:
@@ -2312,6 +2429,13 @@ if __name__ == "__main__":
         help="Force rewrite ComicInfo.xml for all chapter/volume files in a series (requires --series)",
     )
     args = parser.parse_args()
+
+    def _on_sigterm(signum, frame):
+        # Unwind instead of dying on the spot, so subprocess.run kills mdx and
+        # the download loop removes the half-written archive.
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
     raise SystemExit(main(
         series_filter=args.series,
         covers_only=args.covers_only,

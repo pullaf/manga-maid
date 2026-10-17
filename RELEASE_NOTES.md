@@ -1,82 +1,45 @@
-## Manga Maid 2.3
+## Manga Maid 2.4
 
-This release adds language preferences for series titles, cover art and
-filenames. A series can now be titled in English while keeping its Japanese
-covers, or filed under a romanized name to keep non-Latin scripts off the
-filesystem. Each preference is independent, set globally and overridable per
-series.
+This release is about failing loudly. Sync problems now show up where you will
+see them, can be sent to your webhook, and come with advice that matches the
+actual problem.
 
-### Language preferences
+### Sync problem notifications
 
-- **Series title** decides what Kavita shows and what is written to ComicInfo
-  `Series`. MangaDex keeps translated titles in `altTitles`, which Manga Maid
-  previously ignored, so titles often defaulted to a romanization.
-- **Volume cover art** decides which edition's covers are embedded. Volumes with
-  no cover in the chosen language keep the original and switch over on their own
-  if one is uploaded later.
-- **Title used in filenames** substitutes `%3` in the chapter and volume
-  templates. Setting it to **Romanized** uses the `ja-ro` / `ko-ro` titles
-  MangaDex publishes, so filenames stay Latin while Kavita shows the native
-  title.
+- Notifications in Settings now has separate toggles for **New chapters** and
+  **Sync problems**, both on by default.
+- Sync problems are sent when a series starts failing and again when it
+  recovers. A series that keeps failing is reported once, not on every sync.
 
-Each is set in Settings and can be overridden on any series. The per-series
-pickers list the actual title in every available language, and the cover picker
-shows how many volumes each language covers, so a fallback is visible before it
-happens rather than after.
+### Clearer sync errors
 
-Suwayomi series linked to a MangaDex companion take their title languages and
-cover art from the companion. Without one they resolve to their single
-Suwayomi title.
+- The dashboard shows how many series are failing; click it to show only those.
+- Error banners can be dismissed.
+- "How do I fix this?" now matches the actual problem (network, failed
+  downloads, MangaDex or Suwayomi) instead of always pointing at Suwayomi (#21).
 
-### Applying a language to an existing library
+### Fixes
 
-Choosing a language renames existing chapter and volume files on the next sync
-or Fix Files run, and rewrites ComicInfo `Series`. Only the title changes:
-scanlation group and numbering are left alone, and filenames that carry no
-recognisable title are skipped rather than rebuilt from the template. Renames
-are recorded in the rename log.
-
-Cover art is treated more carefully than filenames, because a replaced image
-cannot be recovered. Manga Maid only rewrites covers inside volumes it built
-itself. Files that were already in the folder are never modified, and still get
-the correct cover in Kavita. A per-series option allows rewriting those too.
-
-### Fixed
-
-- Volume cover selection was non-deterministic. When MangaDex had covers in
-  several languages, whichever the API happened to return last won, and the
-  choice could change between runs.
-- A volume merged before its cover art was published kept the first page of its
-  first chapter as the cover permanently. Real cover art now replaces that
-  placeholder as soon as it appears, with no configuration needed.
-- Kavita cover pushing looked series up by folder name, which fails once
-  ComicInfo `Series` and the folder differ. It now tries the resolved title
-  first.
-
-### Settings page
-
-- A sticky bar appears when there are unsaved changes, with Save and Discard,
-  so the save button is reachable without scrolling to the bottom.
-- Saving a language preference confirms that titles have updated and that a
-  sync or Fix Files run is needed to apply it to files.
+- Changing the sync schedule in Settings now applies immediately instead of
+  after a restart. Invalid schedules are rejected with a warning.
+- Chapters that fail to download now mark the series as failed instead of
+  appearing only in the job log.
+- A stalled download no longer blocks the job queue indefinitely.
+- Renaming a series onto an existing folder is refused instead of nesting it.
+- MangaDex volume numbers were missing for series with a volume containing only
+  chapter 0.
+- Stopping the container now stops a running sync cleanly and resumes it on the
+  next start, and the container exits with an error if the web server crashes.
 
 ### Upgrade notes
 
-Upgrading changes nothing on its own. All three preferences start unset, which
-keeps every series titled exactly as it is today and leaves files untouched.
-Nothing is renamed or re-covered until a language is chosen.
-
-Two things to be aware of once you do choose one:
-
-- Volumes merged by earlier versions are not recorded as built by Manga Maid, so
-  their covers are treated as yours and left alone. Choosing a cover language for
-  the series allows them to be rewritten.
-- Volumes that fell back to a chapter page as their cover under an earlier
-  version cannot be told apart from deliberate covers, so they are not replaced
-  automatically. Setting a cover language updates them.
+- Series that are already failing are not reported until their state changes.
+  The dashboard's failing count shows them in the meantime.
+- The unused `SYNC_CRON` variable was removed from the example compose file.
+  The schedule is set in Settings.
 
 ---
 
-**Docker image:** `ghcr.io/pullaf/manga-maid:2.3`
+**Docker image:** `ghcr.io/pullaf/manga-maid:2.4`
 
-**Full changelog:** https://github.com/pullaf/manga-maid/compare/v2.2.1...v2.3
+**Full changelog:** https://github.com/pullaf/manga-maid/compare/v2.3...v2.4

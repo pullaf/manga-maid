@@ -57,6 +57,23 @@ def test_suwayomi_empty_collection_error_is_actionable_and_short():
     assert len(summary) < 300
 
 
+def test_network_errors_get_a_friendly_temporary_message():
+    import socket
+    from urllib import error as urlerror
+
+    dns = urlerror.URLError(socket.gaierror(-3, "Try again"))
+    summary = manga_sync._friendly_sync_error(dns)
+    assert summary.startswith("Network error:")
+    assert "Try again" in summary
+
+    wrapped = RuntimeError("feed failed")
+    wrapped.__cause__ = TimeoutError("timed out")
+    assert manga_sync._friendly_sync_error(wrapped).startswith("Network error:")
+
+    http = urlerror.HTTPError("https://x", 404, "Not Found", {}, None)
+    assert not manga_sync._friendly_sync_error(http).startswith("Network error:")
+
+
 def test_aggregate_language_fallback_fills_only_missing_chapters():
     from sources.mangadex import MangaDexSource
 
@@ -1073,3 +1090,152 @@ def test_rename_clears_comicinfo_so_series_tag_is_rewritten(tmp_path, monkeypatc
     ).fetchall()
     assert renamed_vols and all(r["has_comicinfo"] == 0 for r in renamed_vols)
     assert renamed_chs and all(r["has_comicinfo"] == 0 for r in renamed_chs)
+
+
+def test_mdx_download_times_out_instead_of_hanging():
+    import subprocess as sp
+    with patch.object(manga_sync.subprocess, "run",
+                      side_effect=sp.TimeoutExpired(cmd="mdx", timeout=1)):
+        assert manga_sync._mdx_download(_ch_row(), "/out", "cbz", "%3") is False
+
+
+def test_failed_chapter_downloads_are_reported_and_partials_removed(tmp_path, monkeypatch):
+    import db as dbmod
+
+    manga_root, data_dir = tmp_path / "manga", tmp_path / "data"
+    series_dir = manga_root / "library" / "Test"
+    series_dir.mkdir(parents=True)
+    data_dir.mkdir()
+    for mod in (dbmod, manga_sync):
+        monkeypatch.setattr(mod, "MANGA_ROOT", str(manga_root))
+        monkeypatch.setattr(mod, "DATA_DIR", str(data_dir))
+    monkeypatch.setattr(manga_sync, "SYNC_LOG", str(data_dir / "sync.log"))
+    conn = dbmod.init_db(str(data_dir))
+    dbmod.insert_series(conn, path="library/Test", title="Test", language="en",
+                        start_chapter=0, source="mangadex", source_id="mdx-1",
+                        sync_configured=1)
+    row = dbmod.get_series_by_path(conn, "library/Test")
+
+    def fake_feed(source, manga_id, language, prefs, series_id, conn):
+        for n in (1.0, 2.0):
+            dbmod.upsert_chapter(conn, series_id, n, "mangadex", f"c{int(n)}", status="known")
+        conn.commit()
+
+    def fake_mdx(ch_row, out_dir, fmt, naming):
+        n = int(ch_row["chapter_num"])
+        (series_dir / f"Test ch.{n}.cbz").write_bytes(b"x")
+        return n == 1  # ch.2 leaves a partial file and fails
+
+    monkeypatch.setattr(manga_sync, "_fetch_and_cache_meta", lambda *a, **k: {})
+    monkeypatch.setattr(manga_sync, "_sync_chapters_to_db", fake_feed)
+    monkeypatch.setattr(manga_sync, "_mdx_download", fake_mdx)
+    monkeypatch.setattr(manga_sync, "_manga_archive_passes_sanity_check", lambda p: True)
+    monkeypatch.setattr(manga_sync, "_ensure_comicinfo_all", lambda *a, **k: None)
+    monkeypatch.setattr(manga_sync, "_run_fix_pass", lambda *a, **k: None)
+    monkeypatch.setattr(manga_sync.time, "sleep", lambda s: None)
+
+    settings = {"download_delay": 0, "file_format": "cbz", "chapter_naming": "",
+                "merge_volumes": False, "file_permission_mask": None}
+    try:
+        manga_sync._sync_one_series(row, conn, settings, None)
+    except manga_sync.ChapterDownloadError as e:
+        err = e
+    else:
+        raise AssertionError("expected ChapterDownloadError")
+    assert err.downloaded == 1
+    assert "1 chapter(s) failed to download (ch. 2)" in str(err)
+    assert not (series_dir / "Test ch.2.cbz").exists()
+    left = [c for c in dbmod.get_chapters(conn, row["id"]) if not c["path"]]
+    assert [c["chapter_num"] for c in left] == [2.0]
+
+
+def test_failure_webhook_text_lists_new_failures_and_recoveries():
+    text = manga_sync._failure_webhook_text([("SPY x FAMILY", "x" * 300)], ["Yotsuba&!"])
+    assert "Sync started failing:\n• SPY x FAMILY - " + "x" * 200 + "..." in text
+    assert "Sync working again:\n• Yotsuba&!" in text
+    assert manga_sync._failure_webhook_text([], ["A"]) == "Sync working again:\n• A"
+
+
+def _notify_env(tmp_path, monkeypatch, **settings):
+    import db as dbmod
+    import sync_config
+
+    manga_root, data_dir = tmp_path / "manga", tmp_path / "data"
+    data_dir.mkdir()
+    for name in ("Broken", "Fixed", "StillBroken"):
+        (manga_root / "library" / name).mkdir(parents=True)
+    for mod in (dbmod, manga_sync):
+        monkeypatch.setattr(mod, "MANGA_ROOT", str(manga_root))
+        monkeypatch.setattr(mod, "DATA_DIR", str(data_dir))
+    monkeypatch.setattr(manga_sync, "SYNC_LOG", str(data_dir / "sync.log"))
+    conn = dbmod.init_db(str(data_dir))
+    for name in ("Broken", "Fixed", "StillBroken"):
+        dbmod.insert_series(conn, path=f"library/{name}", title=name, language="en",
+                            start_chapter=0, source="mangadex", source_id=name,
+                            sync_configured=1)
+    for name in ("Fixed", "StillBroken"):
+        row = dbmod.get_series_by_path(conn, f"library/{name}")
+        dbmod.set_series_sync_error(conn, row["id"], "old problem")
+    sync_config.save_settings({"root_folders": ["library"], "webhook_url": "https://hook",
+                               "webhook_notify_downloads": True, **settings})
+    sync_config._settings_cache_at = 0.0
+
+    def fake_sync(row, *a, **k):
+        if row["title"] in ("Broken", "StillBroken"):
+            raise manga_sync.SeriesSyncError("feed down")
+        return 0
+
+    sent = []
+    monkeypatch.setattr(manga_sync, "_sync_one_series", fake_sync)
+    monkeypatch.setattr(manga_sync, "_post_webhook", lambda url, platform, text: sent.append(text))
+    monkeypatch.setattr(manga_sync, "_series_display_title", lambda conn, row, s: row["title"])
+    return sent
+
+
+def test_failure_webhook_fires_only_on_state_changes(tmp_path, monkeypatch):
+    sent = _notify_env(tmp_path, monkeypatch, webhook_notify_failures=True)
+    assert manga_sync.main(notify=True) == 1
+    assert len(sent) == 1
+    assert "Sync started failing:\n• Broken - feed down" in sent[0]
+    assert "StillBroken" not in sent[0]  # was already failing
+    assert "Sync working again:\n• Fixed" in sent[0]
+
+
+def test_failure_webhook_respects_toggle_and_notify_flag(tmp_path, monkeypatch):
+    sent = _notify_env(tmp_path, monkeypatch, webhook_notify_failures=False)
+    manga_sync.main(notify=True)
+    assert sent == []
+
+
+def test_failure_webhook_skipped_without_notify(tmp_path, monkeypatch):
+    sent = _notify_env(tmp_path, monkeypatch, webhook_notify_failures=True)
+    manga_sync.main(notify=False)
+    assert sent == []
+
+
+def test_shutdown_mid_download_removes_partial_archive(tmp_path):
+    (tmp_path / "old ch.1.cbz").write_bytes(b"keep")
+    before = manga_sync._cbz_files_in(str(tmp_path))
+    try:
+        with manga_sync._removing_partial_files_on_abort(str(tmp_path), before):
+            (tmp_path / "new ch.2.cbz").write_bytes(b"half")
+            raise SystemExit(143)
+    except SystemExit as e:
+        assert e.code == 143
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["old ch.1.cbz"]
+
+
+def test_aggregate_handles_mangadex_list_quirk():
+    # Real /aggregate shape: a volume whose only chapter is "0" comes back as a list.
+    from sources.mangadex import MangaDexSource
+
+    preferred = {"result": "ok", "volumes": {
+        "1": {"volume": "1", "chapters": [{"chapter": "0", "id": "prologue"}]},
+    }}
+    all_languages = {"result": "ok", "volumes": [
+        {"volume": "0", "chapters": []},
+    ]}
+    source = MangaDexSource()
+    with patch.object(source, "_api_get", side_effect=[preferred, all_languages]):
+        merged = source.get_aggregate_with_language_fallback("id", "en")
+    assert merged["volumes"]["1"]["chapters"]["0"]["id"] == "prologue"

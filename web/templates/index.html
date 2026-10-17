@@ -147,6 +147,8 @@
     align-items: center;
   }
   .sc-list .series-log { grid-column: 1 / -1; margin-top: 4px; }
+  /* Without a placement the banner lands in the 50px cover column. */
+  .sc-list .sync-error-banner { grid-column: 2 / -1; min-width: 0; margin-top: 4px; }
   @media (min-width: 769px) {
     .sc-list {
       grid-template-columns: 72px 1fr auto;
@@ -296,6 +298,16 @@
     <h1 class="text-2xl font-bold" style="font-family:'Syne',sans-serif">Dashboard</h1>
     <p class="text-sm mt-0.5 flex items-center gap-2 flex-wrap" style="color:var(--text-muted)">
       <span>{{ linked_count }} linked{% if unlinked_count %} · <span style="color:#fbbf24">{{ unlinked_count }} local</span>{% endif %}</span>
+      {% if failing_count %}
+      <button type="button" id="btn-failing-filter"
+              onclick="toggleFailingFilter()"
+              data-count="{{ failing_count }}"
+              class="text-xs px-2 py-0.5 rounded border transition-colors"
+              style="border-color:rgba(248,113,113,.35);color:#f87171;background:none;cursor:pointer"
+              title="Show only series with a sync error">
+        {{ failing_count }} failing
+      </button>
+      {% endif %}
       {% if ignored_series %}
       <button type="button" id="btn-show-ignored-header"
               onclick="toggleIgnoredSection()"
@@ -357,7 +369,8 @@
        data-details-url="/series/{{ s.path }}"
        data-has-cover="{{ 'yes' if s.cover_url else 'no' }}"
        data-sort-name="{{ (s.display_title or s.name) | lower }}"
-       data-sort-latest="{{ s.latest_chapter_at or '' }}">
+       data-sort-latest="{{ s.latest_chapter_at or '' }}"
+       data-failing="{{ 'yes' if s.last_sync_error else 'no' }}">
     <div class="cover-wrap">
       {% if s.cover_url %}
       <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.display_title or s.name }}"
@@ -392,11 +405,13 @@
         {% if s.config.get("status") == "completed" and (vols or chs) %}<span class="badge-complete">complete</span>{% endif %}
       </div>
       {% if s.last_sync_error %}
-      <div class="mt-2 rounded-lg px-2 py-1.5 text-xs flex items-center gap-2"
+      <div class="sync-error-banner mt-2 rounded-lg px-2 py-1.5 text-xs flex flex-wrap items-center gap-x-3 gap-y-1"
            style="color:#f87171;background:rgba(248,113,113,.09);border:1px solid rgba(248,113,113,.25)">
-        <span class="truncate flex-1" title="{{ s.last_sync_error }}">Source error · {{ s.last_sync_error }}</span>
+        <span class="truncate basis-full" title="{{ s.last_sync_error }}">Source error · {{ s.last_sync_error }}</span>
         <button type="button" class="shrink-0 underline" style="color:#fca5a5"
-                hx-get="/api/help/source-sync-error" hx-target="#modal-body" hx-swap="innerHTML">How do I fix this?</button>
+                hx-get="/api/help/source-sync-error?series={{ s.path|urlencode }}" hx-target="#modal-body" hx-swap="innerHTML">How do I fix this?</button>
+        <button type="button" class="shrink-0 underline" style="color:#fca5a5" title="Dismiss"
+                hx-post="/api/series/{{ s.path }}/sync-error/dismiss" hx-target="closest .sync-error-banner" hx-swap="outerHTML">Dismiss</button>
       </div>
       {% endif %}
       <div class="card-actions">
@@ -429,7 +444,8 @@
        data-details-url="/series/{{ s.path }}"
        data-has-cover="{{ 'yes' if s.cover_url else 'no' }}"
        data-sort-name="{{ (s.display_title or s.name) | lower }}"
-       data-sort-latest="{{ s.latest_chapter_at or '' }}">
+       data-sort-latest="{{ s.latest_chapter_at or '' }}"
+       data-failing="{{ 'yes' if s.last_sync_error else 'no' }}">
     <div class="cover-wrap">
       {% if s.cover_url %}
       <img src="{{ s.cover_url }}" class="cover-img" loading="lazy" alt="{{ s.display_title or s.name }}"
@@ -454,10 +470,12 @@
       <span>{% set vols = s.volume_count or 0 %}{% set chs = s.chapter_count or 0 %}{% if vols %}{{ vols }} vol{{ 's' if vols != 1 }}{% endif %}{% if vols and chs %} · {% endif %}{% if chs %}{{ chs }} ch{{ 's' if chs != 1 }}{% endif %}{% if not vols and not chs %}-{% endif %}{% if s.config.get("status") == "completed" and (vols or chs) %} <span class="badge-complete">complete</span>{% endif %}</span>
     </div>
     {% if s.last_sync_error %}
-    <div class="flex items-center gap-2 text-xs" style="color:#f87171">
-      <span class="truncate" title="{{ s.last_sync_error }}">Source error · {{ s.last_sync_error }}</span>
+    <div class="sync-error-banner flex flex-wrap sm:flex-nowrap items-center gap-x-2 gap-y-1 text-xs" style="color:#f87171">
+      <span class="truncate min-w-0 basis-full sm:basis-auto" title="{{ s.last_sync_error }}">Source error · {{ s.last_sync_error }}</span>
       <button type="button" class="shrink-0 underline" style="color:#fca5a5"
-              hx-get="/api/help/source-sync-error" hx-target="#modal-body" hx-swap="innerHTML">How do I fix this?</button>
+              hx-get="/api/help/source-sync-error?series={{ s.path|urlencode }}" hx-target="#modal-body" hx-swap="innerHTML">How do I fix this?</button>
+      <button type="button" class="shrink-0 underline" style="color:#fca5a5" title="Dismiss"
+              hx-post="/api/series/{{ s.path }}/sync-error/dismiss" hx-target="closest .sync-error-banner" hx-swap="outerHTML">Dismiss</button>
     </div>
     {% endif %}
     <div class="list-actions">
@@ -580,6 +598,45 @@ function setView(v) {
   if (igCards) igCards.style.display = isGrid ? 'grid' : 'none';
   if (igRows)  igRows.style.display  = isGrid ? 'none' : 'flex';
   localStorage.setItem('dash-view', v);
+}
+
+/* ── Failing filter ──────────────────────────────────── */
+function toggleFailingFilter(force) {
+  const btn = document.getElementById('btn-failing-filter');
+  const on = force !== undefined ? force : !(btn && btn.classList.contains('active'));
+  if (btn) {
+    btn.classList.toggle('active', on);
+    btn.style.background = on ? 'rgba(248,113,113,.12)' : 'none';
+  }
+  document.querySelectorAll('#series-grid .series-item, #series-list .series-item').forEach(el => {
+    el.style.display = on && el.dataset.failing !== 'yes' ? 'none' : '';
+  });
+}
+
+// The clicked button is swapped out before htmx fires afterRequest, so the
+// event cannot be caught on it; read the series path from the request URL.
+document.body.addEventListener('htmx:afterRequest', (e) => {
+  const m = /^\/api\/series\/(.+)\/sync-error\/dismiss$/.exec(e.detail.requestConfig?.path || '');
+  if (m && e.detail.successful) failingDismissed(decodeURI(m[1]));
+});
+
+function failingDismissed(path) {
+  let changed = false;
+  document.querySelectorAll('.series-item').forEach(el => {
+    if (el.dataset.path !== path || el.dataset.failing !== 'yes') return;
+    el.dataset.failing = 'no';
+    changed = true;
+    // the other view (grid/list) still shows its own banner for this series
+    el.querySelector('.sync-error-banner')?.remove();
+  });
+  if (!changed) return;
+  const fb = document.getElementById('btn-failing-filter');
+  if (!fb) return;
+  const left = Number(fb.dataset.count) - 1;
+  fb.dataset.count = left;
+  if (left <= 0) { toggleFailingFilter(false); fb.remove(); return; }
+  fb.textContent = left + ' failing';
+  if (fb.classList.contains('active')) toggleFailingFilter(true);
 }
 
 /* ── Sort ────────────────────────────────────────────── */

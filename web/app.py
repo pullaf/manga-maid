@@ -99,6 +99,7 @@ from sync_config import (  # noqa: E402
     sanitize_volume_naming,
     sanitize_sync_cron,
     is_sync_cron_disabled,
+    is_valid_cron_expr,
     get_suwayomi_client,
     _suwayomi_client_cache,
 )
@@ -190,6 +191,18 @@ async def _lifespan(app: FastAPI):
     yield
 
     _job_worker_stop.set()
+    # Stop the running sync before the worker task is cancelled; cancelling
+    # alone would orphan it. It cleans up partial downloads on SIGTERM, and the
+    # job is re-queued on the next start.
+    proc = _worker_current_proc
+    if proc and proc.returncode is None:
+        with contextlib.suppress(ProcessLookupError):
+            proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
     if _reconcile_scheduler_task:
         _reconcile_scheduler_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -224,7 +237,8 @@ JOB_TYPE_REGEN_COMICINFO = "regenerate_comicinfo"
 JOB_TYPE_RECONCILE_DISK = "reconcile_disk"
 JOB_RETENTION_DAYS = 30
 JOB_STATUS_TERMINAL = {"completed", "failed", "cancelled"}
-RUNTIME_CRONTAB_PATH = os.environ.get("RUNTIME_CRONTAB_PATH", "/tmp/crontab")
+# Must match the file supercronic watches (entrypoint.sh exports it).
+RUNTIME_CRONTAB_PATH = os.environ.get("RUNTIME_CRONTAB_PATH", os.path.join(DATA_DIR, "crontab"))
 RECONCILE_INTERVAL_SECONDS = int(os.environ.get("RECONCILE_INTERVAL_SECONDS", "3600"))
 
 
@@ -433,6 +447,12 @@ async def _run_job(worker_conn, job: dict) -> None:
 
     await proc.wait()
     _worker_current_proc = None
+    if _job_worker_stop.is_set() and proc.returncode != 0:
+        # Stopped by container shutdown, not by its own failure: run it again
+        # on the next start instead of recording a failed sync.
+        _db.append_job_log(worker_conn, job_id, "[job] interrupted by shutdown; will resume on next start")
+        _db.requeue_job(worker_conn, job_id)
+        return
     was_cancelled = job_id in _cancel_requested_job_ids
     if was_cancelled:
         _cancel_requested_job_ids.discard(job_id)
@@ -908,6 +928,7 @@ async def dashboard(request: Request):
                  "no_root_folders": _no_rf(),
                  "linked_count": linked_count,
                  "unlinked_count": len(series) - linked_count,
+                 "failing_count": sum(1 for s in series if s.get("last_sync_error")),
                  "suwayomi_url": suwayomi_url,
                  "source_labels": source_labels})
 
@@ -918,12 +939,36 @@ async def series_page(request: Request):
         context={"active": "series", "no_root_folders": _no_rf()})
 
 
+_NETWORK_SYNC_ERROR_RE = re.compile(
+    r"^Network error:|urlopen error|Temporary failure in name resolution|timed out"
+    r"|Connection (refused|reset)|Network is unreachable",
+    re.IGNORECASE,
+)
+
+
+def _sync_error_kind(row: dict | None) -> str:
+    """Pick the help variant: network, download, mangadex or suwayomi (the old default)."""
+    if not row:
+        return "suwayomi"
+    error = row.get("last_sync_error") or ""
+    if _NETWORK_SYNC_ERROR_RE.search(error):
+        return "network"
+    if "failed to download" in error:
+        return "download"
+    if row.get("source_name") == "mangadex":
+        return "mangadex"
+    return "suwayomi"
+
+
 @app.get("/api/help/source-sync-error", response_class=HTMLResponse)
-async def source_sync_error_help(request: Request):
+async def source_sync_error_help(request: Request, series: str | None = None):
+    row = _db.get_series_by_path(_get_conn(), series) if series else None
+    if row:
+        row["source_display_name"] = _source_display_name(row.get("source_name"), {})
     return templates.TemplateResponse(
         request=request,
         name="partials/source_sync_error_help.html",
-        context={},
+        context={"series": row, "kind": _sync_error_kind(row)},
     )
 
 
@@ -1117,6 +1162,7 @@ async def jobs_page(request: Request):
 async def settings_page(request: Request):
     settings  = load_settings()
     languages_changed = request.query_params.get("languages") == "changed"
+    cron_invalid = request.query_params.get("cron") == "invalid"
     configured = settings.get("root_folders") or []
     try:
         existing = sorted(
@@ -1135,6 +1181,7 @@ async def settings_page(request: Request):
                  "available_dirs": available_dirs, "manga_root": MANGA_ROOT,
                  "locale_options": locale_options,
                  "languages_changed": languages_changed,
+                 "cron_invalid": cron_invalid,
                  "no_root_folders": not configured})
 
 
@@ -1154,6 +1201,8 @@ async def save_settings_endpoint(
     file_permission_mask: str = Form("664"),
     webhook_url:       str = Form(""),
     webhook_platform:  str = Form("generic"),
+    webhook_notify_downloads: str = Form("true"),
+    webhook_notify_failures:  str = Form("true"),
     suwayomi_url:       str = Form(""),
     suwayomi_username:  str = Form(""),
     suwayomi_password:  str = Form(""),
@@ -1174,7 +1223,13 @@ async def save_settings_endpoint(
         if clean not in seen:
             seen.append(clean)
     before = load_settings()
-    normalized_sync_cron = sanitize_sync_cron(sync_cron)
+    # An invalid expression would otherwise silently become the default schedule.
+    cron_invalid = (
+        bool(sync_cron.strip())
+        and not is_sync_cron_disabled(sync_cron)
+        and not is_valid_cron_expr(sync_cron)
+    )
+    normalized_sync_cron = sanitize_sync_cron(before.get("sync_cron") if cron_invalid else sync_cron)
     platform = webhook_platform if webhook_platform in ("discord", "ntfy", "generic") else "generic"
     # Preserve existing suwayomi_password if the field was left blank
     stored_pw = before.get("suwayomi_password", "")
@@ -1194,6 +1249,8 @@ async def save_settings_endpoint(
         "file_permission_mask": sanitize_file_permission_mask(file_permission_mask),
         "webhook_url":       webhook_url.strip(),
         "webhook_platform":  platform,
+        "webhook_notify_downloads": webhook_notify_downloads == "true",
+        "webhook_notify_failures":  webhook_notify_failures == "true",
         "suwayomi_url":       suwayomi_url.strip(),
         "suwayomi_username":  suwayomi_username.strip(),
         "suwayomi_password":  effective_pw,
@@ -1242,7 +1299,12 @@ async def save_settings_endpoint(
                 _conn.commit()
             finally:
                 _conn.close()
-    target = "/settings?languages=changed" if languages_changed else "/settings"
+    params = []
+    if languages_changed:
+        params.append("languages=changed")
+    if cron_invalid:
+        params.append("cron=invalid")
+    target = "/settings" + ("?" + "&".join(params) if params else "")
     return RedirectResponse(target, status_code=303)
 
 
@@ -2272,6 +2334,16 @@ async def set_series_sync_pause(path: str, body: SyncPausedBody):
     return JSONResponse({"ok": True, "sync_paused": body.paused})
 
 
+@app.post("/api/series/{path:path}/sync-error/dismiss", response_class=HTMLResponse)
+async def dismiss_series_sync_error(path: str):
+    conn = _get_conn()
+    row = _db.get_series_by_path(conn, path)
+    if not row:
+        raise HTTPException(404, "Series not found")
+    _db.clear_series_sync_error(conn, row["id"])
+    return HTMLResponse("")  # htmx swaps the banner out
+
+
 @app.post("/api/series/{path:path}/ignore")
 async def ignore_series(path: str):
     conn = _get_conn()
@@ -2514,6 +2586,13 @@ async def update_series(
     new_rel    = os.path.relpath(new_dir, MANGA_ROOT)
 
     if os.path.abspath(old_dir) != os.path.abspath(new_dir):
+        # shutil.move would nest the series inside an existing folder (B/A) while
+        # the DB points at B. samefile allows case-only renames on case-insensitive mounts.
+        if os.path.exists(new_dir) and not (
+            os.path.exists(old_dir) and os.path.samefile(old_dir, new_dir)
+        ):
+            raise HTTPException(
+                409, f"A folder named '{new_rel}' already exists. Pick a different title or subfolder.")
         os.makedirs(os.path.dirname(new_dir) or MANGA_ROOT, exist_ok=True)
         shutil.move(old_dir, new_dir)
 
@@ -2748,72 +2827,6 @@ async def stream_job(job_id: int, from_seq: int = 0):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
-
-@app.get("/api/sync/stream")
-async def sync_stream():
-    conn = _get_conn()
-    active = _live_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
-    job = None
-    for j in active:
-        if j.get("job_type") == JOB_TYPE_SYNC_ALL:
-            job = j
-            break
-    if not job:
-        job_id = _db.enqueue_job(conn, job_type=JOB_TYPE_SYNC_ALL, queue_key=JOB_QUEUE_KEY, payload={})
-        job = _db.get_job(conn, job_id)
-    job_id = job["id"]
-
-    async def generate():
-        from_seq = 0
-        while True:
-            lines = _db.get_job_logs_since(conn, job_id, from_seq=from_seq, limit=200)
-            for ln in lines:
-                from_seq = int(ln["seq"])
-                yield f"data: {ln['line']}\n\n"
-            cur = _db.get_job(conn, job_id)
-            if cur and cur.get("status") in JOB_STATUS_TERMINAL:
-                break
-            await asyncio.sleep(0.4)
-        yield "data: [done]\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache"})
-
-
-@app.get("/api/series/{path:path}/sync/stream")
-async def series_sync_stream(path: str):
-    conn = _get_conn()
-    row = _db.get_series_by_path(conn, path)
-    if not row:
-        raise HTTPException(404, "Series not found")
-    job = _live_active_job_for_series(conn, row["id"])
-    if not job:
-        job_id = _db.enqueue_job(
-            conn,
-            job_type=JOB_TYPE_SYNC_SERIES,
-            queue_key=JOB_QUEUE_KEY,
-            series_id=row["id"],
-            series_path_snapshot=path,
-            payload={"series_path": path},
-        )
-        job = _db.get_job(conn, job_id)
-    job_id = job["id"]
-
-    async def generate():
-        from_seq = 0
-        while True:
-            lines = _db.get_job_logs_since(conn, job_id, from_seq=from_seq, limit=200)
-            for ln in lines:
-                from_seq = int(ln["seq"])
-                yield f"data: {ln['line']}\n\n"
-            cur = _db.get_job(conn, job_id)
-            if cur and cur.get("status") in JOB_STATUS_TERMINAL:
-                break
-            await asyncio.sleep(0.4)
-        yield "data: [done]\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/api/series/{path:path}/covers")

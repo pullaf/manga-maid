@@ -14,7 +14,7 @@ RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") \
        https://github.com/aptible/supercronic/releases/download/v${SUPERCRONIC_VERSION}/supercronic-linux-${ARCH} \
     && chmod +x /usr/local/bin/supercronic
 
-RUN apk add --no-cache su-exec tzdata && \
+RUN apk add --no-cache su-exec tini tzdata && \
     pip install --no-cache-dir fastapi uvicorn jinja2 python-multipart
 
 ENV APP_VERSION=${APP_VERSION}
@@ -28,4 +28,5 @@ RUN chmod +x /entrypoint.sh && mkdir -p /data/config /data/logs
 
 EXPOSE 4649
 
-ENTRYPOINT ["/entrypoint.sh"]
+# tini reaps zombies and forwards stop signals to the entrypoint.
+ENTRYPOINT ["/sbin/tini", "--", "/entrypoint.sh"]
