@@ -392,11 +392,13 @@
         {% if s.config.get("status") == "completed" and (vols or chs) %}<span class="badge-complete">complete</span>{% endif %}
       </div>
       {% if s.last_sync_error %}
-      <div class="mt-2 rounded-lg px-2 py-1.5 text-xs flex items-center gap-2"
+      <div class="sync-error-banner mt-2 rounded-lg px-2 py-1.5 text-xs flex items-center gap-2"
            style="color:#f87171;background:rgba(248,113,113,.09);border:1px solid rgba(248,113,113,.25)">
         <span class="truncate flex-1" title="{{ s.last_sync_error }}">Source error · {{ s.last_sync_error }}</span>
         <button type="button" class="shrink-0 underline" style="color:#fca5a5"
-                hx-get="/api/help/source-sync-error" hx-target="#modal-body" hx-swap="innerHTML">How do I fix this?</button>
+                hx-get="/api/help/source-sync-error?series={{ s.path|urlencode }}" hx-target="#modal-body" hx-swap="innerHTML">How do I fix this?</button>
+        <button type="button" class="shrink-0 underline" style="color:#fca5a5" title="Dismiss"
+                hx-post="/api/series/{{ s.path }}/sync-error/dismiss" hx-target="closest .sync-error-banner" hx-swap="outerHTML">Dismiss</button>
       </div>
       {% endif %}
       <div class="card-actions">
@@ -454,10 +456,12 @@
       <span>{% set vols = s.volume_count or 0 %}{% set chs = s.chapter_count or 0 %}{% if vols %}{{ vols }} vol{{ 's' if vols != 1 }}{% endif %}{% if vols and chs %} · {% endif %}{% if chs %}{{ chs }} ch{{ 's' if chs != 1 }}{% endif %}{% if not vols and not chs %}-{% endif %}{% if s.config.get("status") == "completed" and (vols or chs) %} <span class="badge-complete">complete</span>{% endif %}</span>
     </div>
     {% if s.last_sync_error %}
-    <div class="flex items-center gap-2 text-xs" style="color:#f87171">
+    <div class="sync-error-banner flex items-center gap-2 text-xs" style="color:#f87171">
       <span class="truncate" title="{{ s.last_sync_error }}">Source error · {{ s.last_sync_error }}</span>
       <button type="button" class="shrink-0 underline" style="color:#fca5a5"
-              hx-get="/api/help/source-sync-error" hx-target="#modal-body" hx-swap="innerHTML">How do I fix this?</button>
+              hx-get="/api/help/source-sync-error?series={{ s.path|urlencode }}" hx-target="#modal-body" hx-swap="innerHTML">How do I fix this?</button>
+      <button type="button" class="shrink-0 underline" style="color:#fca5a5" title="Dismiss"
+              hx-post="/api/series/{{ s.path }}/sync-error/dismiss" hx-target="closest .sync-error-banner" hx-swap="outerHTML">Dismiss</button>
     </div>
     {% endif %}
     <div class="list-actions">

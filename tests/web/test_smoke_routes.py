@@ -169,6 +169,46 @@ def test_persisted_series_sync_error_appears_and_clears(web_client, monkeypatch)
     assert "Source extension unavailable" not in web_client.get("/").text
 
 
+def test_sync_error_help_matches_source_and_error(web_client, monkeypatch):
+    import db
+
+    appmod = _seed_suwayomi_series(monkeypatch)
+    conn = appmod._get_conn()
+    db.insert_series(conn, path="library/Mdx", title="Mdx", language="en",
+                     start_chapter=0, source="mangadex", source_id="mdx-1")
+    row = db.get_series_by_path(conn, "library/Mdx")
+
+    db.set_series_sync_error(conn, row["id"], "<urlopen error [Errno -3] Try again>")
+    text = web_client.get("/api/help/source-sync-error?series=library/Mdx").text
+    assert "network or DNS problem" in text
+    assert "Suwayomi" not in text
+
+    db.set_series_sync_error(conn, row["id"], "HTTP 404 for https://api.mangadex.org/manga/x")
+    text = web_client.get("/api/help/source-sync-error?series=library/Mdx").text
+    assert "Open MangaDex" in text
+    assert "Suwayomi" not in text
+
+    suwa = db.get_series_by_path(conn, "library/Test")
+    db.set_series_sync_error(conn, suwa["id"], "Source extension unavailable")
+    text = web_client.get("/api/help/source-sync-error?series=library/Test").text
+    assert "remove the title from your library" in text
+
+
+def test_sync_error_can_be_dismissed(web_client, monkeypatch):
+    import db
+
+    appmod = _seed_suwayomi_series(monkeypatch)
+    conn = appmod._get_conn()
+    row = db.get_series_by_path(conn, "library/Test")
+    db.set_series_sync_error(conn, row["id"], "Source extension unavailable")
+    assert "Dismiss" in web_client.get("/series/library/Test").text
+
+    r = web_client.post("/api/series/library/Test/sync-error/dismiss")
+    assert r.status_code == 200
+    assert db.get_series_by_path(conn, "library/Test")["last_sync_error"] is None
+    assert web_client.post("/api/series/library/Nope/sync-error/dismiss").status_code == 404
+
+
 def test_details_explains_downloaded_chapters_without_volume(web_client, monkeypatch):
     import os
     import db

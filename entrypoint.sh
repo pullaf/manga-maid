@@ -46,6 +46,13 @@ else
   echo "$SCHED $RUNAS python3 /app/cron_enqueue_sync.py" > "$CRONTAB_PATH"
   echo "manga-maid sync schedule: $SCHED"
 fi
+# The web app rewrites this file when the schedule changes in Settings, so it
+# must point at the same path and be writable by the app user.
+export RUNTIME_CRONTAB_PATH="$CRONTAB_PATH"
+if [ -n "$RUNAS" ]; then
+  chown "${PUID}:${PGID}" "$CRONTAB_PATH" 2>/dev/null \
+    || echo "WARNING: could not chown $CRONTAB_PATH; schedule changes in Settings will need a restart." >&2
+fi
 
 TRUSTED_PROXY_IPS="${TRUSTED_PROXY_IPS:-*}"
 $RUNAS uvicorn web.app:app --app-dir /app --host 0.0.0.0 --port 4649 \

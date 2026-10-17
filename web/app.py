@@ -224,7 +224,8 @@ JOB_TYPE_REGEN_COMICINFO = "regenerate_comicinfo"
 JOB_TYPE_RECONCILE_DISK = "reconcile_disk"
 JOB_RETENTION_DAYS = 30
 JOB_STATUS_TERMINAL = {"completed", "failed", "cancelled"}
-RUNTIME_CRONTAB_PATH = os.environ.get("RUNTIME_CRONTAB_PATH", "/tmp/crontab")
+# Must match the file supercronic watches (entrypoint.sh exports it).
+RUNTIME_CRONTAB_PATH = os.environ.get("RUNTIME_CRONTAB_PATH", os.path.join(DATA_DIR, "crontab"))
 RECONCILE_INTERVAL_SECONDS = int(os.environ.get("RECONCILE_INTERVAL_SECONDS", "3600"))
 
 
@@ -918,12 +919,33 @@ async def series_page(request: Request):
         context={"active": "series", "no_root_folders": _no_rf()})
 
 
+_NETWORK_SYNC_ERROR_RE = re.compile(
+    r"^Network error:|urlopen error|Temporary failure in name resolution|timed out"
+    r"|Connection (refused|reset)|Network is unreachable",
+    re.IGNORECASE,
+)
+
+
+def _sync_error_kind(row: dict | None) -> str:
+    """Pick the help variant: network, mangadex or suwayomi (the old default)."""
+    if not row:
+        return "suwayomi"
+    if _NETWORK_SYNC_ERROR_RE.search(row.get("last_sync_error") or ""):
+        return "network"
+    if row.get("source_name") == "mangadex":
+        return "mangadex"
+    return "suwayomi"
+
+
 @app.get("/api/help/source-sync-error", response_class=HTMLResponse)
-async def source_sync_error_help(request: Request):
+async def source_sync_error_help(request: Request, series: str | None = None):
+    row = _db.get_series_by_path(_get_conn(), series) if series else None
+    if row:
+        row["source_display_name"] = _source_display_name(row.get("source_name"), {})
     return templates.TemplateResponse(
         request=request,
         name="partials/source_sync_error_help.html",
-        context={},
+        context={"series": row, "kind": _sync_error_kind(row)},
     )
 
 
@@ -2270,6 +2292,16 @@ async def set_series_sync_pause(path: str, body: SyncPausedBody):
         raise HTTPException(404, "Series not found")
     _db.set_sync_paused(conn, path, body.paused)
     return JSONResponse({"ok": True, "sync_paused": body.paused})
+
+
+@app.post("/api/series/{path:path}/sync-error/dismiss", response_class=HTMLResponse)
+async def dismiss_series_sync_error(path: str):
+    conn = _get_conn()
+    row = _db.get_series_by_path(conn, path)
+    if not row:
+        raise HTTPException(404, "Series not found")
+    _db.clear_series_sync_error(conn, row["id"])
+    return HTMLResponse("")  # htmx swaps the banner out
 
 
 @app.post("/api/series/{path:path}/ignore")

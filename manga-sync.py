@@ -8,12 +8,13 @@ import json
 import math
 import os
 import re
+import socket
 import subprocess
 import sys
 import time
 import zipfile
 from datetime import datetime
-from urllib import parse, request
+from urllib import error as urlerror, parse, request
 
 MANGA_ROOT = os.environ.get("MANGA_ROOT", "/manga")
 DATA_DIR   = os.environ.get("DATA_DIR",   "/data")
@@ -365,7 +366,30 @@ class SeriesSyncError(RuntimeError):
     """An actionable failure for one series; safe to show in the UI."""
 
 
+def _network_error_reason(exc: BaseException) -> str | None:
+    """Reason text if exc (or its cause chain) is a connection/DNS/timeout failure."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, urlerror.HTTPError):
+            return None  # the server answered; not a network problem
+        if isinstance(cur, urlerror.URLError):
+            return str(cur.reason)
+        if isinstance(cur, (TimeoutError, ConnectionError, socket.gaierror)):
+            return str(cur) or cur.__class__.__name__
+        cur = cur.__cause__ or cur.__context__
+    return None
+
+
 def _friendly_sync_error(exc: Exception) -> str:
+    reason = _network_error_reason(exc)
+    if reason is not None:
+        # "Network error:" prefix is matched by the web UI to pick the help text.
+        return (
+            f"Network error: could not reach the source ({reason}). This is usually "
+            "temporary and clears after the next successful sync."
+        )[:500]
     message = str(exc).replace("\r", " ").replace("\n", " ")
     message = " ".join(message.split())
     if "Collection is empty" in message and "fetchChapters" in message:
@@ -1741,6 +1765,8 @@ def _sync_one_series(
             series_row=series_row, settings=settings,
         )
         update_source_sync_time(conn, series_id, source_name)
+        # Feed is skipped on purpose; an error from an earlier run is stale.
+        clear_series_sync_error(conn, series_id)
         return 0
 
     # User-paused: skip feed polling until manually resumed.
@@ -1755,6 +1781,8 @@ def _sync_one_series(
             series_row=series_row, settings=settings,
         )
         update_source_sync_time(conn, series_id, source_name)
+        # Feed is skipped on purpose; an error from an earlier run is stale.
+        clear_series_sync_error(conn, series_id)
         return 0
 
     _log(f"[{name}] checking for updates…")

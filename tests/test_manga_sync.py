@@ -57,6 +57,23 @@ def test_suwayomi_empty_collection_error_is_actionable_and_short():
     assert len(summary) < 300
 
 
+def test_network_errors_get_a_friendly_temporary_message():
+    import socket
+    from urllib import error as urlerror
+
+    dns = urlerror.URLError(socket.gaierror(-3, "Try again"))
+    summary = manga_sync._friendly_sync_error(dns)
+    assert summary.startswith("Network error:")
+    assert "Try again" in summary
+
+    wrapped = RuntimeError("feed failed")
+    wrapped.__cause__ = TimeoutError("timed out")
+    assert manga_sync._friendly_sync_error(wrapped).startswith("Network error:")
+
+    http = urlerror.HTTPError("https://x", 404, "Not Found", {}, None)
+    assert not manga_sync._friendly_sync_error(http).startswith("Network error:")
+
+
 def test_aggregate_language_fallback_fills_only_missing_chapters():
     from sources.mangadex import MangaDexSource
 
