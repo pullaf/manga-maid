@@ -2055,7 +2055,26 @@ def _send_webhook(url: str, platform: str, items: list[tuple[str, int]]):
         f"• {name} - {count} new chapter{'s' if count != 1 else ''}"
         for name, count in items
     ]
-    text = "New chapters downloaded:\n" + "\n".join(lines)
+    _post_webhook(url, platform, "New chapters downloaded:\n" + "\n".join(lines))
+
+
+def _failure_webhook_text(
+    newly_failing: list[tuple[str, str]], recovered: list[str],
+) -> str:
+    """Only state changes are sent, so a series failing every run pings once."""
+    blocks: list[str] = []
+    if newly_failing:
+        lines = [
+            f"• {name} - {summary[:200] + ('...' if len(summary) > 200 else '')}"
+            for name, summary in newly_failing
+        ]
+        blocks.append("Sync started failing:\n" + "\n".join(lines))
+    if recovered:
+        blocks.append("Sync working again:\n" + "\n".join(f"• {n}" for n in recovered))
+    return "\n\n".join(blocks)
+
+
+def _post_webhook(url: str, platform: str, text: str):
     try:
         if platform == "ntfy":
             body = text.encode()
@@ -2247,6 +2266,8 @@ def main(
 
     any_downloaded = False
     failures: list[tuple[str, str]] = []
+    newly_failing: list[tuple[str, str]] = []
+    recovered: list[str] = []
     processed = 0
     downloads: list[tuple[str, int]] = []
     skip_feed_counts: dict[str, int] = {"not_configured": 0, "paused": 0}
@@ -2273,10 +2294,16 @@ def main(
             )
             continue
 
+        had_error = bool(series_row.get("last_sync_error"))
+        skipped_before = sum(skip_feed_counts.values())
         try:
             count = _sync_one_series(
                 series_row, conn, settings, kavita_client, skip_feed_counts, side_fx
             )
+            # A skipped feed (paused / not configured) clears the error without
+            # proving anything works, so it is not a recovery.
+            if had_error and sum(skip_feed_counts.values()) == skipped_before:
+                recovered.append(_series_display_title(conn, series_row, settings))
             if count:
                 any_downloaded = True
                 downloads.append(
@@ -2290,6 +2317,9 @@ def main(
             summary = _friendly_sync_error(e)
             set_series_sync_error(conn, series_row["id"], summary)
             failures.append((name, summary))
+            if not had_error:
+                newly_failing.append(
+                    (_series_display_title(conn, series_row, settings), summary))
             _log(f"[{name}] error: {summary}")
 
     stems_renamed = int(side_fx.get("chapter_stems_renamed") or 0)
@@ -2315,10 +2345,13 @@ def main(
             "otherwise fix ownership (e.g. host chown/chmod or Docker PUID/PGID) on the bind mount."
         )
 
-    if notify and downloads:
-        wurl = settings.get("webhook_url", "").strip()
-        if wurl:
-            _send_webhook(wurl, settings.get("webhook_platform", "generic"), downloads)
+    wurl = (settings.get("webhook_url") or "").strip() if notify else ""
+    if wurl:
+        platform = settings.get("webhook_platform", "generic")
+        if downloads and settings.get("webhook_notify_downloads", True):
+            _send_webhook(wurl, platform, downloads)
+        if (newly_failing or recovered) and settings.get("webhook_notify_failures", True):
+            _post_webhook(wurl, platform, _failure_webhook_text(newly_failing, recovered))
 
     segments: list[str] = [f"processed {processed} series"]
     if downloads:

@@ -1147,3 +1147,67 @@ def test_failed_chapter_downloads_are_reported_and_partials_removed(tmp_path, mo
     assert not (series_dir / "Test ch.2.cbz").exists()
     left = [c for c in dbmod.get_chapters(conn, row["id"]) if not c["path"]]
     assert [c["chapter_num"] for c in left] == [2.0]
+
+
+def test_failure_webhook_text_lists_new_failures_and_recoveries():
+    text = manga_sync._failure_webhook_text([("SPY x FAMILY", "x" * 300)], ["Yotsuba&!"])
+    assert "Sync started failing:\n• SPY x FAMILY - " + "x" * 200 + "..." in text
+    assert "Sync working again:\n• Yotsuba&!" in text
+    assert manga_sync._failure_webhook_text([], ["A"]) == "Sync working again:\n• A"
+
+
+def _notify_env(tmp_path, monkeypatch, **settings):
+    import db as dbmod
+    import sync_config
+
+    manga_root, data_dir = tmp_path / "manga", tmp_path / "data"
+    data_dir.mkdir()
+    for name in ("Broken", "Fixed", "StillBroken"):
+        (manga_root / "library" / name).mkdir(parents=True)
+    for mod in (dbmod, manga_sync):
+        monkeypatch.setattr(mod, "MANGA_ROOT", str(manga_root))
+        monkeypatch.setattr(mod, "DATA_DIR", str(data_dir))
+    monkeypatch.setattr(manga_sync, "SYNC_LOG", str(data_dir / "sync.log"))
+    conn = dbmod.init_db(str(data_dir))
+    for name in ("Broken", "Fixed", "StillBroken"):
+        dbmod.insert_series(conn, path=f"library/{name}", title=name, language="en",
+                            start_chapter=0, source="mangadex", source_id=name,
+                            sync_configured=1)
+    for name in ("Fixed", "StillBroken"):
+        row = dbmod.get_series_by_path(conn, f"library/{name}")
+        dbmod.set_series_sync_error(conn, row["id"], "old problem")
+    sync_config.save_settings({"root_folders": ["library"], "webhook_url": "https://hook",
+                               "webhook_notify_downloads": True, **settings})
+    sync_config._settings_cache_at = 0.0
+
+    def fake_sync(row, *a, **k):
+        if row["title"] in ("Broken", "StillBroken"):
+            raise manga_sync.SeriesSyncError("feed down")
+        return 0
+
+    sent = []
+    monkeypatch.setattr(manga_sync, "_sync_one_series", fake_sync)
+    monkeypatch.setattr(manga_sync, "_post_webhook", lambda url, platform, text: sent.append(text))
+    monkeypatch.setattr(manga_sync, "_series_display_title", lambda conn, row, s: row["title"])
+    return sent
+
+
+def test_failure_webhook_fires_only_on_state_changes(tmp_path, monkeypatch):
+    sent = _notify_env(tmp_path, monkeypatch, webhook_notify_failures=True)
+    assert manga_sync.main(notify=True) == 1
+    assert len(sent) == 1
+    assert "Sync started failing:\n• Broken - feed down" in sent[0]
+    assert "StillBroken" not in sent[0]  # was already failing
+    assert "Sync working again:\n• Fixed" in sent[0]
+
+
+def test_failure_webhook_respects_toggle_and_notify_flag(tmp_path, monkeypatch):
+    sent = _notify_env(tmp_path, monkeypatch, webhook_notify_failures=False)
+    manga_sync.main(notify=True)
+    assert sent == []
+
+
+def test_failure_webhook_skipped_without_notify(tmp_path, monkeypatch):
+    sent = _notify_env(tmp_path, monkeypatch, webhook_notify_failures=True)
+    manga_sync.main(notify=False)
+    assert sent == []

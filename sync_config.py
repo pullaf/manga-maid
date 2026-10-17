@@ -30,6 +30,9 @@ DEFAULTS = {
     "file_permission_mask": "664",
     "webhook_url":     "",
     "webhook_platform": "generic",  # generic | discord | ntfy
+    # Failures only fire when a series starts failing or recovers, not every run.
+    "webhook_notify_downloads": True,
+    "webhook_notify_failures":  True,
     "telemetry_enabled": True,
     # Locale preferences. Per-series ``*_language_override`` columns win when set.
     # ``original`` / ``romanized`` / a locale code; filename also takes

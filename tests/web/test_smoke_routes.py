@@ -255,3 +255,16 @@ def test_rename_onto_existing_folder_is_refused(web_client, monkeypatch, tmp_pat
     assert os.path.isdir(os.path.join(appmod.MANGA_ROOT, "library", "Test"))
     assert not os.path.exists(os.path.join(appmod.MANGA_ROOT, "library", "Other", "Test"))
     assert db.get_series_by_path(appmod._get_conn(), "library/Test")
+
+
+def test_dashboard_shows_failing_count(web_client, monkeypatch):
+    import db
+
+    appmod = _seed_suwayomi_series(monkeypatch)
+    conn = appmod._get_conn()
+    assert 'id="btn-failing-filter"' not in web_client.get("/").text
+    row = db.get_series_by_path(conn, "library/Test")
+    db.set_series_sync_error(conn, row["id"], "Source extension unavailable")
+    page = web_client.get("/").text
+    assert "1 failing" in page
+    assert 'data-failing="yes"' in page

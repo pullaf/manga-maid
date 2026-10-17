@@ -910,6 +910,7 @@ async def dashboard(request: Request):
                  "no_root_folders": _no_rf(),
                  "linked_count": linked_count,
                  "unlinked_count": len(series) - linked_count,
+                 "failing_count": sum(1 for s in series if s.get("last_sync_error")),
                  "suwayomi_url": suwayomi_url,
                  "source_labels": source_labels})
 
@@ -1182,6 +1183,8 @@ async def save_settings_endpoint(
     file_permission_mask: str = Form("664"),
     webhook_url:       str = Form(""),
     webhook_platform:  str = Form("generic"),
+    webhook_notify_downloads: str = Form("true"),
+    webhook_notify_failures:  str = Form("true"),
     suwayomi_url:       str = Form(""),
     suwayomi_username:  str = Form(""),
     suwayomi_password:  str = Form(""),
@@ -1228,6 +1231,8 @@ async def save_settings_endpoint(
         "file_permission_mask": sanitize_file_permission_mask(file_permission_mask),
         "webhook_url":       webhook_url.strip(),
         "webhook_platform":  platform,
+        "webhook_notify_downloads": webhook_notify_downloads == "true",
+        "webhook_notify_failures":  webhook_notify_failures == "true",
         "suwayomi_url":       suwayomi_url.strip(),
         "suwayomi_username":  suwayomi_username.strip(),
         "suwayomi_password":  effective_pw,
