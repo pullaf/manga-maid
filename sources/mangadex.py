@@ -98,6 +98,26 @@ class _ChapterData:
 # Source adapter
 # ---------------------------------------------------------------------------
 
+def _keyed(items, key: str) -> dict:
+    """MangaDex serialises a map whose only key is "0" as a JSON list."""
+    if isinstance(items, dict):
+        return items
+    if isinstance(items, list):
+        return {str(i.get(key, n)): i for n, i in enumerate(items) if isinstance(i, dict)}
+    return {}
+
+
+def _normalize_aggregate(data: dict) -> dict:
+    volumes = _keyed((data or {}).get("volumes"), "volume")
+    return {
+        **(data or {}),
+        "volumes": {
+            k: {**v, "chapters": _keyed(v.get("chapters"), "chapter")}
+            for k, v in volumes.items()
+        },
+    }
+
+
 class MangaDexSource:
     """Implements the Source protocol for MangaDex."""
 
@@ -232,7 +252,8 @@ class MangaDexSource:
     def get_aggregate(self, manga_id: str, language: str | None = None) -> dict:
         """Fetch canonical chapter-to-volume buckets, optionally by language."""
         params = {"translatedLanguage[]": language} if language else {}
-        return self._api_get(f"/manga/{manga_id}/aggregate", params, timeout=15)
+        return _normalize_aggregate(
+            self._api_get(f"/manga/{manga_id}/aggregate", params, timeout=15))
 
     def get_aggregate_with_language_fallback(self, manga_id: str, language: str) -> dict:
         """Prefer language-specific volume mappings, filling gaps from all languages."""

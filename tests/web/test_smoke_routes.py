@@ -268,3 +268,12 @@ def test_dashboard_shows_failing_count(web_client, monkeypatch):
     page = web_client.get("/").text
     assert "1 failing" in page
     assert 'data-failing="yes"' in page
+
+
+def test_legacy_get_routes_no_longer_start_syncs(web_client, monkeypatch):
+    import db
+
+    appmod = _seed_suwayomi_series(monkeypatch)
+    assert web_client.get("/api/sync/stream").status_code in (404, 405)
+    assert web_client.get("/api/series/library/Test/sync/stream").status_code in (404, 405)
+    assert db.get_active_jobs(appmod._get_conn()) == []

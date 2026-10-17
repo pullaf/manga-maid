@@ -8,6 +8,7 @@ import json
 import math
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -669,6 +670,19 @@ def _cbz_files_in(series_dir: str) -> set[str]:
         }
     except OSError:
         return set()
+
+
+@contextlib.contextmanager
+def _removing_partial_files_on_abort(series_dir: str, before: set[str]):
+    """On shutdown (SystemExit from SIGTERM) or Ctrl-C mid-download, delete
+    archives that appeared during the download before re-raising."""
+    try:
+        yield
+    except (SystemExit, KeyboardInterrupt):
+        for leftover in _cbz_files_in(series_dir) - before:
+            with contextlib.suppress(OSError):
+                os.remove(os.path.join(series_dir, leftover))
+        raise
 
 
 def _find_new_file(
@@ -1917,15 +1931,17 @@ def _sync_one_series(
             chapter_title=ch_row.get("title") or "",
         )
 
+        before = _cbz_files_in(series_dir)
         if isinstance(source, SuwayomiSource):
             # Suwayomi (e.g. MANGA Plus extension): pages via Suwayomi REST — not ``mdx``.
-            ok = source.download_chapter(
-                ch_row["source_chapter_id"],
-                series_dir,
-                file_format,
-                desired_stem or f"ch.{ch_row['chapter_num']}",
-                delay=0.0,
-            )
+            with _removing_partial_files_on_abort(series_dir, before):
+                ok = source.download_chapter(
+                    ch_row["source_chapter_id"],
+                    series_dir,
+                    file_format,
+                    desired_stem or f"ch.{ch_row['chapter_num']}",
+                    delay=0.0,
+                )
             if ok:
                 fpath = os.path.join(series_dir, f"{desired_stem or 'ch.' + str(ch_row['chapter_num'])}.{file_format}")
                 if os.path.exists(fpath):
@@ -1952,8 +1968,8 @@ def _sync_one_series(
                 _log(f"[{name}] ch.{ch_row['chapter_num']}: failed")
         else:
             # MangaDex: mdx CLI writes its own filename, then we rename
-            before = _cbz_files_in(series_dir)
-            ok     = _mdx_download(ch_row, series_dir, file_format, ch_naming)
+            with _removing_partial_files_on_abort(series_dir, before):
+                ok = _mdx_download(ch_row, series_dir, file_format, ch_naming)
             if not ok:
                 # A failed or timed-out run can leave a partial archive that the
                 # next disk scan would count as downloaded.
@@ -2413,6 +2429,13 @@ if __name__ == "__main__":
         help="Force rewrite ComicInfo.xml for all chapter/volume files in a series (requires --series)",
     )
     args = parser.parse_args()
+
+    def _on_sigterm(signum, frame):
+        # Unwind instead of dying on the spot, so subprocess.run kills mdx and
+        # the download loop removes the half-written archive.
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
     raise SystemExit(main(
         series_filter=args.series,
         covers_only=args.covers_only,

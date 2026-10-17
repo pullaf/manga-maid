@@ -1211,3 +1211,31 @@ def test_failure_webhook_skipped_without_notify(tmp_path, monkeypatch):
     sent = _notify_env(tmp_path, monkeypatch, webhook_notify_failures=True)
     manga_sync.main(notify=False)
     assert sent == []
+
+
+def test_shutdown_mid_download_removes_partial_archive(tmp_path):
+    (tmp_path / "old ch.1.cbz").write_bytes(b"keep")
+    before = manga_sync._cbz_files_in(str(tmp_path))
+    try:
+        with manga_sync._removing_partial_files_on_abort(str(tmp_path), before):
+            (tmp_path / "new ch.2.cbz").write_bytes(b"half")
+            raise SystemExit(143)
+    except SystemExit as e:
+        assert e.code == 143
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["old ch.1.cbz"]
+
+
+def test_aggregate_handles_mangadex_list_quirk():
+    # Real /aggregate shape: a volume whose only chapter is "0" comes back as a list.
+    from sources.mangadex import MangaDexSource
+
+    preferred = {"result": "ok", "volumes": {
+        "1": {"volume": "1", "chapters": [{"chapter": "0", "id": "prologue"}]},
+    }}
+    all_languages = {"result": "ok", "volumes": [
+        {"volume": "0", "chapters": []},
+    ]}
+    source = MangaDexSource()
+    with patch.object(source, "_api_get", side_effect=[preferred, all_languages]):
+        merged = source.get_aggregate_with_language_fallback("id", "en")
+    assert merged["volumes"]["1"]["chapters"]["0"]["id"] == "prologue"

@@ -191,6 +191,18 @@ async def _lifespan(app: FastAPI):
     yield
 
     _job_worker_stop.set()
+    # Stop the running sync before the worker task is cancelled; cancelling
+    # alone would orphan it. It cleans up partial downloads on SIGTERM, and the
+    # job is re-queued on the next start.
+    proc = _worker_current_proc
+    if proc and proc.returncode is None:
+        with contextlib.suppress(ProcessLookupError):
+            proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
     if _reconcile_scheduler_task:
         _reconcile_scheduler_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -435,6 +447,12 @@ async def _run_job(worker_conn, job: dict) -> None:
 
     await proc.wait()
     _worker_current_proc = None
+    if _job_worker_stop.is_set() and proc.returncode != 0:
+        # Stopped by container shutdown, not by its own failure: run it again
+        # on the next start instead of recording a failed sync.
+        _db.append_job_log(worker_conn, job_id, "[job] interrupted by shutdown; will resume on next start")
+        _db.requeue_job(worker_conn, job_id)
+        return
     was_cancelled = job_id in _cancel_requested_job_ids
     if was_cancelled:
         _cancel_requested_job_ids.discard(job_id)
@@ -2809,72 +2827,6 @@ async def stream_job(job_id: int, from_seq: int = 0):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"},
     )
-
-@app.get("/api/sync/stream")
-async def sync_stream():
-    conn = _get_conn()
-    active = _live_active_jobs(conn, queue_key=JOB_QUEUE_KEY)
-    job = None
-    for j in active:
-        if j.get("job_type") == JOB_TYPE_SYNC_ALL:
-            job = j
-            break
-    if not job:
-        job_id = _db.enqueue_job(conn, job_type=JOB_TYPE_SYNC_ALL, queue_key=JOB_QUEUE_KEY, payload={})
-        job = _db.get_job(conn, job_id)
-    job_id = job["id"]
-
-    async def generate():
-        from_seq = 0
-        while True:
-            lines = _db.get_job_logs_since(conn, job_id, from_seq=from_seq, limit=200)
-            for ln in lines:
-                from_seq = int(ln["seq"])
-                yield f"data: {ln['line']}\n\n"
-            cur = _db.get_job(conn, job_id)
-            if cur and cur.get("status") in JOB_STATUS_TERMINAL:
-                break
-            await asyncio.sleep(0.4)
-        yield "data: [done]\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache"})
-
-
-@app.get("/api/series/{path:path}/sync/stream")
-async def series_sync_stream(path: str):
-    conn = _get_conn()
-    row = _db.get_series_by_path(conn, path)
-    if not row:
-        raise HTTPException(404, "Series not found")
-    job = _live_active_job_for_series(conn, row["id"])
-    if not job:
-        job_id = _db.enqueue_job(
-            conn,
-            job_type=JOB_TYPE_SYNC_SERIES,
-            queue_key=JOB_QUEUE_KEY,
-            series_id=row["id"],
-            series_path_snapshot=path,
-            payload={"series_path": path},
-        )
-        job = _db.get_job(conn, job_id)
-    job_id = job["id"]
-
-    async def generate():
-        from_seq = 0
-        while True:
-            lines = _db.get_job_logs_since(conn, job_id, from_seq=from_seq, limit=200)
-            for ln in lines:
-                from_seq = int(ln["seq"])
-                yield f"data: {ln['line']}\n\n"
-            cur = _db.get_job(conn, job_id)
-            if cur and cur.get("status") in JOB_STATUS_TERMINAL:
-                break
-            await asyncio.sleep(0.4)
-        yield "data: [done]\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache"})
 
 
 @app.post("/api/series/{path:path}/covers")
