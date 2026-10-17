@@ -5,6 +5,16 @@
   <p class="text-sm mt-1" style="color:var(--text-muted)">Download behaviour and Kavita integration</p>
 </div>
 
+{% if cron_invalid %}
+<div id="cron-invalid" class="max-w-xl mb-4 rounded-lg px-3 py-2.5 text-xs flex items-start gap-2"
+     style="background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.35);color:var(--text-muted)">
+  <span class="shrink-0 font-bold" style="color:#f87171">!</span>
+  <span>
+    That auto-sync schedule is not a valid 5-field cron expression, so the previous
+    schedule was kept. Other settings were saved.
+  </span>
+</div>
+{% endif %}
 {% if languages_changed %}
 <div id="languages-saved" class="max-w-xl mb-4 rounded-lg px-3 py-2.5 text-xs flex items-start gap-2"
      style="background:rgba(139,92,246,.10);border:1px solid rgba(139,92,246,.35);color:var(--text-muted)">

@@ -73,19 +73,61 @@ def is_sync_cron_disabled(expr: str | None) -> bool:
     return s in (SYNC_CRON_DISABLED, "off", "manual")
 
 
+# (min, max, names) per field. supercronic is PID 1 and exits on a crontab
+# line it cannot parse, which stops the container, so anything written to the
+# crontab must pass this check. Deliberately stricter than supercronic.
+_CRON_FIELDS = (
+    (0, 59, ()),
+    (0, 23, ()),
+    (1, 31, ()),
+    (1, 12, ("jan", "feb", "mar", "apr", "may", "jun",
+             "jul", "aug", "sep", "oct", "nov", "dec")),
+    (0, 7, ("sun", "mon", "tue", "wed", "thu", "fri", "sat")),
+)
+_CRON_ITEM_RE = re.compile(r"^(\*|([a-z]+|\d+)(-([a-z]+|\d+))?)(/(\d+))?$")
+
+
+def _cron_value(token: str, lo: int, hi: int, names: tuple) -> int | None:
+    if token.isdigit():
+        v = int(token)
+    elif token in names:
+        v = names.index(token) + (1 if lo == 1 else 0)
+    else:
+        return None
+    return v if lo <= v <= hi else None
+
+
+def is_valid_cron_expr(expr: str | None) -> bool:
+    """True for a 5-field cron expression with in-range values."""
+    parts = str(expr or "").strip().lower().split()
+    if len(parts) != 5:
+        return False
+    for part, (lo, hi, names) in zip(parts, _CRON_FIELDS):
+        for item in part.split(","):
+            m = _CRON_ITEM_RE.match(item)
+            if not m:
+                return False
+            if m.group(6) is not None and int(m.group(6)) < 1:
+                return False
+            if m.group(1) == "*":
+                continue
+            start = _cron_value(m.group(2), lo, hi, names)
+            if start is None:
+                return False
+            if m.group(4) is not None:
+                end = _cron_value(m.group(4), lo, hi, names)
+                if end is None or end < start:
+                    return False
+    return True
+
+
 def sanitize_sync_cron(expr: str | None) -> str:
     raw = str(expr or "").strip()
     if is_sync_cron_disabled(raw):
         return SYNC_CRON_DISABLED
-    if not raw:
+    if not is_valid_cron_expr(raw):
         return DEFAULTS["sync_cron"]
-    parts = raw.split()
-    if len(parts) != 5:
-        return DEFAULTS["sync_cron"]
-    allowed = re.compile(r"^[\d\*/,\-A-Za-z]+$")
-    if not all(allowed.match(p) for p in parts):
-        return DEFAULTS["sync_cron"]
-    return " ".join(parts)
+    return " ".join(raw.split())
 
 
 _settings_cache: dict | None = None

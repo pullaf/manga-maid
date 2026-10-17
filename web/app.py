@@ -99,6 +99,7 @@ from sync_config import (  # noqa: E402
     sanitize_volume_naming,
     sanitize_sync_cron,
     is_sync_cron_disabled,
+    is_valid_cron_expr,
     get_suwayomi_client,
     _suwayomi_client_cache,
 )
@@ -1139,6 +1140,7 @@ async def jobs_page(request: Request):
 async def settings_page(request: Request):
     settings  = load_settings()
     languages_changed = request.query_params.get("languages") == "changed"
+    cron_invalid = request.query_params.get("cron") == "invalid"
     configured = settings.get("root_folders") or []
     try:
         existing = sorted(
@@ -1157,6 +1159,7 @@ async def settings_page(request: Request):
                  "available_dirs": available_dirs, "manga_root": MANGA_ROOT,
                  "locale_options": locale_options,
                  "languages_changed": languages_changed,
+                 "cron_invalid": cron_invalid,
                  "no_root_folders": not configured})
 
 
@@ -1196,7 +1199,13 @@ async def save_settings_endpoint(
         if clean not in seen:
             seen.append(clean)
     before = load_settings()
-    normalized_sync_cron = sanitize_sync_cron(sync_cron)
+    # An invalid expression would otherwise silently become the default schedule.
+    cron_invalid = (
+        bool(sync_cron.strip())
+        and not is_sync_cron_disabled(sync_cron)
+        and not is_valid_cron_expr(sync_cron)
+    )
+    normalized_sync_cron = sanitize_sync_cron(before.get("sync_cron") if cron_invalid else sync_cron)
     platform = webhook_platform if webhook_platform in ("discord", "ntfy", "generic") else "generic"
     # Preserve existing suwayomi_password if the field was left blank
     stored_pw = before.get("suwayomi_password", "")
@@ -1264,7 +1273,12 @@ async def save_settings_endpoint(
                 _conn.commit()
             finally:
                 _conn.close()
-    target = "/settings?languages=changed" if languages_changed else "/settings"
+    params = []
+    if languages_changed:
+        params.append("languages=changed")
+    if cron_invalid:
+        params.append("cron=invalid")
+    target = "/settings" + ("?" + "&".join(params) if params else "")
     return RedirectResponse(target, status_code=303)
 
 

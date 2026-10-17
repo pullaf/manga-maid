@@ -40,3 +40,14 @@ def test_settings_page_has_the_unsaved_changes_bar(web_client):
     page = web_client.get("/settings").text
     assert 'id="unsaved-bar"' in page
     assert 'id="settings-form"' in page
+
+
+def test_invalid_cron_keeps_previous_schedule_and_warns(web_client):
+    import sync_config
+
+    _save_settings(web_client, sync_cron="0 3 * * *")
+    r = _save_settings(web_client, sync_cron="61 * * * *")
+    assert "cron=invalid" in r.headers["location"]
+    sync_config._settings_cache_at = 0.0
+    assert sync_config.load_settings()["sync_cron"] == "0 3 * * *"
+    assert "not a valid 5-field cron expression" in web_client.get("/settings?cron=invalid").text

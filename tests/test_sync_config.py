@@ -159,3 +159,17 @@ def test_save_drops_merge_volume_naming(tmp_path, monkeypatch):
     assert "merge_volume_naming" not in raw
     s = sync_config.load_settings()
     assert "merge_volume_naming" not in s
+
+
+def test_cron_validator_accepts_common_expressions():
+    for expr in ("0 * * * *", "*/15 * * * *", "0 3 * * 1-5", "0 0 1 jan,jul *",
+                 "30 2 * * sun", "0 9-17/2 * * MON-FRI", "0 0 * * 7"):
+        assert sync_config.is_valid_cron_expr(expr), expr
+
+
+def test_cron_validator_rejects_what_would_kill_supercronic():
+    # supercronic is PID 1 and exits on a bad crontab line.
+    for expr in ("61 * * * *", "foo * * * *", "* 24 * * *", "0 0 0 * *", "*/0 * * * *",
+                 "5-1 * * * *", "0 0 * * 8", "* * * *", "0 0 L * *", ""):
+        assert not sync_config.is_valid_cron_expr(expr), expr
+    assert sync_config.sanitize_sync_cron("61 * * * *") == sync_config.DEFAULTS["sync_cron"]
