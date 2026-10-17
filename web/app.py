@@ -928,11 +928,14 @@ _NETWORK_SYNC_ERROR_RE = re.compile(
 
 
 def _sync_error_kind(row: dict | None) -> str:
-    """Pick the help variant: network, mangadex or suwayomi (the old default)."""
+    """Pick the help variant: network, download, mangadex or suwayomi (the old default)."""
     if not row:
         return "suwayomi"
-    if _NETWORK_SYNC_ERROR_RE.search(row.get("last_sync_error") or ""):
+    error = row.get("last_sync_error") or ""
+    if _NETWORK_SYNC_ERROR_RE.search(error):
         return "network"
+    if "failed to download" in error:
+        return "download"
     if row.get("source_name") == "mangadex":
         return "mangadex"
     return "suwayomi"
@@ -2560,6 +2563,13 @@ async def update_series(
     new_rel    = os.path.relpath(new_dir, MANGA_ROOT)
 
     if os.path.abspath(old_dir) != os.path.abspath(new_dir):
+        # shutil.move would nest the series inside an existing folder (B/A) while
+        # the DB points at B. samefile allows case-only renames on case-insensitive mounts.
+        if os.path.exists(new_dir) and not (
+            os.path.exists(old_dir) and os.path.samefile(old_dir, new_dir)
+        ):
+            raise HTTPException(
+                409, f"A folder named '{new_rel}' already exists. Pick a different title or subfolder.")
         os.makedirs(os.path.dirname(new_dir) or MANGA_ROOT, exist_ok=True)
         shutil.move(old_dir, new_dir)
 

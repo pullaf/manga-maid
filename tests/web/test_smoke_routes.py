@@ -239,3 +239,19 @@ def test_details_explains_downloaded_chapters_without_volume(web_client, monkeyp
 @pytest.mark.parametrize("method,path", TIER_A_NETWORK)
 def test_smoke_network_routes_skipped(method, path):
     pytest.skip("Tier A network bucket: add httpx mock or pytest --run-network")
+
+
+def test_rename_onto_existing_folder_is_refused(web_client, monkeypatch, tmp_path):
+    import os
+    import db
+
+    appmod = _seed_suwayomi_series(monkeypatch)
+    os.makedirs(os.path.join(appmod.MANGA_ROOT, "library", "Test"), exist_ok=True)
+    os.makedirs(os.path.join(appmod.MANGA_ROOT, "library", "Other"), exist_ok=True)
+    r = web_client.put("/api/series/library/Test",
+                       data={"title": "Other", "subfolder": "library"})
+    assert r.status_code == 409
+    assert "already exists" in r.json()["detail"]
+    assert os.path.isdir(os.path.join(appmod.MANGA_ROOT, "library", "Test"))
+    assert not os.path.exists(os.path.join(appmod.MANGA_ROOT, "library", "Other", "Test"))
+    assert db.get_series_by_path(appmod._get_conn(), "library/Test")

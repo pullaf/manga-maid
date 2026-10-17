@@ -366,6 +366,14 @@ class SeriesSyncError(RuntimeError):
     """An actionable failure for one series; safe to show in the UI."""
 
 
+class ChapterDownloadError(SeriesSyncError):
+    """Some chapters failed to download; the rest of the series sync finished."""
+
+    def __init__(self, message: str, downloaded: int):
+        super().__init__(message)
+        self.downloaded = downloaded
+
+
 def _network_error_reason(exc: BaseException) -> str | None:
     """Reason text if exc (or its cause chain) is a connection/DNS/timeout failure."""
     seen: set[int] = set()
@@ -678,6 +686,10 @@ def _find_new_file(
     return os.path.join(series_dir, sorted(new_files)[0])
 
 
+# A stalled mdx would otherwise hold the single job worker forever.
+MDX_TIMEOUT_SECONDS = int(os.environ.get("MDX_TIMEOUT_SECONDS", "900"))
+
+
 def _mdx_download(
     ch_row: dict, series_dir: str, file_format: str, chapter_naming: str,
 ) -> bool:
@@ -689,7 +701,14 @@ def _mdx_download(
         "-o", series_dir,
         "--file-name", chapter_naming,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=MDX_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        _log(f"  [warn] mdx ch.{ch_row['chapter_num']}: no result after "
+             f"{MDX_TIMEOUT_SECONDS}s, stopped it")
+        return False
     if result.returncode != 0:
         _log(f"  [warn] mdx ch.{ch_row['chapter_num']}: "
              f"{(result.stderr or result.stdout).strip()}")
@@ -1864,6 +1883,7 @@ def _sync_one_series(
     file_format   = settings.get("file_format", "cbz")
     ch_naming     = settings.get("chapter_naming", "%3 ch.%5")
     downloaded    = 0
+    failed_nums: list[str] = []
     _COMMIT_BATCH = int(os.environ.get("SYNC_COMMIT_BATCH", "1"))
     _uncommitted  = 0
 
@@ -1877,6 +1897,7 @@ def _sync_one_series(
             continue
 
         _log(f"[{name}] ch.{ch_row['chapter_num']}: downloading…")
+        downloaded_before = downloaded
 
         vol_num = None
         if ch_row.get("volume_id"):
@@ -1933,6 +1954,12 @@ def _sync_one_series(
             # MangaDex: mdx CLI writes its own filename, then we rename
             before = _cbz_files_in(series_dir)
             ok     = _mdx_download(ch_row, series_dir, file_format, ch_naming)
+            if not ok:
+                # A failed or timed-out run can leave a partial archive that the
+                # next disk scan would count as downloaded.
+                for leftover in _cbz_files_in(series_dir) - before:
+                    with contextlib.suppress(OSError):
+                        os.remove(os.path.join(series_dir, leftover))
             if ok:
                 fpath = _find_new_file(series_dir, before, ch_row["chapter_num"])
                 if fpath:
@@ -1971,6 +1998,8 @@ def _sync_one_series(
             else:
                 _log(f"[{name}] ch.{ch_row['chapter_num']}: failed")
 
+        if downloaded == downloaded_before:
+            failed_nums.append(format_num(ch_row["chapter_num"]))
         if _uncommitted >= _COMMIT_BATCH:
             conn.commit()
             _uncommitted = 0
@@ -2007,6 +2036,13 @@ def _sync_one_series(
 
     update_source_sync_time(conn, series_id, source_name)
     _log(f"[{name}] done - {downloaded}/{len(to_download)} downloaded")
+    if failed_nums:
+        shown = ", ".join(failed_nums[:10]) + (", ..." if len(failed_nums) > 10 else "")
+        raise ChapterDownloadError(
+            f"{len(failed_nums)} chapter(s) failed to download (ch. {shown}). "
+            "They stay queued and will be retried on the next sync.",
+            downloaded=downloaded,
+        )
     return downloaded
 
 
@@ -2247,6 +2283,10 @@ def main(
                     (_series_display_title(conn, series_row, settings), count))
         except Exception as e:
             name = series_row.get("name") or os.path.basename(series_row["path"])
+            if isinstance(e, ChapterDownloadError) and e.downloaded:
+                any_downloaded = True
+                downloads.append(
+                    (_series_display_title(conn, series_row, settings), e.downloaded))
             summary = _friendly_sync_error(e)
             set_series_sync_error(conn, series_row["id"], summary)
             failures.append((name, summary))

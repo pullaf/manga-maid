@@ -5,6 +5,8 @@
     <p class="text-sm mt-2 leading-relaxed" style="color:var(--text-muted)">
       {% if kind == "network" %}
       Manga Maid could not connect to {{ source_label }} during the last sync. This is a network or DNS problem on the Manga Maid side, not a problem with the title. It usually fixes itself, and the message clears after the next successful sync.
+      {% elif kind == "download" %}
+      Manga Maid found new chapters on {{ source_label }} but some of them did not download. The rest of the sync finished normally, and the missing chapters are retried on every sync.
       {% elif kind == "mangadex" %}
       Manga Maid could not get this title's chapters from MangaDex.
       {% else %}
@@ -18,6 +20,10 @@
     <li>Try <strong style="color:var(--text)">Sync now</strong>. If it works, you're done.</li>
     <li>If it keeps failing, check that the Manga Maid container has internet access and working DNS.</li>
     <li>If everything is syncing fine again, you can dismiss this message.</li>
+    {% elif kind == "download" %}
+    <li>Open the <strong style="color:var(--text)">Jobs</strong> page and check the last sync's log for this title. Each failed chapter has a line saying why.</li>
+    <li>Make sure the library folder has free space and is writable by Manga Maid.</li>
+    <li>Try <strong style="color:var(--text)">Sync now</strong>. The message clears once every chapter downloads.</li>
     {% elif kind == "mangadex" %}
     <li>Use <strong style="color:var(--text)">Open MangaDex</strong> to check the title still exists and has chapters in your language.</li>
     <li>Return to Manga Maid and try <strong style="color:var(--text)">Sync</strong> again.</li>
@@ -37,7 +43,7 @@
     {% endif %}
   </ol>
 
-  {% if kind != "network" %}
+  {% if kind not in ("network", "download") %}
   <div class="rounded-lg border px-3 py-2.5 text-xs leading-relaxed"
        style="border-color:rgba(251,191,36,.35);background:rgba(251,191,36,.07);color:#fbbf24">
     Your downloaded files are kept when you use <strong>Unlink from source</strong>. Do not choose <strong>Delete series &amp; all files</strong>.

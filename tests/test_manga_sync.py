@@ -1090,3 +1090,60 @@ def test_rename_clears_comicinfo_so_series_tag_is_rewritten(tmp_path, monkeypatc
     ).fetchall()
     assert renamed_vols and all(r["has_comicinfo"] == 0 for r in renamed_vols)
     assert renamed_chs and all(r["has_comicinfo"] == 0 for r in renamed_chs)
+
+
+def test_mdx_download_times_out_instead_of_hanging():
+    import subprocess as sp
+    with patch.object(manga_sync.subprocess, "run",
+                      side_effect=sp.TimeoutExpired(cmd="mdx", timeout=1)):
+        assert manga_sync._mdx_download(_ch_row(), "/out", "cbz", "%3") is False
+
+
+def test_failed_chapter_downloads_are_reported_and_partials_removed(tmp_path, monkeypatch):
+    import db as dbmod
+
+    manga_root, data_dir = tmp_path / "manga", tmp_path / "data"
+    series_dir = manga_root / "library" / "Test"
+    series_dir.mkdir(parents=True)
+    data_dir.mkdir()
+    for mod in (dbmod, manga_sync):
+        monkeypatch.setattr(mod, "MANGA_ROOT", str(manga_root))
+        monkeypatch.setattr(mod, "DATA_DIR", str(data_dir))
+    monkeypatch.setattr(manga_sync, "SYNC_LOG", str(data_dir / "sync.log"))
+    conn = dbmod.init_db(str(data_dir))
+    dbmod.insert_series(conn, path="library/Test", title="Test", language="en",
+                        start_chapter=0, source="mangadex", source_id="mdx-1",
+                        sync_configured=1)
+    row = dbmod.get_series_by_path(conn, "library/Test")
+
+    def fake_feed(source, manga_id, language, prefs, series_id, conn):
+        for n in (1.0, 2.0):
+            dbmod.upsert_chapter(conn, series_id, n, "mangadex", f"c{int(n)}", status="known")
+        conn.commit()
+
+    def fake_mdx(ch_row, out_dir, fmt, naming):
+        n = int(ch_row["chapter_num"])
+        (series_dir / f"Test ch.{n}.cbz").write_bytes(b"x")
+        return n == 1  # ch.2 leaves a partial file and fails
+
+    monkeypatch.setattr(manga_sync, "_fetch_and_cache_meta", lambda *a, **k: {})
+    monkeypatch.setattr(manga_sync, "_sync_chapters_to_db", fake_feed)
+    monkeypatch.setattr(manga_sync, "_mdx_download", fake_mdx)
+    monkeypatch.setattr(manga_sync, "_manga_archive_passes_sanity_check", lambda p: True)
+    monkeypatch.setattr(manga_sync, "_ensure_comicinfo_all", lambda *a, **k: None)
+    monkeypatch.setattr(manga_sync, "_run_fix_pass", lambda *a, **k: None)
+    monkeypatch.setattr(manga_sync.time, "sleep", lambda s: None)
+
+    settings = {"download_delay": 0, "file_format": "cbz", "chapter_naming": "",
+                "merge_volumes": False, "file_permission_mask": None}
+    try:
+        manga_sync._sync_one_series(row, conn, settings, None)
+    except manga_sync.ChapterDownloadError as e:
+        err = e
+    else:
+        raise AssertionError("expected ChapterDownloadError")
+    assert err.downloaded == 1
+    assert "1 chapter(s) failed to download (ch. 2)" in str(err)
+    assert not (series_dir / "Test ch.2.cbz").exists()
+    left = [c for c in dbmod.get_chapters(conn, row["id"]) if not c["path"]]
+    assert [c["chapter_num"] for c in left] == [2.0]
